@@ -1,0 +1,4 @@
+send-exit=0
+sent id=ID8 to=room bytes=N
+remote payload
+exit=0
