@@ -21,14 +21,11 @@ ppz_a unset namespace >/dev/null 2>&1
 ppz_b unset handle    >/dev/null 2>&1
 ppz_b unset namespace >/dev/null 2>&1
 
-# A creates the uncollared pipe; B does NOT create anything. Stream
-# exists server-side with zero messages.
+# A creates the uncollared pipe; B does NOT create anything and does
+# NOT list / refresh first. The send path itself has to resolve the
+# bare name → uncollared stream. Stream exists server-side with zero
+# messages.
 ppz_a pipe create room >/dev/null
-
-# Wait until B's view reflects the pipe — isolates "B never saw it"
-# from "B saw it but the send path can't resolve it". The row exists
-# in B's `ls` before we attempt the send.
-wait_for 20 "ppz_b ls | grep -q '^room '" >/dev/null
 
 err=$(mktemp)
 ppz_b send room "remote payload" 2>"$err"
