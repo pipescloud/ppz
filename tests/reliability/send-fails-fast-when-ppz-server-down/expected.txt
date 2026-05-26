@@ -1,0 +1,3 @@
+verdict=RETURNED
+error: E_NATS_UNREACHABLE
+exit=0
