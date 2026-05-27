@@ -1,3 +1,4 @@
-verdict=RETURNED
+setup=OK
+verdict=ERROR
 error: E_NATS_UNREACHABLE
 exit=0

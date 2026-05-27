@@ -12,21 +12,25 @@ import (
 
 // TestCall_DoesNotHangWhenDaemonAcceptsButNeverReplies is the unit-level
 // reproduction of the production "ppz send hangs forever" report
-// (copilot/alex session, 2026-05-26): during a ppz-server restart the
-// daemon accepts the IPC connection but its handleSend blocks inside
-// nats.Conn.Flush() waiting for a PONG that never comes, so it never
-// writes an IPC reply. The CLI's daemon.Call has NO read deadline, so
-// dec.Decode(&resp) blocks indefinitely — the user observed >2 minutes
-// of silence with no output and no error.
+// (copilot/alex session, 2026-05-26): right after a daemon restart, send
+// hung for >2 minutes with no output, no error, and a still-zero exit,
+// while `ppz read` kept working.
 //
-// `ppz read` did not hang because it is served from local daemon state
-// with no NATS round-trip; only verbs that reach the server (send) stall.
+// The defect is that the CLI's daemon.Call sets NO read deadline on the
+// IPC connection: net.Dial over the unix socket succeeds the moment the
+// daemon *accepts*, then dec.Decode(&resp) blocks indefinitely if no
+// reply ever comes. So the CLI has zero self-protection against a daemon
+// that accepts a connection but is slow to (or never does) reply — e.g.
+// a daemon still in its own restart/startup window before it serves IPC
+// replies. (e2e fault-injection confirmed the server-down/-frozen paths
+// themselves fast-fail with E_NATS_UNREACHABLE within ~5s, guarded by
+// the daemon's 5s HTTP client and the pre-publish JetStream check; the
+// unbounded wait lives in the IPC client, which this test pins.)
 //
-// This test stands up a fake daemon that accepts the connection and then
-// goes silent — exactly the stalled-handler condition — and asserts that
-// Call RETURNS (with an error) rather than blocking. It is the contract
-// "the IPC client must bound its own wait so a stuck daemon can never
-// hang the CLI".
+// The test stands up a fake daemon that accepts the connection then goes
+// silent and asserts that Call RETURNS (with an error) rather than
+// blocking — the contract "the IPC client must bound its own wait so a
+// stuck daemon can never hang the CLI".
 //
 // RED: with no deadline in Call, the goroutine never sends on done and we
 // fall through to the timeout branch and fail.

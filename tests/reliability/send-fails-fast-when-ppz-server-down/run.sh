@@ -1,34 +1,24 @@
 #!/usr/bin/env bash
-# Production scenario reported 2026-05-26 (copilot/alex pty session):
-# while ppz-server was being restarted, `ppz send` HUNG — the operator
-# observed >2 minutes of no output, no error, and no non-zero exit. Yet
-# `ppz read` kept working throughout. The agent invented a "transient
-# glitch self-resolved" story; the human correctly objected that
-# `ppz send` should error if it can't reach the server.
+# Regression GUARD (currently GREEN) — the steady-state half of the
+# 2026-05-26 copilot/alex report, where `ppz send` HUNG while ppz-server
+# was being restarted. Investigation showed a cleanly-stopped OR frozen
+# (docker pause) server does NOT hang: the send path's pre-publish
+# JetStream existence check and the daemon's 5s HTTP client both time
+# out, so send fast-fails with E_NATS_UNREACHABLE within ~5s. This test
+# locks in that contract: when ppz-server is unreachable, `ppz send`
+# must fail fast and HONESTLY — never hang, never silently "succeed".
 #
-# Root cause (two missing timeouts, one default):
-#   1. internal/daemon/ipc.go Call() sets no read deadline on the unix
-#      socket. net.Dial succeeds the moment the daemon accepts; if the
-#      handler then stalls, dec.Decode(&resp) blocks forever.
-#   2. internal/daemon/handlers.go handleSend publishes then calls
-#      NC.Flush() with no timeout and only replies AFTER it returns.
-#      During a server outage the NATS conn is reconnecting, so Flush
-#      blocks on a PONG that never comes -> no IPC reply -> client (1)
-#      hangs. (NC.Publish itself buffers into the 8MB reconnect buffer
-#      and returns nil, which also explains the earlier "exit 0 but the
-#      message never landed" reports.)
-#   `ppz read` is served from local daemon state with no NATS round-trip,
-#   so it is the only common verb that does NOT hang.
+# It does NOT reproduce the production hang itself. That hang was the
+# narrower daemon-restart/startup window, and its true root cause — the
+# IPC client (internal/daemon/ipc.go Call) having no read deadline, so a
+# stalled daemon hangs the CLI regardless of why — is covered
+# deterministically by the unit test
+# internal/daemon/ipc_call_timeout_test.go. Keep both: the unit test is
+# the RED reproduction of the defect; this is the end-to-end guard that
+# the normal server-down path stays fast and explicit.
 #
-# Fix: bound the client IPC wait (read deadline / context) AND give the
-# daemon a flush timeout (NC.FlushTimeout / FlushWithContext) so send
-# fails fast with E_NATS_UNREACHABLE instead of hanging.
-#
-# Test: create a target while the server is up, stop ppz-server (which
-# embeds NATS), then send to it under a short `timeout` watchdog. Assert
-# the command RETURNED (was not killed by the watchdog) and surfaced an
-# E_NATS_UNREACHABLE error. Mirrors the
-# uncollared-pipe-survives-ppz-server-restart docker-stop pattern.
+# Mirrors the uncollared-pipe-survives-ppz-server-restart docker-stop
+# pattern.
 . /tests/lib/common.sh
 
 HANDLE="fastfailroom"
@@ -41,7 +31,16 @@ ppz_a unset namespace >/dev/null 2>&1
 # resolution is cached locally — this isolates the bug to the publish
 # path, not target lookup.
 ppz_a pipe create "$HANDLE" >/dev/null
-ppz_a send "$HANDLE" "before-down" >/dev/null 2>&1
+
+# Prove the happy path WORKS while the server is up — this doubles as a
+# guard that login + seeding actually succeeded. If this isn't `sent`,
+# the down-send assertion below is meaningless (a not-logged-in daemon
+# would also "fail" the send), so surface setup=BROKEN and bail the
+# diff loudly rather than drawing a false conclusion.
+up=$(mktemp)
+PPZ_IPC_SOCKET="$PPZ_DAEMON_A_SOCK" ppz send "$HANDLE" "while-up" >/dev/null 2>"$up"
+if grep -qE '^sent\b' "$up"; then echo "setup=OK"; else echo "setup=BROKEN"; fi
+rm -f "$up"
 
 # Take the server (embedded NATS + JetStream) down and leave it down.
 # The reliability suite's run.sh `docker start`s it again before the
@@ -53,17 +52,32 @@ docker stop compose-ppz-server-1 >/dev/null
 sleep 2
 
 # The user's exact symptom: send while the server is unreachable. Wrap
-# it in a watchdog well under the harness ceiling. If send hangs, the
-# watchdog kills it with exit 124 and we record verdict=HANG (the bug).
-# If send returns promptly, we record verdict=RETURNED plus the error
-# token, regardless of the exact byte/id values.
+# it in a watchdog well under the harness ceiling and classify the
+# outcome. The two known bug manifestations are BOTH wrong:
+#   verdict=HANG       — watchdog had to kill it (the >2min stall report)
+#   verdict=SILENT-OK  — returned exit 0 with a `sent` line while the
+#                        server was down: NC.Publish buffered into the
+#                        reconnect buffer and lied about delivery (the
+#                        "exit 0 but the message never landed" report)
+# The only correct outcome is a prompt, explicit failure:
+#   verdict=ERROR      — returned non-zero with E_NATS_UNREACHABLE
+# The success line goes to STDERR, so capture stderr and route stdout
+# to /dev/null; classify off the verdict token, not byte/id values.
+# NB: invoke `ppz` directly (not the ppz_a shell function) — `timeout`
+# execs its argument as a program and cannot call a bash function, which
+# silently exits 127 and never runs the send. Inline the socket env the
+# same way ppz_a does.
 err=$(mktemp)
-timeout 25 ppz_a send "$HANDLE" "while-down" 2>"$err"
+PPZ_IPC_SOCKET="$PPZ_DAEMON_A_SOCK" timeout 25 ppz send "$HANDLE" "while-down" >/dev/null 2>"$err"
 rc=$?
 if [ "$rc" -eq 124 ]; then
   echo "verdict=HANG"
+elif grep -qE '^sent\b' "$err"; then
+  echo "verdict=SILENT-OK"
+elif grep -qE '^error: E_' "$err"; then
+  echo "verdict=ERROR"
 else
-  echo "verdict=RETURNED"
+  echo "verdict=OTHER"
 fi
-grep -oE '^error: E_[A-Z_]+' "$err" | head -1
+grep -oE '^sent\b|^error: E_[A-Z_]+' "$err" | head -1
 rm -f "$err"
