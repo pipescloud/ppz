@@ -70,12 +70,16 @@ func TestCall_DoesNotHangWhenDaemonAcceptsButNeverReplies(t *testing.T) {
 		}
 	})
 
-	// The client must surface *something* within a generous ceiling. A
-	// healthy local IPC round-trip is sub-millisecond; a send that has to
-	// reach NATS is at most a couple of seconds. 10s is far past any
-	// legitimate reply yet finite, so a never-returning Call is caught as
-	// the hang it is rather than wedging the whole test binary.
-	const ceiling = 10 * time.Second
+	// Pin a short client deadline so the test is fast and deterministic:
+	// Call must bound its own wait (the fix) and return an error rather
+	// than blocking. The ceiling is comfortably above the deadline so a
+	// correctly-bounded Call lands inside it, while a never-returning
+	// Call (no deadline — the bug) is caught instead of wedging the
+	// whole test binary.
+	prev := ipcCallTimeout
+	ipcCallTimeout = 1 * time.Second
+	t.Cleanup(func() { ipcCallTimeout = prev })
+	const ceiling = 5 * time.Second
 
 	done := make(chan error, 1)
 	go func() {

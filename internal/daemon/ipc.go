@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/pipescloud/ppz/internal/cliproto"
 	"github.com/pipescloud/ppz/internal/version"
@@ -183,6 +185,17 @@ func (d *Daemon) ipcSubscribe(ctx context.Context, conn net.Conn, params json.Ra
 
 // IPC client helpers — used by the CLI.
 
+// ipcCallTimeout bounds how long Call waits for the daemon to reply.
+// net.Dial over the unix socket succeeds the moment the daemon
+// *accepts*, so without a deadline a stalled daemon (e.g. mid-restart,
+// before it serves IPC; or wedged on a slow downstream) would block the
+// CLI forever — the production "ppz send hung >2min" report. Per the
+// send delivery contract clause 2 the CLI must always terminate. The
+// default is generous (a legitimate send waits for a JetStream PubAck
+// and possible credential refresh) but finite; PPZ_IPC_TIMEOUT overrides
+// it for ops, and tests set it small.
+var ipcCallTimeout = 30 * time.Second
+
 // Call sends one request to the daemon over a fresh connection and decodes
 // either result or error.
 func Call(sock, method string, params, result any) error {
@@ -191,6 +204,13 @@ func Call(sock, method string, params, result any) error {
 		return cliproto.New(cliproto.EDaemonNotRunning)
 	}
 	defer conn.Close()
+	timeout := ipcCallTimeout
+	if v := os.Getenv("PPZ_IPC_TIMEOUT"); v != "" {
+		if d, perr := time.ParseDuration(v); perr == nil && d > 0 {
+			timeout = d
+		}
+	}
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 	enc := json.NewEncoder(conn)
 	enc.SetEscapeHTML(false)
 	body, _ := json.Marshal(params)
@@ -200,6 +220,10 @@ func Call(sock, method string, params, result any) error {
 	dec := json.NewDecoder(conn)
 	var resp ipcResponse
 	if err := dec.Decode(&resp); err != nil {
+		var nerr net.Error
+		if errors.As(err, &nerr) && nerr.Timeout() {
+			return cliproto.New(cliproto.EDaemonTimeout)
+		}
 		return fmt.Errorf("ipc decode: %w", err)
 	}
 	if resp.Error != nil {

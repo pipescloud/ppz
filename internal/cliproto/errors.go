@@ -13,6 +13,12 @@ type Code string
 const (
 	ENotLoggedIn       Code = "E_NOT_LOGGED_IN"
 	EDaemonNotRunning  Code = "E_DAEMON_NOT_RUNNING"
+	// EDaemonTimeout is returned by the CLI when the daemon accepted the
+	// IPC connection but did not reply within the client deadline. Per
+	// the send delivery contract clause 2, the CLI must never hang: a
+	// stalled daemon (e.g. mid-restart, before it serves IPC) bounds out
+	// to this error instead of blocking forever.
+	EDaemonTimeout Code = "E_DAEMON_TIMEOUT"
 	EInvalidAPIKey     Code = "E_INVALID_API_KEY"
 	ESourceTaken       Code = "E_SOURCE_TAKEN"
 	ESourceNotFound    Code = "E_SOURCE_NOT_FOUND"
@@ -92,6 +98,8 @@ func ExitCode(c Code) int {
 		return 21
 	case EDeliveryUnconfirmed:
 		return 25
+	case EDaemonTimeout:
+		return 26
 	}
 	return 1
 }
@@ -140,6 +148,8 @@ func Message(c Code) string {
 		return "name already taken by another resource at this manifold"
 	case EDeliveryUnconfirmed:
 		return "delivery unconfirmed; the message was published but the server did not acknowledge it in time — it may or may not have landed; retry if your workflow tolerates a possible duplicate"
+	case EDaemonTimeout:
+		return "daemon did not respond in time; it may be busy or stuck (e.g. mid-restart) — retry, or run 'ppz daemon restart'"
 	}
 	return "unknown error"
 }
