@@ -806,12 +806,13 @@ func (d *Daemon) handleSend(ctx context.Context, conn net.Conn, params json.RawM
 		writeIPCErr(conn, cliproto.New(cliproto.EPayloadTooLarge))
 		return
 	}
-	if err := d.NC.Publish(target.subject, data); err != nil {
-		writeIPCErr(conn, cliproto.New(cliproto.ENATSUnreachable))
-		return
-	}
-	if err := d.NC.Flush(); err != nil {
-		writeIPCErr(conn, cliproto.New(cliproto.ENATSUnreachable))
+	// Publish and BLOCK for the JetStream PubAck. The reply below is
+	// written only after a confirmed durable write — so `sent id=…`
+	// exit 0 means the message is genuinely on the server (contract
+	// clause 1). A core Publish+Flush would return "ok" for a message
+	// dropped across a reconnect window (Bug B silent loss).
+	if e := d.publishWithAck(target.subject, data); e != nil {
+		writeIPCErr(conn, e)
 		return
 	}
 	// Heartbeat fast-path: stamp the daemon's in-memory cache so
@@ -845,8 +846,14 @@ func (d *Daemon) handleSendBatch(ctx context.Context, conn net.Conn, params json
 		writeIPCErr(conn, e)
 		return
 	}
+	js, jsErr := jetstream.New(d.NC)
+	if jsErr != nil {
+		writeIPCErr(conn, cliproto.New(cliproto.ENATSUnreachable))
+		return
+	}
 	ids := make([]string, 0, len(req.Payloads))
 	bytes := make([]int, 0, len(req.Payloads))
+	futures := make([]jetstream.PubAckFuture, 0, len(req.Payloads))
 	now := clock.Now()
 	for _, payload := range req.Payloads {
 		env := envelope.New(target.sender, "", payload, now)
@@ -859,16 +866,32 @@ func (d *Daemon) handleSendBatch(ctx context.Context, conn net.Conn, params json
 			writeIPCErr(conn, cliproto.New(cliproto.EPayloadTooLarge))
 			return
 		}
-		if err := d.NC.Publish(target.subject, data); err != nil {
-			writeIPCErr(conn, cliproto.New(cliproto.ENATSUnreachable))
+		f, perr := js.PublishAsync(target.subject, data)
+		if perr != nil {
+			writeIPCErr(conn, classifyPublishErr(perr))
 			return
 		}
+		futures = append(futures, f)
 		ids = append(ids, env.ID)
 		bytes = append(bytes, len(payload))
 	}
-	if err := d.NC.Flush(); err != nil {
-		writeIPCErr(conn, cliproto.New(cliproto.ENATSUnreachable))
+	// One batched wait for ALL PubAcks — keeps the batch's amortised-
+	// flush throughput while still confirming durable delivery of every
+	// message (contract clause 1). A missing/failed ack fails the whole
+	// batch; partial delivery is never reported as success.
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(jsPublishAckTimeout):
+		writeIPCErr(conn, cliproto.New(cliproto.EDeliveryUnconfirmed))
 		return
+	}
+	for _, f := range futures {
+		select {
+		case <-f.Ok():
+		case e := <-f.Err():
+			writeIPCErr(conn, classifyPublishErr(e))
+			return
+		}
 	}
 	// Heartbeat fast-path on the batch path. In practice the heartbeat
 	// ticker publishes one beat at a time via handleSend, so this is

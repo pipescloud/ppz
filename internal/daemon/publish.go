@@ -1,14 +1,61 @@
 package daemon
 
 import (
+	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/pipescloud/ppz/internal/cliproto"
 	"github.com/pipescloud/ppz/internal/envelope"
 	"github.com/pipescloud/ppz/internal/natsubj"
 )
+
+// jsPublishAckTimeout bounds how long the daemon waits for a JetStream
+// PubAck before declaring the delivery unconfirmed. Per the send
+// delivery contract, a publish is a success ONLY when the server has
+// acknowledged durable storage — so we wait for the ack rather than
+// trusting a core NC.Flush, which confirms only that the bytes reached
+// the NATS core (not that JetStream persisted them — the Bug B
+// silent-loss root cause: across a reconnect window a core publish can
+// Flush "ok" yet never durably land).
+var jsPublishAckTimeout = 5 * time.Second
+
+// publishWithAck publishes data to subject and blocks for the JetStream
+// PubAck, bounded by jsPublishAckTimeout. It is the single ack'd publish
+// primitive behind every send path. Returns nil only on a confirmed
+// PubAck; otherwise a classified *cliproto.Error.
+func (d *Daemon) publishWithAck(subject string, data []byte) *cliproto.Error {
+	js, err := jetstream.New(d.NC)
+	if err != nil {
+		return cliproto.New(cliproto.ENATSUnreachable)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), jsPublishAckTimeout)
+	defer cancel()
+	if _, err := js.Publish(ctx, subject, data); err != nil {
+		return classifyPublishErr(err)
+	}
+	return nil
+}
+
+// classifyPublishErr maps a publish/ack failure to the user-facing code:
+//   - connection unusable (closed / no servers) → E_NATS_UNREACHABLE
+//     (the message provably never left the client), and
+//   - everything else (ack timeout, no stream responded) →
+//     E_DELIVERY_UNCONFIRMED (no PubAck — may or may not have landed).
+func classifyPublishErr(err error) *cliproto.Error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, nats.ErrConnectionClosed), errors.Is(err, nats.ErrNoServers):
+		return cliproto.New(cliproto.ENATSUnreachable)
+	default:
+		return cliproto.New(cliproto.EDeliveryUnconfirmed)
+	}
+}
 
 // buildBroadcastEnvelope is the pure envelope-assembly step inside
 // handleSend. Kept separate so unit tests can verify field plumbing
@@ -45,8 +92,12 @@ func (d *Daemon) publishEnvelope(accountID uuid.UUID, dest, pipe string, env env
 	// subject lands at the right path. Empty for handles cached at
 	// root (the common case).
 	subject := natsubj.BuildSubject(accountID, d.State.HandleManifold(dest), dest, pipe)
-	if err := d.NC.Publish(subject, data); err != nil {
-		return err
+	// Wait for the JetStream PubAck — a confirmed durable write — rather
+	// than a core Flush. Returning the typed error as a plain error is
+	// safe: publishWithAck returns a nil *cliproto.Error, and we convert
+	// via an explicit nil check (avoiding the typed-nil-interface trap).
+	if e := d.publishWithAck(subject, data); e != nil {
+		return e
 	}
-	return d.NC.Flush()
+	return nil
 }
