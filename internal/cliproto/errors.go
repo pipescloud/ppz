@@ -36,6 +36,15 @@ const (
 	// leading/trailing hyphen). Phase 1.5.
 	EInvalidManifold Code = "E_INVALID_MANIFOLD"
 
+	// EDeliveryUnconfirmed is returned when `ppz send` published a
+	// message but did not receive a JetStream PubAck within the deadline.
+	// The message MAY or MAY NOT have landed — distinct from
+	// ENATSUnreachable ("never left") so callers can decide whether to
+	// retry knowing a retry may duplicate. Per the send delivery
+	// contract: exit 0 ONLY on a confirmed PubAck; unconfirmed is a
+	// failure, never silent success.
+	EDeliveryUnconfirmed Code = "E_DELIVERY_UNCONFIRMED"
+
 	// ENameTaken — Phase 1.5.1 first-wins collision rule. Within a
 	// manifold, user-typed names share a namespace across source
 	// handles and uncollared pipe names; a source at manifold M also
@@ -81,6 +90,8 @@ func ExitCode(c Code) int {
 		return 24
 	case ENameTaken:
 		return 21
+	case EDeliveryUnconfirmed:
+		return 25
 	}
 	return 1
 }
@@ -127,6 +138,8 @@ func Message(c Code) string {
 		return "invalid manifold: each dot-separated segment must match [a-z0-9-] (max 32, no leading/trailing -, not reserved)"
 	case ENameTaken:
 		return "name already taken by another resource at this manifold"
+	case EDeliveryUnconfirmed:
+		return "delivery unconfirmed; the message was published but the server did not acknowledge it in time — it may or may not have landed; retry if your workflow tolerates a possible duplicate"
 	}
 	return "unknown error"
 }
