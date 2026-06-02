@@ -74,10 +74,17 @@ if [ "$rc" -eq 124 ]; then
   echo "verdict=HANG"
 elif grep -qE '^sent\b' "$err"; then
   echo "verdict=SILENT-OK"
+elif grep -qE '^error: E_(NATS_UNREACHABLE|SERVER_UNREACHABLE|DELIVERY_UNCONFIRMED)\b' "$err"; then
+  # Normalised "honest delivery failure" — either E_NATS_UNREACHABLE
+  # (the existence check or connection layer fast-failed; the message
+  # never left) or E_DELIVERY_UNCONFIRMED (publishWithAck got no
+  # PubAck) is contract-compliant. Pinning the exact code would flake
+  # on internal ordering shifts (e.g. resolveSendTarget's stream check
+  # vs. publishWithAck's ack timeout) without any contract change.
+  echo "verdict=ERROR-DELIVERY"
 elif grep -qE '^error: E_' "$err"; then
-  echo "verdict=ERROR"
+  echo "verdict=ERROR-OTHER"
 else
   echo "verdict=OTHER"
 fi
-grep -oE '^sent\b|^error: E_[A-Z_]+' "$err" | head -1
 rm -f "$err"

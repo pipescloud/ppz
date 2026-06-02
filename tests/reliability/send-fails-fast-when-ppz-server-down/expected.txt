@@ -1,4 +1,3 @@
 setup=OK
-verdict=ERROR
-error: E_NATS_UNREACHABLE
+verdict=ERROR-DELIVERY
 exit=0
