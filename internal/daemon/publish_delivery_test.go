@@ -128,3 +128,69 @@ func TestPublishEnvelope_SucceedsAndPersistsWhenStreamCaptures(t *testing.T) {
 		t.Fatalf("stream stored %d messages, want 1 — publishEnvelope reported success but the message is not on the server", info.State.Msgs)
 	}
 }
+
+// TestPublishBatchWithAck_MustErrorWhenStreamMissing mirrors the single-
+// send contract guard for the batch path. handleSendBatch publishes N
+// messages via PublishAsync and waits for a batched ack — the same
+// success-only-on-PubAck invariant must hold, or a batch could report
+// success while one or more messages never durably landed.
+func TestPublishBatchWithAck_MustErrorWhenStreamMissing(t *testing.T) {
+	nc := startEmbeddedJS(t)
+	d := New(t.TempDir(), "")
+	d.NC = nc
+
+	accountID := uuid.New()
+	subject := natsubj.BuildSubject(accountID, d.State.HandleManifold("bob"), "bob", "inbox")
+	datas := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
+
+	if e := d.publishBatchWithAck(subject, datas); e == nil {
+		t.Fatalf("publishBatchWithAck returned nil, but no JetStream stream captured the subject so every message was silently dropped; " +
+			"the delivery contract requires an error on any unconfirmed publish")
+	}
+}
+
+// TestPublishBatchWithAck_SucceedsAndPersistsAllWhenStreamCaptures is
+// the positive control for the batch path: with a stream bound, the
+// helper must report success AND every message must be retrievable from
+// the server (not a prefix, not "at least one"). Guards against an
+// over-correction where PublishAsyncComplete fires before all futures
+// resolve or a future error is missed.
+func TestPublishBatchWithAck_SucceedsAndPersistsAllWhenStreamCaptures(t *testing.T) {
+	nc := startEmbeddedJS(t)
+	d := New(t.TempDir(), "")
+	d.NC = nc
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	accountID := uuid.New()
+	subject := natsubj.BuildSubject(accountID, d.State.HandleManifold("bob"), "bob", "inbox")
+	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{
+		Name:     "INBOX",
+		Subjects: []string{subject},
+	}); err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
+	datas := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
+	if e := d.publishBatchWithAck(subject, datas); e != nil {
+		t.Fatalf("publishBatchWithAck to a captured subject errored: %v", e)
+	}
+
+	stream, err := js.Stream(ctx, "INBOX")
+	if err != nil {
+		t.Fatalf("lookup stream: %v", err)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		t.Fatalf("stream info: %v", err)
+	}
+	if info.State.Msgs != uint64(len(datas)) {
+		t.Fatalf("stream stored %d messages, want %d — publishBatchWithAck reported success but not every message is on the server",
+			info.State.Msgs, len(datas))
+	}
+}

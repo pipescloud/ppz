@@ -846,14 +846,12 @@ func (d *Daemon) handleSendBatch(ctx context.Context, conn net.Conn, params json
 		writeIPCErr(conn, e)
 		return
 	}
-	js, jsErr := jetstream.New(d.NC)
-	if jsErr != nil {
-		writeIPCErr(conn, cliproto.New(cliproto.ENATSUnreachable))
-		return
-	}
+	// Pre-validate every payload (size + marshal) BEFORE any publish so
+	// an oversize entry rejects the whole batch deterministically rather
+	// than landing the prefix on the server and then erroring.
 	ids := make([]string, 0, len(req.Payloads))
 	bytes := make([]int, 0, len(req.Payloads))
-	futures := make([]jetstream.PubAckFuture, 0, len(req.Payloads))
+	datas := make([][]byte, 0, len(req.Payloads))
 	now := clock.Now()
 	for _, payload := range req.Payloads {
 		env := envelope.New(target.sender, "", payload, now)
@@ -866,32 +864,15 @@ func (d *Daemon) handleSendBatch(ctx context.Context, conn net.Conn, params json
 			writeIPCErr(conn, cliproto.New(cliproto.EPayloadTooLarge))
 			return
 		}
-		f, perr := js.PublishAsync(target.subject, data)
-		if perr != nil {
-			writeIPCErr(conn, classifyPublishErr(perr))
-			return
-		}
-		futures = append(futures, f)
+		datas = append(datas, data)
 		ids = append(ids, env.ID)
 		bytes = append(bytes, len(payload))
 	}
-	// One batched wait for ALL PubAcks — keeps the batch's amortised-
-	// flush throughput while still confirming durable delivery of every
-	// message (contract clause 1). A missing/failed ack fails the whole
-	// batch; partial delivery is never reported as success.
-	select {
-	case <-js.PublishAsyncComplete():
-	case <-time.After(jsPublishAckTimeout):
-		writeIPCErr(conn, cliproto.New(cliproto.EDeliveryUnconfirmed))
+	// One PublishAsync per message + one batched ack wait covering all.
+	// Contract clause 1: `sent` exit 0 ⟹ every message durably stored.
+	if e := d.publishBatchWithAck(target.subject, datas); e != nil {
+		writeIPCErr(conn, e)
 		return
-	}
-	for _, f := range futures {
-		select {
-		case <-f.Ok():
-		case e := <-f.Err():
-			writeIPCErr(conn, classifyPublishErr(e))
-			return
-		}
 	}
 	// Heartbeat fast-path on the batch path. In practice the heartbeat
 	// ticker publishes one beat at a time via handleSend, so this is

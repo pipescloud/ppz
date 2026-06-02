@@ -41,6 +41,42 @@ func (d *Daemon) publishWithAck(subject string, data []byte) *cliproto.Error {
 	return nil
 }
 
+// publishBatchWithAck publishes N data payloads to the SAME subject via
+// JetStream async, then BLOCKS for a single batched wait covering every
+// PubAck, bounded by jsPublishAckTimeout. Amortises the per-ack latency
+// across the batch (preserving the throughput shape of the legacy core
+// Publish+single-Flush) while still confirming durable delivery of
+// every message (contract clause 1). A missing or failed ack for ANY
+// message fails the whole batch; partial delivery is never reported as
+// success.
+func (d *Daemon) publishBatchWithAck(subject string, datas [][]byte) *cliproto.Error {
+	js, err := jetstream.New(d.NC)
+	if err != nil {
+		return cliproto.New(cliproto.ENATSUnreachable)
+	}
+	futures := make([]jetstream.PubAckFuture, 0, len(datas))
+	for _, data := range datas {
+		f, perr := js.PublishAsync(subject, data)
+		if perr != nil {
+			return classifyPublishErr(perr)
+		}
+		futures = append(futures, f)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(jsPublishAckTimeout):
+		return cliproto.New(cliproto.EDeliveryUnconfirmed)
+	}
+	for _, f := range futures {
+		select {
+		case <-f.Ok():
+		case e := <-f.Err():
+			return classifyPublishErr(e)
+		}
+	}
+	return nil
+}
+
 // classifyPublishErr maps a publish/ack failure to the user-facing code:
 //   - connection unusable (closed / no servers) → E_NATS_UNREACHABLE
 //     (the message provably never left the client), and
