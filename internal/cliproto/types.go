@@ -71,6 +71,20 @@ type ReadRequest struct {
 	NoAdvance bool   `json:"no_advance,omitempty"` // observational reads (terminal view) skip cursor advance
 	All       bool   `json:"all,omitempty"`        // forensic mode (`reread`): ignore the cursor (deliver everything) and don't advance it. Implies NoAdvance.
 
+	// Sender is the CLI's resolved current-handle hint for ack:read
+	// emission. Mirrors SendRequest.Sender's role: inside a `ppz
+	// terminal share` wrapped shell, terminalShareEnv exports
+	// PPZ_CURRENT_HANDLE=<handle> but the daemon's IPCCreate skips
+	// SetCurrent for PTY-kind sources, so State.Current(req.Session)
+	// is empty even though the env says we're the wrapped handle.
+	// The daemon's read-path ack auto-emitter (emitAcks at
+	// read.go:316,371) stamps envelope.sender from `self` = the
+	// reader's own handle; without the hint, acks ship with
+	// sender="" and the original sender can't tell who acknowledged.
+	// senderForRequest routes the precedence: hint wins, daemon
+	// state is the fallback.
+	Sender string `json:"sender,omitempty"`
+
 	// Phase 1.5: BareTarget carries the raw user input when `ppz
 	// read/reread LEAF` was bare. The daemon resolves it as an
 	// uncollared pipe at the session's current_namespace. Handle and

@@ -313,7 +313,7 @@ func (d *Daemon) handleRead(ctx context.Context, conn net.Conn, params json.RawM
 		// Reread / NoAdvance reads do NOT emit acks — the cursor isn't
 		// moving from the recipient's perspective, so claiming "they
 		// read it" would be wrong.
-		go emitAcks(accountID, d.State.Current(req.Session), retained, clock.Now(), d.publishEnvelope)
+		go emitAcks(accountID, senderForRequest(req.Sender, d.State.Current(req.Session)), retained, clock.Now(), d.publishEnvelope)
 	}
 
 	if !req.Follow {
@@ -368,7 +368,7 @@ func (d *Daemon) handleRead(ctx context.Context, conn net.Conn, params json.RawM
 			// for the previous ack's Flush), chunking the live stream by
 			// per-ack RTT. Same fire-and-forget semantics as the
 			// historical-drain path above.
-			go emitAcks(accountID, d.State.Current(req.Session), []cliproto.ReadMessage{rm}, clock.Now(), d.publishEnvelope)
+			go emitAcks(accountID, senderForRequest(req.Sender, d.State.Current(req.Session)), []cliproto.ReadMessage{rm}, clock.Now(), d.publishEnvelope)
 		}
 		_ = msg.Ack()
 	})

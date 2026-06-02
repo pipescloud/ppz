@@ -127,6 +127,14 @@ func runRead(target string, asJSON, follow, tty, raw, bare, all bool, limit, ski
 		Follow:  follow,
 		Session: sessionID(),
 		All:     all,
+		// Forward PPZ_CURRENT_HANDLE as the reader's identity hint so
+		// the daemon's ack:read auto-emitter can stamp envelope.sender
+		// when its own per-session State.Current is empty (the shared-
+		// pty case: terminalShareEnv exports the env var but IPCCreate
+		// skips SetCurrent for PTY-kind sources). Same mechanism as
+		// SendRequest.Sender (PR #92); senderForRequest centralises
+		// the precedence. Empty hint preserves today's behaviour.
+		Sender: os.Getenv("PPZ_CURRENT_HANDLE"),
 	}
 
 	conn, err := net.Dial("unix", ipcSocket())

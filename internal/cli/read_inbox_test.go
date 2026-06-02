@@ -111,6 +111,87 @@ func TestRunRead_BareInboxWithoutCurrentSourceErrors(t *testing.T) {
 	}
 }
 
+// TestRunRead_ForwardsEnvCurrentHandleAsSenderHint repros the
+// shared-pty ack-no-sender bug:
+//
+//	$ ppz terminal share alan                        # outer
+//	alan@... % ppz read alan.inbox                   # drains, daemon emits ack
+//	(jimmy reads inbox; sees "ack:read → ba39506c" with sender="")
+//
+// `ppz terminal share H` exports PPZ_CURRENT_HANDLE=H + PPZ_SESSION=H
+// into the wrapped shell, but the daemon's IPCCreate skips
+// SetCurrent for PTY-kind sources — so State.Current(req.Session)
+// is empty when the wrapped child reads. The ack auto-emitter at
+// read.go:316,371 stamps envelope.sender = State.Current(req.Session)
+// directly, missing the env hint every other CLI verb honours.
+//
+// Fix shape (same as PR #92 for send): CLI forwards PPZ_CURRENT_HANDLE
+// as ReadRequest.Sender; daemon's emit sites route through
+// senderForRequest to apply hint-wins precedence.
+//
+// RED today — CLI doesn't populate ReadRequest.Sender.
+func TestRunRead_ForwardsEnvCurrentHandleAsSenderHint(t *testing.T) {
+	t.Setenv("PPZ_SESSION", "alan")
+	t.Setenv("PPZ_CURRENT_HANDLE", "alan")
+	dir, err := os.MkdirTemp("/tmp", "ppz-read-sender-hint-")
+	if err != nil {
+		t.Fatalf("tempdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "daemon.sock")
+	t.Setenv("PPZ_IPC_SOCKET", sock)
+
+	requests := serveReadInboxAliasDaemon(t, sock, "")
+
+	// Read a concrete target (not bare `inbox`) — the bug surfaces on
+	// any read, not just `read inbox`. The Sender hint is independent
+	// of Handle/Channel resolution; it's purely the reader's identity
+	// for ack emission.
+	if err := runRead("alan.inbox", true, false, false, false, false, false, 0, 0, 0); err != nil {
+		t.Fatalf("runRead: %v", err)
+	}
+	if len(*requests) != 1 {
+		t.Fatalf("ReadRequest count = %d, want 1", len(*requests))
+	}
+	got := (*requests)[0]
+	if got.Sender != "alan" {
+		t.Fatalf("ReadRequest.Sender = %q, want %q — PPZ_CURRENT_HANDLE=alan must be forwarded as the reader's identity so the daemon's ack:read emission can stamp envelope.sender=alan instead of \"\"",
+			got.Sender, "alan")
+	}
+}
+
+// TestRunRead_NoEnvCurrent_OmitsSenderHint regression-pins the
+// no-env path: when PPZ_CURRENT_HANDLE is unset, the CLI does NOT
+// proactively populate Sender — the daemon's State.Current(session)
+// fallback (via senderForRequest) handles that case at the emit
+// site. Mirrors TestCmdSend_NoEnvCurrent_OmitsSenderHint.
+func TestRunRead_NoEnvCurrent_OmitsSenderHint(t *testing.T) {
+	t.Setenv("PPZ_CURRENT_HANDLE", "")
+	_ = os.Unsetenv("PPZ_CURRENT_HANDLE")
+	t.Setenv("PPZ_SESSION", "tty-no-env-read")
+	dir, err := os.MkdirTemp("/tmp", "ppz-read-no-env-")
+	if err != nil {
+		t.Fatalf("tempdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "daemon.sock")
+	t.Setenv("PPZ_IPC_SOCKET", sock)
+
+	requests := serveReadInboxAliasDaemon(t, sock, "")
+
+	if err := runRead("alan.inbox", true, false, false, false, false, false, 0, 0, 0); err != nil {
+		t.Fatalf("runRead: %v", err)
+	}
+	if len(*requests) != 1 {
+		t.Fatalf("ReadRequest count = %d, want 1", len(*requests))
+	}
+	got := (*requests)[0]
+	if got.Sender != "" {
+		t.Fatalf("ReadRequest.Sender = %q, want \"\" — no env override means no hint; daemon falls back to State.Current(session) via senderForRequest",
+			got.Sender)
+	}
+}
+
 func serveReadInboxAliasDaemon(t *testing.T, sock, current string) *[]cliproto.ReadRequest {
 	t.Helper()
 	_ = os.Remove(sock)
