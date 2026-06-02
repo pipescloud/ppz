@@ -5,6 +5,41 @@ import (
 	"testing"
 )
 
+// The `ppz send` delivery contract (2026-05-28) introduced two new error
+// codes that the CLI must never surface generically. Their wire strings,
+// exit codes, and messages are pinned here so a regression (e.g. someone
+// reusing E_NATS_UNREACHABLE for unconfirmed delivery) is caught.
+
+func TestEDeliveryUnconfirmed_StableSurface(t *testing.T) {
+	if string(EDeliveryUnconfirmed) != "E_DELIVERY_UNCONFIRMED" {
+		t.Fatalf("EDeliveryUnconfirmed wire string = %q, want E_DELIVERY_UNCONFIRMED", EDeliveryUnconfirmed)
+	}
+	if got := ExitCode(EDeliveryUnconfirmed); got != 25 {
+		t.Errorf("ExitCode(EDeliveryUnconfirmed) = %d, want 25", got)
+	}
+	if msg := Message(EDeliveryUnconfirmed); msg == "" || msg == "unknown error" {
+		t.Errorf("Message(EDeliveryUnconfirmed) is missing or generic: %q", msg)
+	}
+	if e := New(EDeliveryUnconfirmed); e == nil || e.Code != EDeliveryUnconfirmed {
+		t.Fatalf("New(EDeliveryUnconfirmed) returned %+v", e)
+	}
+}
+
+func TestEDaemonTimeout_StableSurface(t *testing.T) {
+	if string(EDaemonTimeout) != "E_DAEMON_TIMEOUT" {
+		t.Fatalf("EDaemonTimeout wire string = %q, want E_DAEMON_TIMEOUT", EDaemonTimeout)
+	}
+	if got := ExitCode(EDaemonTimeout); got != 26 {
+		t.Errorf("ExitCode(EDaemonTimeout) = %d, want 26", got)
+	}
+	if msg := Message(EDaemonTimeout); msg == "" || msg == "unknown error" {
+		t.Errorf("Message(EDaemonTimeout) is missing or generic: %q", msg)
+	}
+	if e := New(EDaemonTimeout); e == nil || e.Code != EDaemonTimeout {
+		t.Fatalf("New(EDaemonTimeout) returned %+v", e)
+	}
+}
+
 // v0.25.0: a new error code E_INVALID_SUBJECT for subject-rule violations
 // (the `ack:` prefix is reserved for daemon-emitted protocol messages).
 // CLI-side and daemon-side IPC both use it — wire string MUST be stable.

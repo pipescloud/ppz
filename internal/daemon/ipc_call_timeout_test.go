@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -91,11 +92,17 @@ func TestCall_DoesNotHangWhenDaemonAcceptsButNeverReplies(t *testing.T) {
 
 	select {
 	case err := <-done:
-		// Returning is the whole point; an unreachable/timeout error is the
-		// correct shape. A nil error would be wrong (we never sent a reply),
-		// but the hang is the bug under test, so assert only that it errored.
+		// Returning is the whole point — but the contract is specifically
+		// that the bounded wait surfaces as E_DAEMON_TIMEOUT (exit 26), so
+		// pin the code. A regression that returned a different error
+		// (e.g. E_DAEMON_NOT_RUNNING, or a wrapped net.Error) would
+		// otherwise stay green here.
 		if err == nil {
-			t.Fatalf("Call returned nil error, but the fake daemon never sent a reply; expected a timeout/unreachable error")
+			t.Fatalf("Call returned nil error, but the fake daemon never sent a reply; expected E_DAEMON_TIMEOUT")
+		}
+		var ce *cliproto.Error
+		if !errors.As(err, &ce) || ce.Code != cliproto.EDaemonTimeout {
+			t.Fatalf("Call returned %v, want *cliproto.Error{Code: %s}", err, cliproto.EDaemonTimeout)
 		}
 	case <-time.After(ceiling):
 		t.Fatalf("ppz send hung: daemon.Call did not return within %s when the daemon accepted but never replied (no read deadline on the IPC connection)", ceiling)
