@@ -1,0 +1,3 @@
+error: E_INVALID_PRIORITY
+error: E_INVALID_PRIORITY
+exit=0

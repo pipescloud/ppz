@@ -153,14 +153,25 @@ func wrapBodyLine(line string, width int) []string {
 // bodyForRow returns the rendered body — the third column of one row,
 // pre-split. ack:* subjects squash to "<subject> → <id8>"; non-ack
 // subjects prepend "[<subject>] " to the first payload line.
+//
+// Explicit high/low priorities prepend a `P1 ` / `P3 ` badge (never for
+// ack rows; never for unset/medium, keeping pre-priority rows byte-
+// identical). The badge is advisory and human-only — it shares this text
+// column with sender-controlled payload, so a payload beginning "P1 "
+// renders indistinguishably. Agents must trust the structured `priority`
+// field (--json) or delivery order, never the inline text.
 func bodyForRow(m ReadMessage) string {
 	if strings.HasPrefix(m.Subject, "ack:") {
 		return fmt.Sprintf("%s → %s", m.Subject, lastHexOfID(m.ID, 8))
 	}
-	if m.Subject != "" {
-		return "[" + m.Subject + "] " + m.Payload
+	badge := ""
+	if m.Priority == PriorityHigh || m.Priority == PriorityLow {
+		badge = fmt.Sprintf("P%d ", m.Priority)
 	}
-	return m.Payload
+	if m.Subject != "" {
+		return badge + "[" + m.Subject + "] " + m.Payload
+	}
+	return badge + m.Payload
 }
 
 // lastHexOfID returns the last n hex characters of id, treating the id

@@ -1,0 +1,4 @@
+--- reread -l 2: arrival-window [second, urgent] then sorted high-first ---
+HH:MM:SS  chat          P1 urgent
+HH:MM:SS  chat          second
+exit=0

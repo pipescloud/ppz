@@ -907,6 +907,13 @@ func (d *Daemon) handleSend(ctx context.Context, conn net.Conn, params json.RawM
 		writeIPCErr(conn, cliproto.New(cliproto.EInvalidSubject))
 		return
 	}
+	// Same belt/suspenders split for priority: the CLI validates the
+	// --priority flag, this catches raw IPC clients. Read-side
+	// EffectivePriority still clamps whatever lands on the wire.
+	if !validSendPriority(req.Priority) {
+		writeIPCErr(conn, cliproto.New(cliproto.EInvalidPriority))
+		return
+	}
 	target, e := d.resolveSendTarget(ctx, req.Handle, req.Channel, req.BareTarget, req.Session, req.Sender)
 	if e != nil {
 		writeIPCErr(conn, e)

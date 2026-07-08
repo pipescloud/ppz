@@ -152,6 +152,9 @@ type ReadMessage struct {
 	CreatedAt    string `json:"created_at"`
 	InReplyTo    string `json:"in_reply_to"`
 	AckRequested bool   `json:"ack_requested"`
+	// Priority mirrors the envelope: 1=high 2=medium 3=low, 0=unset
+	// (treated as medium). No omitempty — the --json shape is stable.
+	Priority int `json:"priority"`
 }
 
 // StatusRequest carries the caller's session id so the daemon can return
@@ -317,6 +320,9 @@ type SendRequest struct {
 	// envelope fields.
 	InReplyTo    string `json:"in_reply_to,omitempty"`
 	AckRequested bool   `json:"ack_requested,omitempty"`
+	// Priority mirrors the envelope field: 1=high 2=medium 3=low,
+	// 0/omitted = unset. Validated to {0,1,2,3} in handleSend.
+	Priority int `json:"priority,omitempty"`
 	// Session keys the per-session current-source fallback when neither
 	// Handle nor PPZ_CURRENT_HANDLE is set.
 	Session string `json:"session,omitempty"`

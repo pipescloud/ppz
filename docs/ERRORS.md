@@ -31,6 +31,7 @@ error codes, and HTTP error response codes all derive from it.
 | 21 | `E_PIPE_TAKEN` | pipe with this name already exists on this source | 409 |
 | 22 | `E_PIPE_NOT_FOUND` | no pipe with this name on this source | 404 |
 | 23 | `E_INVALID_SUBJECT` | `--subject` value violates a reserved-prefix rule (the `ack:` prefix is daemon-internal) | 400 |
+| 27 | `E_INVALID_PRIORITY` | `--priority` value outside `1\|high`, `2\|medium\|med`, `3\|low` (0 = flag omitted; not passable explicitly) | 400 |
 
 Exit codes 21 and 22 are reserved here for the user-creatable-pipes feature
 that lands in a later phase; nothing in the current code path returns them
@@ -60,3 +61,4 @@ entity name available) keep the static message.
 | `E_PIPE_TAKEN` | `pipe '<name>' already exists on source '<handle>'` |
 | `E_PIPE_NOT_FOUND` | `pipe '<name>' not found on source '<handle>'` |
 | `E_INVALID_SUBJECT` | `invalid subject; the 'ack:' prefix is reserved for system-emitted protocol messages` |
+| `E_INVALID_PRIORITY` | `invalid priority; use 1|high, 2|medium, or 3|low` |

@@ -96,6 +96,11 @@ Without `PPZ_SESSION`, plain `ppz send <handle> <payload>` still works for
 delivery but lands with empty `sender` attribution; `--request-ack` (which
 requires a current handle on the publish side) will reject.
 
+Urgent sends can jump a busy recipient's queue: `ppz send beta "stop" \
+--priority high` delivers ahead of medium/low messages in the recipient's
+next inbox drain (FIFO within a tier; see `ppz help send` and
+[`docs/WIRE.md`](docs/WIRE.md) §8 for the ordering rules).
+
 ## Docs
 
 - [`docs/AUTH-V2.md`](docs/AUTH-V2.md) — auth design (GitHub OAuth + per-org NATS account JWTs)

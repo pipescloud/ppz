@@ -231,13 +231,14 @@ where <body> is "[subject] payload" for user subjects, "ack:read → <id8>" for 
   --raw     write payload bytes verbatim with no separator (byte-faithful; best for forensics and replay).
   --json    emit each message's full envelope as a JSON line.`,
 
-	"send": `usage: ppz send TGT PAYLOAD [--subject S] [--in-reply-to ID] [--request-ack]
+	"send": `usage: ppz send TGT PAYLOAD [--subject S] [--in-reply-to ID] [--request-ack] [--priority P]
 
 Publish PAYLOAD to <handle>.<pipe>; a bare handle targets <handle>.inbox. The success line goes to STDERR (since v0.25 — scripts redirecting stdout no longer swallow it); exit 0 means delivery was confirmed.
 
   --subject S        envelope-level header. The 'ack:' prefix is reserved for system messages.
   --in-reply-to ID   thread / reply linkage to a prior message id.
-  --request-ack      the receiver's daemon emits an 'ack:read' back to YOUR inbox when their cursor advances past your message (best-effort, non-blocking). See 'ppz help acks'.`,
+  --request-ack      the receiver's daemon emits an 'ack:read' back to YOUR inbox when their cursor advances past your message (best-effort, non-blocking). See 'ppz help acks'.
+  --priority P       delivery-order hint: 1|high, 2|medium, 3|low. The recipient's inbox drain delivers higher tiers first (FIFO within a tier); omitted = medium. Inert on stdout/stdin/stdctrl/custom pipes and --tail live streams.`,
 
 	"reread": `usage: ppz reread TGT [-l N --skip N --since DUR --json --tty --raw --bare]
 

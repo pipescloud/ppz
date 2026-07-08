@@ -53,3 +53,34 @@ func TestBuildBroadcastEnvelope_NoAckByDefault(t *testing.T) {
 		t.Errorf("InReplyTo should default to empty, got %q", env.InReplyTo)
 	}
 }
+
+// Priority plumbs through from the request; unset stays 0 (no default
+// stamped at send time — legacy, ack, and batch envelopes must all
+// look identical on the wire).
+func TestBuildBroadcastEnvelope_PlumbsPriority(t *testing.T) {
+	env := buildBroadcastEnvelope(cliproto.SendRequest{Payload: "p", Priority: 1}, "alpha", time.Now())
+	if env.Priority != 1 {
+		t.Errorf("Priority = %d, want 1 from SendRequest", env.Priority)
+	}
+	unset := buildBroadcastEnvelope(cliproto.SendRequest{Payload: "p"}, "alpha", time.Now())
+	if unset.Priority != 0 {
+		t.Errorf("Priority = %d, want 0 (unset) when the request carries none", unset.Priority)
+	}
+}
+
+// validSendPriority is the IPC trust-boundary rule in handleSend: {0,1,2,3}
+// only. The CLI rejects bad values before IPC (belt), so this pure helper
+// is the only way to test the daemon check — any raw IPC client (custom
+// scripts, harness adapters) hits it.
+func TestValidSendPriority(t *testing.T) {
+	for _, ok := range []int{0, 1, 2, 3} {
+		if !validSendPriority(ok) {
+			t.Errorf("validSendPriority(%d) = false, want true", ok)
+		}
+	}
+	for _, bad := range []int{-5, -1, 4, 7, 99} {
+		if validSendPriority(bad) {
+			t.Errorf("validSendPriority(%d) = true, want false", bad)
+		}
+	}
+}

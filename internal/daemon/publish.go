@@ -121,7 +121,16 @@ func buildBroadcastEnvelope(req cliproto.SendRequest, sender string, now time.Ti
 	env := envelope.New(sender, req.MsgSubject, req.Payload, now)
 	env.InReplyTo = req.InReplyTo
 	env.AckRequested = req.AckRequested
+	env.Priority = req.Priority
 	return env
+}
+
+// validSendPriority is the IPC trust-boundary rule for SendRequest.Priority:
+// {0,1,2,3} only (0 = unset). Kept pure so it's testable without the IPC
+// plumbing — the CLI rejects bad values before they reach the socket, so a
+// handler-level test can never exercise this path.
+func validSendPriority(p int) bool {
+	return p >= 0 && p <= cliproto.PriorityLow
 }
 
 // publishEnvelope is the in-process helper for daemon-internal envelope

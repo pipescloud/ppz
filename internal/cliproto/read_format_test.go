@@ -339,3 +339,89 @@ func TestFormatReadMessage_NonInteractiveUnwrappedAndUncoloured(t *testing.T) {
 		t.Errorf("non-interactive body altered\n got: %q\nwant: %q", body, original)
 	}
 }
+
+// v0.51.0 priority badge: explicit high/low priorities prepend `P1 ` /
+// `P3 ` to the body so a human scanning the tabular default sees them.
+// Unset (0) and medium (2) render exactly as before — that invariant is
+// what keeps every pre-priority golden fixture byte-identical.
+//
+// The badge is advisory and human-only: it shares the text column with
+// sender-controlled payload (a payload could itself start with "P1 "),
+// so agents must trust the structured `priority` field via --json, never
+// the inline text. --json / --raw / --bare / --tty never see the badge —
+// they bypass bodyForRow entirely (see the render switch in cli/read.go).
+func TestFormatReadMessage_PriorityBadgeHighAndLow(t *testing.T) {
+	loc := time.FixedZone("test", 0)
+
+	high := mkMsg("aa", "foo", "", "drop everything")
+	high.Priority = 1
+	var b bytes.Buffer
+	FormatReadMessage(&b, high, loc, 0, false)
+	if !strings.HasSuffix(b.String(), "  P1 drop everything\n") {
+		t.Errorf("high-priority row should carry P1 badge, got %q", b.String())
+	}
+
+	low := mkMsg("aa", "foo", "", "whenever")
+	low.Priority = 3
+	b.Reset()
+	FormatReadMessage(&b, low, loc, 0, false)
+	if !strings.HasSuffix(b.String(), "  P3 whenever\n") {
+		t.Errorf("low-priority row should carry P3 badge, got %q", b.String())
+	}
+}
+
+// Badge precedes the [subject] block: `P1 [subject] payload`.
+func TestFormatReadMessage_PriorityBadgeBeforeSubject(t *testing.T) {
+	loc := time.FixedZone("test", 0)
+	m := mkMsg("aa", "foo", "status update", "step 1 done")
+	m.Priority = 1
+	var b bytes.Buffer
+	FormatReadMessage(&b, m, loc, 0, false)
+	if !strings.HasSuffix(b.String(), "  P1 [status update] step 1 done\n") {
+		t.Errorf("badge should precede subject block, got %q", b.String())
+	}
+}
+
+// Unset (0) and explicit medium (2) render byte-identically to a
+// pre-priority row — no badge.
+func TestFormatReadMessage_NoBadgeForUnsetAndMedium(t *testing.T) {
+	loc := time.FixedZone("test", 0)
+	want := "14:23:01  foo           Hello, how are you?\n"
+	for _, p := range []int{0, 2} {
+		m := mkMsg("11111111-2222-3333-4444-555566667777", "foo", "", "Hello, how are you?")
+		m.Priority = p
+		var b bytes.Buffer
+		FormatReadMessage(&b, m, loc, 0, false)
+		if got := b.String(); got != want {
+			t.Errorf("priority %d row\n got: %q\nwant: %q (must be byte-identical to pre-priority output)", p, got, want)
+		}
+	}
+}
+
+// ack:* system rows never carry the badge, whatever the envelope says.
+func TestFormatReadMessage_NoBadgeOnAckRows(t *testing.T) {
+	loc := time.FixedZone("test", 0)
+	m := mkMsg("11111111-2222-3333-4444-555566667777-8899", "miner-test", "ack:read", "")
+	m.Priority = 1
+	var b bytes.Buffer
+	FormatReadMessage(&b, m, loc, 0, false)
+	if strings.Contains(b.String(), "P1") {
+		t.Errorf("ack row must not carry a priority badge: %q", b.String())
+	}
+}
+
+// Garbage priorities clamp to medium everywhere — including the badge,
+// which must not render "P99".
+func TestFormatReadMessage_NoBadgeForGarbagePriority(t *testing.T) {
+	loc := time.FixedZone("test", 0)
+	m := mkMsg("aa", "foo", "", "hello")
+	m.Priority = 99
+	var b bytes.Buffer
+	FormatReadMessage(&b, m, loc, 0, false)
+	if strings.Contains(b.String(), "P99") || strings.Contains(b.String(), "P9") {
+		t.Errorf("garbage priority leaked into the badge: %q", b.String())
+	}
+	if !strings.HasSuffix(b.String(), "  hello\n") {
+		t.Errorf("garbage priority should render as plain medium row, got %q", b.String())
+	}
+}

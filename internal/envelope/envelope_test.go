@@ -187,6 +187,72 @@ func TestUnmarshal_V25RoundtripWithReplyAndAck(t *testing.T) {
 	}
 }
 
+// v0.51.0: envelope grows an always-serialised `priority` field:
+// 1=high 2=medium 3=low; 0 = unset (legacy / sender didn't ask), which
+// readers treat as medium. Same wire-shape rule as every other field —
+// always serialised, even when zero.
+func TestNew_DefaultsPriorityToUnset(t *testing.T) {
+	m := New("alpha", "", "hi", time.Now())
+	if m.Priority != 0 {
+		t.Fatalf("Priority default = %d, want 0 (unset)", m.Priority)
+	}
+}
+
+func TestMarshal_AlwaysIncludesPriority(t *testing.T) {
+	m := New("alpha", "", "hi", time.Now())
+	b, _ := m.Marshal()
+	if !strings.Contains(string(b), `"priority":0`) {
+		t.Fatalf("unset priority must still appear on the wire: %s", b)
+	}
+	m2 := New("alpha", "", "hi", time.Now())
+	m2.Priority = 1
+	b2, _ := m2.Marshal()
+	if !strings.Contains(string(b2), `"priority":1`) {
+		t.Fatalf("populated priority missing from wire: %s", b2)
+	}
+}
+
+// Old retained messages (pre-priority) lack the field. They must parse
+// cleanly with Priority zero-valued (unset).
+func TestUnmarshal_LegacyPrePriorityEnvelopeParsesCleanly(t *testing.T) {
+	legacy := []byte(`{"id":"abc","sender":"alpha","subject":"","payload":"hi","created_at":"2026-05-07T12:00:00Z","in_reply_to":"","ack_requested":false}`)
+	m, err := Unmarshal(legacy)
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if m.Sender != "alpha" || m.Payload != "hi" {
+		t.Fatalf("legacy envelope decoded wrong: %+v", m)
+	}
+	if m.Priority != 0 {
+		t.Fatalf("Priority from legacy envelope = %d, want 0", m.Priority)
+	}
+}
+
+// Round-trip preserves priority when populated.
+func TestUnmarshal_PriorityRoundtrip(t *testing.T) {
+	m := New("alpha", "", "urgent payload", time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC))
+	m.Priority = 1
+	b, err := m.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Unmarshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Priority != 1 {
+		t.Fatalf("Priority roundtrip = %d, want 1", got.Priority)
+	}
+	// Cross-check raw wire key.
+	var raw map[string]any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw["priority"] != float64(1) {
+		t.Fatalf("wire priority = %v, want 1", raw["priority"])
+	}
+}
+
 func TestUnmarshal_NewShapeRoundtrip(t *testing.T) {
 	m := New("alpha", "ack:read", "hi", time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC))
 	b, err := m.Marshal()

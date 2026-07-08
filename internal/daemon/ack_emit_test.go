@@ -112,6 +112,25 @@ func TestBuildAckEnvelope(t *testing.T) {
 	if ack.ID == "" {
 		t.Errorf("ack.ID empty — must be a fresh uuid")
 	}
+	// System acks never jump the queue: priority stays 0 (unset ≡ medium)
+	// even when the original message was high-priority. Pinned so a future
+	// refactor can't silently make acks inherit priority.
+	if ack.Priority != 0 {
+		t.Errorf("ack.Priority = %d, want 0 (acks are metadata, not prioritised)", ack.Priority)
+	}
+}
+
+func TestBuildAckEnvelope_IgnoresOriginalPriority(t *testing.T) {
+	original := cliproto.ReadMessage{
+		ID:           "11111111-2222-3333-4444-555566667777",
+		Sender:       "miner-test",
+		AckRequested: true,
+		Priority:     1,
+	}
+	ack := buildAckEnvelope(original, "sheriff", time.Now())
+	if ack.Priority != 0 {
+		t.Errorf("ack.Priority = %d, want 0 even for a high-priority original", ack.Priority)
+	}
 }
 
 // Reader's self="" is NOT a guard — the ack still publishes (with empty

@@ -51,6 +51,12 @@ const (
 	// failure, never silent success.
 	EDeliveryUnconfirmed Code = "E_DELIVERY_UNCONFIRMED"
 
+	// EInvalidPriority is returned when a caller (CLI flag parser or IPC
+	// client) sets a priority outside {0,1,2,3} on send. 0 means unset;
+	// 1=high 2=medium 3=low. Read-side EffectivePriority still clamps
+	// whatever reaches the wire, so this is belt to that suspenders.
+	EInvalidPriority Code = "E_INVALID_PRIORITY"
+
 	// ENameTaken — Phase 1.5.1 first-wins collision rule. Within a
 	// manifold, user-typed names share a namespace across source
 	// handles and uncollared pipe names; a source at manifold M also
@@ -100,6 +106,8 @@ func ExitCode(c Code) int {
 		return 25
 	case EDaemonTimeout:
 		return 26
+	case EInvalidPriority:
+		return 27
 	}
 	return 1
 }
@@ -154,6 +162,8 @@ func Message(c Code) string {
 		return "delivery unconfirmed; the message was published but the server did not acknowledge it in time — it may or may not have landed; retry if your workflow tolerates a possible duplicate"
 	case EDaemonTimeout:
 		return "daemon did not respond in time; it may be busy or stuck (e.g. mid-restart) — retry, or run 'ppz daemon restart'"
+	case EInvalidPriority:
+		return "invalid priority; use 1|high, 2|medium, or 3|low"
 	}
 	return "unknown error"
 }
@@ -289,6 +299,8 @@ func HTTPStatus(c Code) int {
 	case EPipeNotFound:
 		return 404
 	case EInvalidSubject:
+		return 400
+	case EInvalidPriority:
 		return 400
 	case EInvalidManifold:
 		return 400

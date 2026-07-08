@@ -36,6 +36,12 @@ const MaxBytes = 65536 // 64 KiB cap on the encoded envelope.
 // with this bit set, the recipient's daemon publishes an `ack:read`
 // envelope back to the sender's `<sender>.inbox`. Best-effort, non-
 // blocking: a failed ack publish does not block cursor advancement.
+//
+// Priority is the sender's delivery-order hint: 1=high, 2=medium,
+// 3=low. 0 means unset (legacy envelopes, senders that didn't ask,
+// daemon-emitted acks, batch frames) and readers treat it as medium.
+// Only inbox-shaped drains sort on it; byte-faithful pipes ignore it.
+// Always serialised, even when zero.
 type Message struct {
 	ID           string    `json:"id"`
 	Sender       string    `json:"sender"`
@@ -44,6 +50,7 @@ type Message struct {
 	CreatedAt    time.Time `json:"created_at"`
 	InReplyTo    string    `json:"in_reply_to"`
 	AckRequested bool      `json:"ack_requested"`
+	Priority     int       `json:"priority"`
 }
 
 func New(sender, subject, payload string, now time.Time) Message {

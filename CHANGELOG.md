@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — message priority
+
+`ppz send --priority 1|high, 2|medium, 3|low` stamps a delivery-order hint
+on the envelope (new always-serialised `priority` field; `0` = unset ≡
+medium, so legacy messages and priority-free meshes behave byte-identically).
+Recipients' inbox/broadcast drains deliver higher tiers first —
+`sort.SliceStable`, so FIFO is preserved within a tier. Scope rules:
+
+- Sorting applies to the retained batch of a single `read`/`reread`/
+  `subs read` drain, AFTER `--skip`/`-l` trimming (those windows keep their
+  arrival-order meaning). A reader draining one message at a time sees no
+  reordering.
+- `--tail` stays fully arrival-ordered (backlog + live) — one invocation,
+  one ordering discipline. Byte-faithful pipes (stdout/stdin/stdctrl/custom)
+  are never reordered.
+- Cursor advance and `ack:read` emission are keyed off stream sequence —
+  unaffected by delivery order. Auto-emitted acks carry priority 0.
+- Tabular read prepends an advisory `P1 `/`P3 ` badge for explicit high/low
+  only. The badge is forgeable by payload text; agents should trust the
+  structured `priority` field (`--json`), never the inline text.
+- Invalid values reject with the new `E_INVALID_PRIORITY` (exit 27) at the
+  CLI and at the daemon IPC trust boundary; readers additionally clamp
+  out-of-range wire values to medium.
+
 ## Unreleased — remove `ppz terminal create`
 
 **Breaking (CLI surface).** Removed the `ppz terminal create HANDLE` subverb.

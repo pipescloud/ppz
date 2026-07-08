@@ -76,7 +76,8 @@ Published payload on every `<org_id>.<handle>.<pipe>`:
   "payload": "<utf-8 string>",
   "created_at": "<rfc3339>",
   "in_reply_to": "<uuid-or-empty>",
-  "ack_requested": false
+  "ack_requested": false,
+  "priority": 0
 }
 ```
 
@@ -110,13 +111,25 @@ Constraints:
   are indistinguishable). Senders requiring strict guarantees should
   layer their own re-send-on-timeout pattern. The auto-emitted
   `ack:read` envelope carries `ack_requested: false` (loop guard).
+- `priority` (v0.51.0) is the sender's delivery-order hint: `1`=high,
+  `2`=medium, `3`=low. `0` means unset (the sender didn't pass
+  `--priority`; also daemon-emitted acks and terminal-share batch
+  frames) and readers treat it as medium. Senders publish only
+  `{0,1,2,3}` — `ppz send` validates the flag and `handleSend` re-checks
+  at the IPC trust boundary (`E_INVALID_PRIORITY`); readers additionally
+  clamp any out-of-range value to medium at sort time, so an envelope
+  written straight onto NATS with a garbage priority cannot mint a
+  super-priority tier. Priority affects only how a recipient's drain
+  *orders* messages (§8 `ppz read`); it never affects storage, cursors,
+  or ack emission.
 - All envelope fields are **always serialised**, even when empty / false,
   so receivers see a stable wire shape per release. Marshalling does
   NOT use `omitempty` for any of `sender` / `subject` / `in_reply_to` /
-  `ack_requested`.
+  `ack_requested` / `priority`.
 - Pre-v0.23.0 envelopes carried a `handle` field equal to the destination
   and no `sender` / `subject`. Pre-v0.25.0 envelopes additionally lack
-  `in_reply_to` / `ack_requested`. Decoders MUST silently drop unknown
+  `in_reply_to` / `ack_requested`. Pre-v0.51.0 envelopes lack
+  `priority` (zero-valued on decode = unset ≡ medium). Decoders MUST silently drop unknown
   fields (`encoding/json` does this by default — do not opt into
   `DisallowUnknownFields` on envelope payloads), so retained legacy
   messages parse cleanly under the new shape with the missing fields
@@ -323,7 +336,7 @@ created handle=<handle> subject=<account_id>.<handle>.inbox
 handle=<handle>
 ```
 
-### `ppz send HANDLE[.PIPE] "PAYLOAD" [--subject S] [--in-reply-to ID] [--request-ack]`
+### `ppz send HANDLE[.PIPE] "PAYLOAD" [--subject S] [--in-reply-to ID] [--request-ack] [--priority P]`
 
 Bare handle defaults to `<handle>.inbox`. Success line goes to **stderr**
 (not stdout) since v0.25.0 — scripts redirecting stdout previously
@@ -352,6 +365,15 @@ Flags (v0.25.0):
   message. **Best-effort, non-blocking.** Requires a non-empty current
   source (preflighted at the CLI; emits `E_NO_CURRENT_SOURCE` if absent).
 
+Flag (v0.51.0):
+- `--priority P` — delivery-order hint: `1|high`, `2|medium|med`,
+  `3|low` (aliases case-insensitive). Omitted = unset (`priority: 0`
+  on the wire, treated as medium by readers). Any other value is
+  rejected with `E_INVALID_PRIORITY` at the CLI AND at the daemon's
+  IPC trust boundary. Only affects how the recipient's inbox/broadcast
+  drain orders messages (see `ppz read` below); inert on byte-faithful
+  pipes (stdout/stdin/stdctrl/custom).
+
 The `--request-ack` flag triggers a read receipt — distinct from the
 delivery acknowledgment the success line itself already provides. The
 success line is written *after* the daemon's NATS PubAck confirms the
@@ -367,9 +389,38 @@ Default depends on the pipe (since v0.23.0):
   ```
   `<body>` is `[subject] payload` when subject is non-empty and not `ack:*`,
   or `<subject> → <last-8-hex-of-id>` for `ack:*` system subjects, or
-  `payload` when no subject.
+  `payload` when no subject. Explicit high/low priorities prepend an
+  advisory `P1 ` / `P3 ` badge to `<body>` (never for `ack:*` rows;
+  unset/medium rows are byte-identical to pre-v0.51.0 output). The badge
+  shares the text column with sender-controlled payload and is therefore
+  forgeable — agents must trust the structured `priority` field
+  (`--json`) or delivery order, never the inline text.
 - All other pipes (stdout / stdin / stdctrl / user-named custom) → bare
   `evt.Message.Payload` followed by `\n` per message (byte-faithful).
+
+Ordering (v0.51.0): for inbox/broadcast-shaped reads (including
+uncollared pipes, which share the tabular default), the drained batch is
+delivered **priority-first** — `EffectivePriority` ascending (1 high →
+3 low; unset/garbage clamp to medium), stable within a tier so FIFO
+stream-sequence order is preserved. A mesh where nobody sets a priority
+is byte-identical to pre-v0.51.0 behaviour. Semantics and limits:
+- The sort happens AFTER `--skip`/`-l` trimming — those windows keep
+  their arrival-order meaning; priority governs order *within* the
+  delivered window only.
+- Priority reorders unread messages **within a single read drain**. A
+  recipient reading one message at a time (e.g. the `subs wait` →
+  `read` wake-per-message loop) accumulates no backlog and sees no
+  reordering — priority helps a *busy* reader who drains several
+  messages at once.
+- `--tail` is fully arrival-ordered — backlog AND live. Live messages
+  stream one-at-a-time and cannot be reordered, so the drained backlog
+  is deliberately left unsorted too: one invocation, one ordering
+  discipline.
+- Byte-faithful pipes (stdout / stdin / stdctrl / custom) are NEVER
+  reordered, even if a sender stamped a priority on a frame.
+- Cursor advance and `ack:read` emission key off JetStream stream
+  sequence, not delivery order — priority never changes which messages
+  count as read or acked.
 
 Flags:
 - `--bare` forces the legacy payload-only output for any pipe — script-stable
@@ -377,6 +428,14 @@ Flags:
   `--tty`, `--raw`.
 - `--json` prints the full envelope JSON, one per line.
 - `--tty` / `--raw` unchanged — see cmdRead doc.
+
+`--bare` / `--raw` / `--json` are *output-format* flags, not *ordering*
+flags: on an inbox/broadcast read they select how each message is
+rendered but the batch is still priority-ordered (§ordering above). Only
+the pipe shape (byte-faithful pipes) and `--tail` suppress reordering —
+so `ppz read inbox --bare` still delivers high-priority messages first.
+Reach for a byte-faithful pipe, not `--bare`, when you need strict
+arrival order on a message pipe.
 
 (`reread` mirrors `read`'s output flags including `--bare`.)
 

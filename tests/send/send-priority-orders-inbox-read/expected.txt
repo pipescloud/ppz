@@ -1,0 +1,9 @@
+--- read: high first, then FIFO mediums ---
+HH:MM:SS  chat          P1 urgent
+HH:MM:SS  chat          first
+HH:MM:SS  chat          second
+--- reread: same priority order (shared daemon path) ---
+HH:MM:SS  chat          P1 urgent
+HH:MM:SS  chat          first
+HH:MM:SS  chat          second
+exit=0
