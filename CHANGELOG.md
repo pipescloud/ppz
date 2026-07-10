@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased — web chat console (`ppz chat` for the browser)
+
+**New GUI surface.** The ppz-server web UI gains a chat console at
+`/orgs/<slug>/chat` — the browser port of the `ppz chat` TUI. Same three
+roster sections (**Agents** = pty sources, **Inboxes** = message sources,
+**Pipes** = uncollared rooms); selecting a row opens a live chat pane and a
+composer. A "Chat" link sits alongside the org page's Pipes/Users/API-keys
+tabs.
+
+- **One stream per window.** The server has direct JetStream access, so a
+  window is a straight follow of its stream — agent/inbox windows follow
+  `<handle>.inbox`, pipe windows follow the uncollared pipe. Our own posts
+  echo back through the follow, so there's no optimistic-echo/rollback dance
+  the TUI needs; JetStream is the durable record.
+- **Live tail over WebSocket.** `GET …/chat/ws?kind=&target=` replays a
+  window's retained history then follows new publishes as JSON frames — the
+  browser's single source for both, so the backlog crosses the wire once.
+  Session-gated **and membership-gated** (unlike the read-only terminal WS).
+- **Send from the browser.** `POST …/chat/send` publishes with the viewer's
+  username as the envelope sender; messages the viewer sent render as `you`.
+- **Cross-tenant guard.** All chat routes require org membership (not just a
+  valid session), so a send can't inject into another org's streams; a
+  non-member gets 404.
+- **Agent liveness** dots (online / stale / offline) are read from each pty
+  source's `heartbeat` stream using the same thresholds as `ppz who`.
+- Snapshot endpoint `GET …/chat/messages?kind=&target=` returns a window's
+  buffered history as JSON (for scripts / non-browser clients).
+- *Not yet:* per-window unread badges (needs a per-user server-side read
+  cursor); DM reply-fanout (the console shows a target's inbox directly rather
+  than reconstructing a participant's stitched view); addressing a source under
+  a non-root manifold (the console keys sources by bare handle, matching
+  `ppz source create HANDLE` and the TUI's handle-keyed DMs).
+
 ## Unreleased — read flood cap (head-N paging)
 
 **Behaviour change (CLI).** `ppz read` and `ppz subs read` now deliver at most

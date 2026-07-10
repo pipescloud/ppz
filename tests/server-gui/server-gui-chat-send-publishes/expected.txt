@@ -1,0 +1,2 @@
+foo|hello-web|true
+exit=0

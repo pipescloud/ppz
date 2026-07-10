@@ -1,0 +1,4 @@
+agent:botty
+inbox:ops
+pipe:general
+exit=0

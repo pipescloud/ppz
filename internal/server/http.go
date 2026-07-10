@@ -104,6 +104,19 @@ func (s *Server) Routes() *http.ServeMux {
 	// "<manifold>.<name>" path the org pipes table surfaces; the
 	// handler splits on the last dot to recover manifold + leaf.
 	mux.HandleFunc("GET /orgs/{id}/pipes/{pipe}", s.requireSession(s.handleGUIUncollaredPipePage))
+	// Web `ppz chat` console — roster + live chat pane over the org's
+	// agents, inboxes and pipes. The page + snapshot + send are
+	// session-authed; the WS follows the terminal WS's (currently
+	// un-authed) precedent and is tightened in the same follow-up.
+	mux.HandleFunc("GET /orgs/{id}/chat", s.requireSession(s.handleGUIChatPage))
+	mux.HandleFunc("GET /orgs/{id}/chat/messages", s.requireSession(s.handleGUIChatMessages))
+	mux.HandleFunc("POST /orgs/{id}/chat/send", s.requireSession(s.handleGUIChatSend))
+	// Unlike the terminal WS (left un-authed as a punt), the chat WS is
+	// session-gated: the browser handshake carries the session cookie, so
+	// the follow is access-controlled AND the server can stamp `you`
+	// correctly from the viewer's identity. The client also derives `you`
+	// from data-me, so a future un-authed transport still labels correctly.
+	mux.HandleFunc("GET /orgs/{id}/chat/ws", s.requireSession(s.handleGUIChatWS))
 	mux.HandleFunc("GET /orgs/{id}/sources/{handle}/terminal", s.requireSession(s.handleGUITerminalPage))
 	// WebSocket for terminal stream — leaving un-auth'd for now (RED phase
 	// surfaced this; tighten to session-or-key auth in a follow-up).

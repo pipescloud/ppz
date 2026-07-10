@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ppz — {{.Org.Name}} / chat</title>
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <main class="wide">
+    <header class="brand">
+      <div>
+        <h1><a href="/dashboard">ppz</a> / <a href="/orgs/{{.Org.Name}}">{{.Org.Name}}</a> / chat</h1>
+        <div class="crumbs">live roster + chat over this org's agents, inboxes and pipes</div>
+      </div>
+    </header>
+
+    <div class="chat-shell" data-org="{{.Org.Name}}" data-me="{{.Me}}">
+      <aside class="chat-roster">
+        <section class="chat-section" data-section="agents">
+          <h2>Agents</h2>
+          {{if .Roster.Agents}}
+          <ul class="chat-list">
+            {{range .Roster.Agents}}
+            <li>
+              <button type="button" class="chat-entry"
+                      data-chat-entry="agent:{{.Target}}"
+                      data-chat-kind="source"
+                      data-chat-target="{{.Target}}"
+                      data-chat-status="{{.Status}}"
+                      data-chat-state="{{.State}}">
+                <span class="chat-dot chat-dot-{{.Status}}" aria-hidden="true"></span>
+                <span class="chat-entry-label">{{.Label}}</span>
+                {{if .State}}<span class="chat-entry-state">{{.State}}</span>{{end}}
+              </button>
+            </li>
+            {{end}}
+          </ul>
+          {{else}}
+          <p class="empty">No agents online.</p>
+          {{end}}
+        </section>
+
+        <section class="chat-section" data-section="inboxes">
+          <h2>Inboxes</h2>
+          {{if .Roster.Inboxes}}
+          <ul class="chat-list">
+            {{range .Roster.Inboxes}}
+            <li>
+              <button type="button" class="chat-entry"
+                      data-chat-entry="inbox:{{.Target}}"
+                      data-chat-kind="source"
+                      data-chat-target="{{.Target}}">
+                <span class="chat-glyph" aria-hidden="true">@</span>
+                <span class="chat-entry-label">{{.Label}}</span>
+              </button>
+            </li>
+            {{end}}
+          </ul>
+          {{else}}
+          <p class="empty">No message inboxes.</p>
+          {{end}}
+        </section>
+
+        <section class="chat-section" data-section="pipes">
+          <h2>Pipes</h2>
+          {{if .Roster.Pipes}}
+          <ul class="chat-list">
+            {{range .Roster.Pipes}}
+            <li>
+              <button type="button" class="chat-entry"
+                      data-chat-entry="pipe:{{.Target}}"
+                      data-chat-kind="pipe"
+                      data-chat-target="{{.Target}}">
+                <span class="chat-glyph" aria-hidden="true">#</span>
+                <span class="chat-entry-label">{{.Label}}</span>
+                {{if .Namespace}}<span class="chat-entry-ns">{{.Namespace}}</span>{{end}}
+              </button>
+            </li>
+            {{end}}
+          </ul>
+          {{else}}
+          <p class="empty">No pipes. Add one with <code>ppz pipe create &lt;name&gt;</code>.</p>
+          {{end}}
+        </section>
+      </aside>
+
+      <section class="chat-main">
+        <div class="chat-title" id="chat-title">
+          <span class="empty">Select an agent, inbox or pipe to start chatting.</span>
+        </div>
+        <div class="chat-log" id="chat-log" data-empty="1"></div>
+        <form class="chat-composer" id="chat-composer" hidden>
+          <input type="text" id="chat-input" name="message" autocomplete="off"
+                 placeholder="message…" maxlength="2000" disabled>
+          <button type="submit" id="chat-send" disabled>Send</button>
+        </form>
+        <div class="chat-status" id="chat-status" hidden></div>
+      </section>
+    </div>
+  </main>
+
+  <script src="/assets/chat.js"></script>
+</body>
+</html>

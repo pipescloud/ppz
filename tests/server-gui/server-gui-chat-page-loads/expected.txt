@@ -1,0 +1,9 @@
+--- sections ---
+data-section="agents"
+data-section="inboxes"
+data-section="pipes"
+--- me ---
+data-me="foo"
+--- chat.js ---
+/assets/chat.js
+exit=0
