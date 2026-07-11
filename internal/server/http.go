@@ -112,6 +112,7 @@ func (s *Server) Routes() *http.ServeMux {
 	// surface into the org's streams.
 	mux.HandleFunc("GET /orgs/{id}/chat", s.requireSession(s.handleGUIChatPage))
 	mux.HandleFunc("GET /orgs/{id}/chat/messages", s.requireSession(s.handleGUIChatMessages))
+	mux.HandleFunc("GET /orgs/{id}/chat/roster", s.requireSession(s.handleGUIChatRoster))
 	mux.HandleFunc("POST /orgs/{id}/chat/send", s.requireSession(s.handleGUIChatSend))
 	// Add/remove uncollared pipes from the console (TUI `a` / `-` parity).
 	mux.HandleFunc("POST /orgs/{id}/chat/pipes", s.requireSession(s.handleGUIChatAddPipe))

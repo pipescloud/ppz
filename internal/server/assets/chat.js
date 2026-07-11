@@ -259,4 +259,79 @@
       btn.disabled = false;
     });
   });
+
+  // ── Live roster refresh (TUI `who`-poll parity) ───────────────────────
+  // Re-poll agent liveness + counts every 2.5s and patch the existing rows
+  // in place (dots, state label, header title, top-bar counts). Row add/
+  // remove still needs a reload — this only keeps liveness fresh, which is
+  // what actually changes second-to-second.
+  const countsEl = document.querySelector(".chat-counts");
+  async function pollRoster() {
+    let data;
+    try {
+      const res = await fetch("/orgs/" + encodeURIComponent(org) + "/chat/roster",
+        { headers: { Accept: "application/json" } });
+      if (!res.ok) return;
+      data = await res.json();
+    } catch (_) { return; }
+
+    const byKey = {};
+    shell.querySelectorAll(".chat-entry").forEach((e) => {
+      byKey[e.getAttribute("data-chat-entry")] = e;
+    });
+    (data.agents || []).forEach((a) => {
+      const el = byKey["agent:" + a.target];
+      if (!el) return;
+      el.setAttribute("data-chat-status", a.status);
+      el.setAttribute("data-chat-state", a.state || "");
+      el.setAttribute("data-chat-title", a.title);
+      const dot = el.querySelector(".chat-dot");
+      if (dot) dot.className = "chat-dot chat-dot-" + a.status;
+      let stateEl = el.querySelector(".chat-entry-state");
+      if (a.state) {
+        if (!stateEl) {
+          stateEl = document.createElement("span");
+          stateEl.className = "chat-entry-state";
+          el.appendChild(stateEl);
+        }
+        stateEl.textContent = a.state;
+      } else if (stateEl) {
+        stateEl.remove();
+      }
+      // Keep the open window's header title fresh too.
+      if (current && current.entryEl === el) titleEl.textContent = a.title;
+    });
+    if (countsEl && data.online != null) {
+      countsEl.textContent = data.online + " online · " +
+        (data.agents || []).length + " agents · " + (data.pipes || []).length + " pipes";
+    }
+  }
+  setInterval(pollRoster, 2500);
+
+  // ── Keyboard navigation (TUI parity: ↑/↓ · j/k move, enter open, esc back)
+  // Roster entries are native <button>s, so Enter activates the focused row
+  // (→ selectEntry) for free; we just move focus and handle Esc.
+  document.addEventListener("keydown", (ev) => {
+    const t = ev.target;
+    const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT");
+    if (ev.key === "Escape") {
+      if (typing && t === input) {
+        input.blur();
+        if (current) current.entryEl.focus();
+        ev.preventDefault();
+      }
+      return;
+    }
+    if (typing) return;
+    const down = ev.key === "ArrowDown" || ev.key === "j";
+    const up = ev.key === "ArrowUp" || ev.key === "k";
+    if (!down && !up) return;
+    const entries = Array.from(shell.querySelectorAll(".chat-entry"));
+    if (!entries.length) return;
+    const idx = entries.indexOf(document.activeElement);
+    let next = idx === -1 ? 0 : (down ? idx + 1 : idx - 1);
+    next = Math.max(0, Math.min(entries.length - 1, next));
+    entries[next].focus();
+    ev.preventDefault();
+  });
 })();

@@ -36,16 +36,17 @@ const (
 	chatKindPipe  chatEntryKind = "pipe"  // uncollared pipe: shared room
 )
 
-// chatEntry is one row in the roster.
+// chatEntry is one row in the roster. JSON tags feed the /chat/roster live
+// refresh (the browser re-polls dots/state/counts without a full reload).
 type chatEntry struct {
-	Kind      chatEntryKind
-	Target    string // handle (agent/inbox) or dotted "<manifold>.<name>" (pipe) — the URL/window key
-	Label     string // display text: handle for agents/inboxes, leaf name for pipes
-	Namespace string // manifold ("" = root); shown as a secondary label
-	Status    string // "online" | "stale" | "offline" for agents; "" otherwise
-	State     string // agent_state (idle/working/blocked) for agents; "" otherwise
-	HasStatus bool   // agents render a live status dot; inboxes/pipes don't
-	Title     string // chat-pane header text; parity with the TUI's tChatTitle
+	Kind      chatEntryKind `json:"kind"`
+	Target    string        `json:"target"`     // handle (agent/inbox) or dotted "<manifold>.<name>" (pipe) — the URL/window key
+	Label     string        `json:"label"`      // display text: handle for agents/inboxes, leaf name for pipes
+	Namespace string        `json:"namespace"`  // manifold ("" = root); shown as a secondary label
+	Status    string        `json:"status"`     // "online" | "stale" | "offline" for agents; "" otherwise
+	State     string        `json:"state"`      // agent_state (idle/working/blocked) for agents; "" otherwise
+	HasStatus bool          `json:"has_status"` // agents render a live status dot; inboxes/pipes don't
+	Title     string        `json:"title"`      // chat-pane header text; parity with the TUI's tChatTitle
 }
 
 // chatTitle reproduces the TUI's tChatTitle (internal/cli/tui.go) so the web

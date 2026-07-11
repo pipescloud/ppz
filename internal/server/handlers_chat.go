@@ -412,6 +412,31 @@ func (s *Server) handleGUIChatSend(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, chatView(env, req.As))
 }
 
+// handleGUIChatRoster returns the three-section roster as JSON so the browser
+// can re-poll agent liveness (dots/state) and the top-bar counts without a
+// full page reload — the web analog of the TUI's periodic `who` poll.
+//
+// Route: GET /orgs/{id}/chat/roster
+func (s *Server) handleGUIChatRoster(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := withTimeout(r)
+	defer cancel()
+	org, ok := s.resolveChatOrg(ctx, w, r)
+	if !ok {
+		return
+	}
+	roster, err := s.gatherChatRoster(ctx, org, time.Now())
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"agents":  roster.Agents,
+		"inboxes": roster.Inboxes,
+		"pipes":   roster.Pipes,
+		"online":  roster.OnlineCount(),
+	})
+}
+
 // chatAddPipeRequest is the POST body for creating a pipe from the console.
 type chatAddPipeRequest struct {
 	Name string `json:"name"`
