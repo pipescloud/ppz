@@ -178,11 +178,60 @@ func streamLastSeq(ctx context.Context, js jetstream.JetStream, name string) int
 	return int64(info.State.LastSeq)
 }
 
-// stampUnread fills each roster row's Unread from the viewer's read cursors:
-// unread = max(0, stream.LastSeq - last_read_seq). Cursors load in one query;
-// the per-window LastSeq reads fan out concurrently (like the liveness reads).
-// Best-effort — a cursor/JS failure yields no badges rather than a failed page.
-func (s *Server) stampUnread(ctx context.Context, org db.Account, userID uuid.UUID, roster chatRoster) chatRoster {
+// countAfter counts how many of seqs are strictly past cursor — the unread
+// tail of a DM once the per-conversation read position is applied.
+func countAfter(seqs []uint64, cursor int64) int {
+	n := 0
+	for _, s := range seqs {
+		if int64(s) > cursor {
+			n++
+		}
+	}
+	return n
+}
+
+// drainInboxBySender reads the acting handle's inbox (bounded) and buckets each
+// message's stream sequence by sender — the raw material for per-counterparty
+// DM unread. Missing stream => empty.
+func drainInboxBySender(ctx context.Context, js jetstream.JetStream, streamName string) map[string][]uint64 {
+	out := map[string][]uint64{}
+	if js == nil {
+		return out
+	}
+	stream, err := js.Stream(ctx, streamName)
+	if err != nil {
+		return out
+	}
+	info, err := stream.Info(ctx)
+	if err != nil || info.State.Msgs == 0 {
+		return out
+	}
+	for seq := chatReplayStart(info.State.FirstSeq, info.State.LastSeq, chatHistoryLimit); seq <= info.State.LastSeq; seq++ {
+		msg, gerr := stream.GetMsg(ctx, seq)
+		if gerr != nil {
+			continue
+		}
+		env, uerr := envelope.Unmarshal(msg.Data)
+		if uerr != nil {
+			continue
+		}
+		out[env.Sender] = append(out[env.Sender], seq)
+	}
+	return out
+}
+
+// stampUnread fills each roster row's Unread from the viewer's read cursors.
+//
+//   - Pipes (shared rooms): unread = max(0, pipe.LastSeq - cursor).
+//   - Source windows (DMs), acting as handle H: the counterparty's messages to
+//     me land in H.inbox, so unread = how many of H.inbox's messages from that
+//     counterparty are past this conversation's cursor. H.inbox is drained once
+//     and bucketed by sender. With no acting handle (god's-eye), a source falls
+//     back to its own-inbox growth.
+//
+// Cursors load in one query; pipe LastSeq reads fan out concurrently. Best-
+// effort — a cursor/JS failure yields no badges rather than a failed page.
+func (s *Server) stampUnread(ctx context.Context, org db.Account, userID uuid.UUID, acting string, roster chatRoster) chatRoster {
 	if userID == uuid.Nil {
 		return roster
 	}
@@ -194,29 +243,50 @@ func (s *Server) stampUnread(ctx context.Context, org db.Account, userID uuid.UU
 	if js == nil {
 		return roster
 	}
+
 	var wg sync.WaitGroup
-	stamp := func(entries []chatEntry, backendKind string) {
-		for i := range entries {
-			// Source windows (agents+inboxes) follow <handle>.inbox; pipe
-			// windows follow the uncollared stream. Cursor key is (backendKind,
-			// target) — the same key the mark-read endpoint writes.
-			var streamName string
-			if backendKind == "pipe" {
-				streamName = natsubj.BuildStreamName(org.ID, entries[i].Namespace, "", entries[i].Label)
-			} else {
-				streamName = natsubj.BuildStreamName(org.ID, entries[i].Namespace, entries[i].Target, "inbox")
-			}
-			cursor := cursors[db.ChatCursorKey(backendKind, entries[i].Target)]
-			wg.Add(1)
-			go func(i int, entries []chatEntry, streamName string, cursor int64) {
-				defer wg.Done()
-				entries[i].Unread = unreadCount(streamLastSeq(ctx, js, streamName), cursor)
-			}(i, entries, streamName, cursor)
-		}
+	// Pipes: own-stream growth past the cursor.
+	for i := range roster.Pipes {
+		streamName := natsubj.BuildStreamName(org.ID, roster.Pipes[i].Namespace, "", roster.Pipes[i].Label)
+		cursor := cursors[db.ChatCursorKey("pipe", "", roster.Pipes[i].Target)]
+		wg.Add(1)
+		go func(i int, streamName string, cursor int64) {
+			defer wg.Done()
+			roster.Pipes[i].Unread = unreadCount(streamLastSeq(ctx, js, streamName), cursor)
+		}(i, streamName, cursor)
 	}
-	stamp(roster.Agents, "source")
-	stamp(roster.Inboxes, "source")
-	stamp(roster.Pipes, "pipe")
+
+	// Source windows (agents+inboxes) = DMs.
+	if acting != "" {
+		hManifold := ""
+		if h, herr := db.GetSourceByHandle(ctx, s.Pool, org.ID, acting); herr == nil {
+			hManifold = h.Manifold
+		}
+		bySender := drainInboxBySender(ctx, js, natsubj.BuildStreamName(org.ID, hManifold, acting, "inbox"))
+		mark := func(entries []chatEntry) {
+			for i := range entries {
+				cursor := cursors[db.ChatCursorKey("source", acting, entries[i].Target)]
+				entries[i].Unread = countAfter(bySender[entries[i].Target], cursor)
+			}
+		}
+		mark(roster.Agents)
+		mark(roster.Inboxes)
+	} else {
+		// God's-eye fallback: a source's own-inbox growth.
+		stampOwn := func(entries []chatEntry) {
+			for i := range entries {
+				streamName := natsubj.BuildStreamName(org.ID, entries[i].Namespace, entries[i].Target, "inbox")
+				cursor := cursors[db.ChatCursorKey("source", "", entries[i].Target)]
+				wg.Add(1)
+				go func(i int, entries []chatEntry, streamName string, cursor int64) {
+					defer wg.Done()
+					entries[i].Unread = unreadCount(streamLastSeq(ctx, js, streamName), cursor)
+				}(i, entries, streamName, cursor)
+			}
+		}
+		stampOwn(roster.Agents)
+		stampOwn(roster.Inboxes)
+	}
 	wg.Wait()
 	return roster
 }
@@ -247,7 +317,7 @@ func (s *Server) handleGUIChatPage(w http.ResponseWriter, r *http.Request) {
 	}
 	acting := pickActingHandle(r.URL.Query().Get("as"), handles)
 	roster = roster.excludeHandle(acting)
-	roster = s.stampUnread(ctx, org, UserIDFromCtx(r.Context()), roster)
+	roster = s.stampUnread(ctx, org, UserIDFromCtx(r.Context()), acting, roster)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	data := s.base()
 	data["Org"] = org
@@ -579,8 +649,9 @@ func (s *Server) handleGUIChatRoster(w http.ResponseWriter, r *http.Request) {
 	}
 	// Scope to the acting identity the client is polling as (?as=), same as the
 	// page render, so a live refresh doesn't re-introduce the self row.
-	roster = roster.excludeHandle(r.URL.Query().Get("as"))
-	roster = s.stampUnread(ctx, org, UserIDFromCtx(r.Context()), roster)
+	acting := r.URL.Query().Get("as")
+	roster = roster.excludeHandle(acting)
+	roster = s.stampUnread(ctx, org, UserIDFromCtx(r.Context()), acting, roster)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"agents":  roster.Agents,
 		"inboxes": roster.Inboxes,
@@ -589,15 +660,19 @@ func (s *Server) handleGUIChatRoster(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// chatReadRequest is the POST body for advancing a window's read cursor.
+// chatReadRequest is the POST body for advancing a conversation's read cursor.
+// As is the handle the viewer is acting as (their identity for this DM).
 type chatReadRequest struct {
 	Kind   string `json:"kind"`
 	Target string `json:"target"`
+	As     string `json:"as"`
 }
 
-// handleGUIChatMarkRead advances the viewer's read cursor for one window to the
-// stream's current newest sequence, clearing its unread badge. Called by the
-// browser when a window is opened (and periodically while it stays open).
+// handleGUIChatMarkRead advances the viewer's read cursor for one conversation,
+// clearing its unread badge. For a DM (source), "read up to now" means my inbox's
+// current newest sequence — that's the stream the counterparty's messages arrive
+// on. For a pipe it's the pipe stream. Called when a window is opened (and
+// periodically while it stays open).
 //
 // Route: POST /orgs/{id}/chat/read
 func (s *Server) handleGUIChatMarkRead(w http.ResponseWriter, r *http.Request) {
@@ -612,13 +687,32 @@ func (s *Server) handleGUIChatMarkRead(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	_, streamName, ok := s.resolveChatWindowDB(ctx, w, org, req.Kind, req.Target)
-	if !ok {
+	win, err := resolveChatWindow(org.ID, req.Kind, req.Target)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	js, _ := s.JSFor(ctx, org.ID)
+
+	var streamName, acting string
+	if win.Kind == "pipe" {
+		streamName = win.StreamName
+	} else {
+		// DM: mark against MY inbox (acting handle), where the counterparty's
+		// messages land. No acting handle => the window's own inbox (god's-eye).
+		acting = req.As
+		h := acting
+		if h == "" {
+			h = win.Handle
+		}
+		hManifold := ""
+		if src, e := db.GetSourceByHandle(ctx, s.Pool, org.ID, h); e == nil {
+			hManifold = src.Manifold
+		}
+		streamName = natsubj.BuildStreamName(org.ID, hManifold, h, "inbox")
+	}
 	last := streamLastSeq(ctx, js, streamName)
-	if err := db.UpsertChatReadCursor(ctx, s.Pool, org.ID, UserIDFromCtx(r.Context()), req.Kind, req.Target, last); err != nil {
+	if err := db.UpsertChatReadCursor(ctx, s.Pool, org.ID, UserIDFromCtx(r.Context()), req.Kind, acting, req.Target, last); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}

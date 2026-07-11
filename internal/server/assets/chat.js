@@ -33,12 +33,13 @@
   let seen = new Set();
   let markReadTimer = null;
 
-  // Advance the server-side read cursor for a window (clears its unread badge).
+  // Advance the server-side read cursor for a conversation (clears its unread
+  // badge). `as` scopes DM read state to the acting identity.
   function markRead(kind, target) {
     fetch("/orgs/" + encodeURIComponent(org) + "/chat/read", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind, target }),
+      body: JSON.stringify({ kind, target, as: currentHandle() }),
     }).catch(() => {});
   }
 
