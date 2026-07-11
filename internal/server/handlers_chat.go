@@ -237,19 +237,24 @@ func (s *Server) handleGUIChatPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	roster = s.stampUnread(ctx, org, UserIDFromCtx(r.Context()), roster)
-	// The "send as" picker: message handles the viewer created (the web analog
-	// of the CLI current handle). Empty => the composer blocks with guidance.
+	// The viewer's owned handles feed the top-bar identity switcher; the acting
+	// handle (?as=, defaulting to the first owned) is who they are for this
+	// view. Scope the roster to that identity — drop self so you can't DM
+	// yourself — then stamp unread on what remains.
 	var handles []string
 	if sources, serr := db.ListSourcesForOrg(ctx, s.Pool, org.ID); serr == nil {
 		handles = ownedMessageHandles(sources, UserIDFromCtx(r.Context()))
 	}
+	acting := pickActingHandle(r.URL.Query().Get("as"), handles)
+	roster = roster.excludeHandle(acting)
+	roster = s.stampUnread(ctx, org, UserIDFromCtx(r.Context()), roster)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	data := s.base()
 	data["Org"] = org
 	data["Roster"] = roster
 	data["Me"] = s.meFromCtx(r.Context())
 	data["Handles"] = handles
+	data["ActingHandle"] = acting
 	if err := tmpl.ExecuteTemplate(w, "chat.html", data); err != nil {
 		http.Error(w, err.Error(), 500)
 	}
@@ -572,6 +577,9 @@ func (s *Server) handleGUIChatRoster(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	// Scope to the acting identity the client is polling as (?as=), same as the
+	// page render, so a live refresh doesn't re-introduce the self row.
+	roster = roster.excludeHandle(r.URL.Query().Get("as"))
 	roster = s.stampUnread(ctx, org, UserIDFromCtx(r.Context()), roster)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"agents":  roster.Agents,

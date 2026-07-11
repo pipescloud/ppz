@@ -112,6 +112,42 @@ func ownedMessageHandles(sources []db.Source, userID uuid.UUID) []string {
 	return hs
 }
 
+// pickActingHandle chooses the identity the viewer acts as: the requested
+// handle when they own it, else their first owned handle (the default on entry),
+// else "" when they own none. You can only ever act as a handle you own.
+func pickActingHandle(requested string, owned []string) string {
+	for _, h := range owned {
+		if h == requested {
+			return requested
+		}
+	}
+	if len(owned) > 0 {
+		return owned[0]
+	}
+	return ""
+}
+
+// excludeHandle drops the viewer's own handle from the DM-able sections
+// (agents/inboxes) so they can't DM themselves — the TUI's `Handle == m.me`
+// exclusion. Pipes are shared rooms and untouched.
+func (r chatRoster) excludeHandle(handle string) chatRoster {
+	if handle == "" {
+		return r
+	}
+	drop := func(es []chatEntry) []chatEntry {
+		out := make([]chatEntry, 0, len(es))
+		for _, e := range es {
+			if e.Target != handle {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+	r.Agents = drop(r.Agents)
+	r.Inboxes = drop(r.Inboxes)
+	return r
+}
+
 // OnlineCount is the number of agents currently classified "online" — powers
 // the top-bar "<N> online · <N> agents · <N> pipes" summary (TUI titleBar).
 func (r chatRoster) OnlineCount() int {

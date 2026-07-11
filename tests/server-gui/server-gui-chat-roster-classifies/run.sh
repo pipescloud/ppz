@@ -9,6 +9,7 @@ auth_as_foo
 
 ppz_a daemon login "$PPZ_SERVER_URL" -apikey "$(key_alpha)" >/dev/null
 ppz_a source create ops >/dev/null
+ppz_a source create me >/dev/null    # the viewer's own handle (excluded from its roster)
 ppz_a pipe create general >/dev/null
 # A pty source: `terminal share` provisions it; printf gives it a
 # .stdout write so it's fully materialised. The bare source row is what
@@ -16,7 +17,8 @@ ppz_a pipe create general >/dev/null
 ppz_a terminal share botty -- printf "hi" >/dev/null
 wait_for 20 "ppz_a ls | grep -q botty" >/dev/null
 
-curl_server "/orgs/alpha/chat" \
+# View as `me`, so `me` is excluded (no self-DM) and `ops` classifies as an inbox.
+curl_server "/orgs/alpha/chat?as=me" \
   | grep -oE 'data-chat-entry="[^"]+"' \
   | sed -E 's/data-chat-entry="([^"]+)"/\1/' \
   | sort

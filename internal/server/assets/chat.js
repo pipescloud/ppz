@@ -206,11 +206,13 @@
     entryEl.addEventListener("click", () => selectEntry(entryEl));
   });
 
-  // Changing the acting handle re-opens the current window so history re-labels
-  // (and the live follow re-tags) under the new "you".
+  // Switching identity re-scopes the whole view (roster excludes the new self,
+  // DM threads + unread follow the new handle), so reload with ?as=<handle>.
   if (handleSel) {
     handleSel.addEventListener("change", () => {
-      if (current) selectEntry(current.entryEl);
+      const u = new URL(location.href);
+      u.searchParams.set("as", handleSel.value);
+      location.assign(u.pathname + u.search);
     });
   }
 
@@ -311,7 +313,8 @@
   async function pollRoster() {
     let data;
     try {
-      const res = await fetch("/orgs/" + encodeURIComponent(org) + "/chat/roster",
+      const res = await fetch("/orgs/" + encodeURIComponent(org) +
+        "/chat/roster?as=" + encodeURIComponent(currentHandle()),
         { headers: { Accept: "application/json" } });
       if (!res.ok) return;
       data = await res.json();

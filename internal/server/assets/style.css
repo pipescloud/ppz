@@ -591,9 +591,34 @@ body[data-page="device-verify"] .btn-primary {
    parity — pushed to the right of the brand header. */
 header.chat-brand {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 1rem;
+}
+.chat-brand-right {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex: 0 0 auto;
+}
+/* Top-bar identity switcher — "you are <handle>". The primary control: it
+   scopes the whole view (roster, DM threads, unread) to who you're acting as. */
+.chat-identity {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.chat-identity .chat-handle {
+  max-width: 10rem;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 0.15rem 0.4rem;
+  font: inherit;
+  font-weight: 600;
 }
 .chat-counts {
   color: var(--muted);

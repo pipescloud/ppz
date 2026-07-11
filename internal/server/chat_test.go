@@ -114,6 +114,50 @@ func TestBuildChatRoster_ClassifiesAndSorts(t *testing.T) {
 	}
 }
 
+// The web picks an acting handle up front (top-bar identity), defaulting to the
+// viewer's first owned handle when the request doesn't name a valid one — you
+// can only ever act as a handle you own.
+func TestPickActingHandle(t *testing.T) {
+	owned := []string{"desk", "ops"}
+	for _, tc := range []struct {
+		name, requested, want string
+		owned                 []string
+	}{
+		{"honours-valid-request", "ops", "ops", owned},
+		{"defaults-to-first", "", "desk", owned},
+		{"unknown-falls-back-to-first", "nope", "desk", owned},
+		{"none-owned", "ops", "", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pickActingHandle(tc.requested, tc.owned); got != tc.want {
+				t.Errorf("pickActingHandle(%q, %v) = %q, want %q", tc.requested, tc.owned, got, tc.want)
+			}
+		})
+	}
+}
+
+// The roster is scoped to the acting identity: your own handle is dropped from
+// the DM-able sections (agents/inboxes) so you can't DM yourself — matching the
+// TUI's `Handle == m.me` exclusion. Pipes (shared rooms) are untouched.
+func TestChatRoster_ExcludeHandle(t *testing.T) {
+	r := chatRoster{
+		Agents:  []chatEntry{{Target: "botty"}},
+		Inboxes: []chatEntry{{Target: "desk"}, {Target: "ops"}},
+		Pipes:   []chatEntry{{Target: "general"}, {Target: "desk"}},
+	}
+	got := r.excludeHandle("desk")
+	if len(got.Inboxes) != 1 || got.Inboxes[0].Target != "ops" {
+		t.Errorf("inboxes = %+v, want only ops", got.Inboxes)
+	}
+	if len(got.Agents) != 1 {
+		t.Errorf("agents changed unexpectedly: %+v", got.Agents)
+	}
+	// A pipe that happens to share the name is NOT dropped — pipes aren't DMs.
+	if len(got.Pipes) != 2 {
+		t.Errorf("pipes should be untouched, got %+v", got.Pipes)
+	}
+}
+
 // Unread badges: a window's unread count is the number of stream sequences
 // past the viewer's read cursor — max(0, lastSeq - cursorSeq), clamped so a
 // cursor somehow ahead of the stream never goes negative.

@@ -13,7 +13,18 @@
         <h1><a href="/dashboard">ppz</a> / <a href="/orgs/{{.Org.Name}}">{{.Org.Name}}</a> / chat</h1>
         <div class="crumbs">live roster + chat over this org's agents, inboxes and pipes</div>
       </div>
-      <div class="chat-counts" aria-label="roster summary">{{.Roster.OnlineCount}} online · {{len .Roster.Agents}} agents · {{len .Roster.Pipes}} pipes</div>
+      <div class="chat-brand-right">
+        {{if .Handles}}
+        <label class="chat-identity">you are
+          <select id="chat-handle" class="chat-handle" aria-label="acting handle">
+            {{range .Handles}}<option value="{{.}}"{{if and $.ActingHandle (eq . $.ActingHandle)}} selected{{end}}>{{.}}</option>{{end}}
+          </select>
+        </label>
+        {{else}}
+        <span class="chat-no-handle">no handle — claim one with <code>ppz set handle &lt;name&gt;</code></span>
+        {{end}}
+        <div class="chat-counts" aria-label="roster summary">{{.Roster.OnlineCount}} online · {{len .Roster.Agents}} agents · {{len .Roster.Pipes}} pipes</div>
+      </div>
     </header>
 
     <div class="chat-shell" data-org="{{.Org.Name}}" data-me="{{.Me}}">
@@ -104,19 +115,10 @@
         </div>
         <div class="chat-log" id="chat-log" data-empty="1"></div>
         <form class="chat-composer" id="chat-composer" hidden>
-          {{if .Handles}}
-          <select id="chat-handle" class="chat-handle" aria-label="send as">
-            {{range .Handles}}<option value="{{.}}">{{.}}</option>{{end}}
-          </select>
-          {{end}}
           <input type="text" id="chat-input" name="message" autocomplete="off"
                  placeholder="message…" maxlength="2000" disabled>
           <button type="submit" id="chat-send" disabled>Send</button>
         </form>
-        {{if not .Handles}}
-        <p class="chat-no-handle">You have no handles yet — claim one with
-          <code>ppz set handle &lt;name&gt;</code> to send.</p>
-        {{end}}
         <div class="chat-status" id="chat-status" hidden></div>
       </section>
     </div>
