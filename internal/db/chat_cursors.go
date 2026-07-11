@@ -38,6 +38,17 @@ func ListChatReadCursors(ctx context.Context, p *Pool, accountID, userID uuid.UU
 	return out, rows.Err()
 }
 
+// DeleteChatReadCursorsForTarget removes every read cursor (all users, all
+// acting handles) for one window. Called when the underlying pipe/source is
+// deleted so a same-name recreate starts fresh instead of inheriting a stale
+// high last_read_seq (which would suppress the new stream's early unread).
+func DeleteChatReadCursorsForTarget(ctx context.Context, p *Pool, accountID uuid.UUID, kind, target string) error {
+	_, err := p.Exec(ctx,
+		`DELETE FROM chat_read_cursors WHERE account_id = $1 AND kind = $2 AND target = $3`,
+		accountID, kind, target)
+	return err
+}
+
 // UpsertChatReadCursor advances the user's read position for one conversation to
 // seq. GREATEST(existing, excluded) means the cursor only ever moves forward, so
 // a stale/late write can't rewind a read position past what the user has seen.

@@ -1,0 +1,2 @@
+unread-after-recreate: 1
+exit=0

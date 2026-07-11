@@ -152,6 +152,9 @@ func isSafeNextPath(next string) bool {
 	if strings.HasPrefix(next, "//") {
 		return false // protocol-relative redirect
 	}
+	if strings.Contains(next, `\`) {
+		return false // several browsers normalize "\" -> "/", so "/\evil" becomes protocol-relative
+	}
 	if strings.ContainsAny(next, " \t\n\r") {
 		return false
 	}

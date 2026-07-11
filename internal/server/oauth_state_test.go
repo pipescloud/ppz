@@ -77,6 +77,7 @@ func TestOAuthState_NextPathSafe(t *testing.T) {
 		"https://evil.example.com/",
 		"//evil.example.com/",
 		"javascript:alert(1)",
+		`/\evil.example.com`, // backslash: several browsers normalize \ -> / (protocol-relative)
 	}
 	for _, c := range cases {
 		if _, err := MintOAuthState(testSessionKey, c); err == nil {

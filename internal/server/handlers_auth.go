@@ -216,10 +216,10 @@ func (s *Server) handleDevLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	s.setSessionCookie(w, cookieValue)
 	// A ?next=/path lets a plain GET land you straight on a page (one
-	// clickable URL for local manual testing). Only same-origin paths are
-	// honoured so this can't be used as an open redirect. Absent next, keep
-	// the "ok" body the e2e POST path asserts on.
-	if next := r.URL.Query().Get("next"); strings.HasPrefix(next, "/") && !strings.HasPrefix(next, "//") {
+	// clickable URL for local manual testing). Reuse the OAuth open-redirect
+	// guard (isSafeNextPath) so both paths reject the same unsafe values.
+	// Absent/unsafe next, keep the "ok" body the e2e POST path asserts on.
+	if next := r.URL.Query().Get("next"); next != "" && isSafeNextPath(next) {
 		http.Redirect(w, r, next, http.StatusFound)
 		return
 	}

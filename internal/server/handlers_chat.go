@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
@@ -379,6 +380,11 @@ func (s *Server) resolveChatWindowDB(ctx context.Context, w http.ResponseWriter,
 // the initial backlog, not the ongoing tail.
 const chatHistoryLimit = 200
 
+// maxChatPayload caps a web-originated message's length (runes), matching the
+// composer's client-side maxlength so a direct POST can't publish something
+// arbitrarily large.
+const maxChatPayload = 2000
+
 // chatReplayStart bounds a history drain to the most-recent `limit` messages
 // (tail-N): it returns the first sequence to replay for a stream whose retained
 // window is [firstSeq, lastSeq]. When that window already fits under the cap
@@ -588,6 +594,12 @@ func (s *Server) handleGUIChatSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "empty payload", http.StatusBadRequest)
 		return
 	}
+	// Server-side length cap (the composer's maxlength is client-only). Bounds
+	// a direct POST from publishing an arbitrarily large message.
+	if utf8.RuneCountInString(req.Payload) > maxChatPayload {
+		http.Error(w, "payload too long", http.StatusBadRequest)
+		return
+	}
 	if req.As == "" {
 		http.Error(w, "missing sending handle", http.StatusBadRequest)
 		return
@@ -791,7 +803,8 @@ func (s *Server) handleGUIChatRemovePipe(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	manifold, name := splitManifoldName(r.URL.Query().Get("target"))
+	target := r.URL.Query().Get("target")
+	manifold, name := splitManifoldName(target)
 	if err := natsubj.ValidatePipe(name); err != nil {
 		http.Error(w, "invalid pipe name", http.StatusBadRequest)
 		return
@@ -821,6 +834,9 @@ func (s *Server) handleGUIChatRemovePipe(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	// Clear read cursors so a same-name recreate doesn't inherit a stale
+	// last_read_seq (best-effort; a leftover cursor only affects badges).
+	_ = db.DeleteChatReadCursorsForTarget(ctx, s.Pool, org.ID, "pipe", target)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -852,7 +868,14 @@ func (s *Server) handleGUIChatWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
+	// nil opts => coder/websocket's default same-origin check: a cross-site
+	// browser handshake (Origin host != request Host) is rejected 403 — CSWSH
+	// defense-in-depth — while non-browser clients (no Origin) are accepted.
+	// Keying off the request Host (not a fixed BaseURL) keeps localhost, the
+	// prod domain, and Host-forwarding proxies all working. (Session cookies are
+	// SameSite=Lax, so the ambient-cookie vector is already mitigated; this is
+	// belt-and-braces.)
+	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return
 	}

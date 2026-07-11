@@ -323,6 +323,10 @@
   // what actually changes second-to-second.
   const countsEl = document.querySelector(".chat-counts");
   async function pollRoster() {
+    // Skip while the tab is backgrounded — no point fanning out god's-eye
+    // JetStream reads (heartbeats + per-window seq + inbox drain) nobody's
+    // watching. The poll resumes on the next tick when the tab is visible.
+    if (document.hidden) return;
     let data;
     try {
       const res = await fetch("/orgs/" + encodeURIComponent(org) +
