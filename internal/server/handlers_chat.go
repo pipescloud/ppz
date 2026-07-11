@@ -222,11 +222,38 @@ func (s *Server) resolveChatWindowDB(ctx context.Context, w http.ResponseWriter,
 	}
 }
 
+// chatHistoryLimit caps how many of a window's most-recent messages the
+// history drain replays (tail-N). Without it a busy pipe would stream its
+// entire backlog — and one GetMsg round-trip per message — on every open, the
+// same degeneracy the CLI's read-flood cap already guards against. The live WS
+// follow after the drain is unbounded (new messages only), so this only bounds
+// the initial backlog, not the ongoing tail.
+const chatHistoryLimit = 200
+
+// chatReplayStart bounds a history drain to the most-recent `limit` messages
+// (tail-N): it returns the first sequence to replay for a stream whose retained
+// window is [firstSeq, lastSeq]. When that window already fits under the cap
+// (or limit <= 0, meaning uncapped) it returns firstSeq unchanged; otherwise it
+// returns lastSeq-limit+1. The span check guarantees that result never precedes
+// firstSeq. Bounding the start caps both the bytes streamed and the number of
+// per-seq GetMsg round-trips, so opening a busy window can't dump its whole
+// backlog.
+func chatReplayStart(firstSeq, lastSeq uint64, limit int) uint64 {
+	if limit <= 0 || lastSeq < firstSeq {
+		return firstSeq
+	}
+	if lastSeq-firstSeq+1 <= uint64(limit) {
+		return firstSeq
+	}
+	return lastSeq - uint64(limit) + 1
+}
+
 // replayStream iterates a stream's retained messages front-to-back, invoking
 // fn for each decoded envelope, and returns the last sequence it reached so a
-// follow can resume from there. Shared by the JSON snapshot and the WS history
-// replay so the two can't drift.
-func replayStream(ctx context.Context, stream jetstream.Stream, fn func(envelope.Message) error) (uint64, error) {
+// follow can resume from there. The drain is bounded to the most-recent `limit`
+// messages (see chatReplayStart); `limit <= 0` replays the whole window. Shared
+// by the JSON snapshot and the WS history replay so the two can't drift.
+func replayStream(ctx context.Context, stream jetstream.Stream, limit int, fn func(envelope.Message) error) (uint64, error) {
 	info, err := stream.Info(ctx)
 	if err != nil {
 		return 0, err
@@ -237,7 +264,7 @@ func replayStream(ctx context.Context, stream jetstream.Stream, fn func(envelope
 		return info.State.LastSeq, nil
 	}
 	var last uint64
-	for seq := info.State.FirstSeq; seq <= info.State.LastSeq; seq++ {
+	for seq := chatReplayStart(info.State.FirstSeq, info.State.LastSeq, limit); seq <= info.State.LastSeq; seq++ {
 		msg, gerr := stream.GetMsg(ctx, seq)
 		if gerr != nil {
 			continue // expired / dropped
@@ -265,7 +292,7 @@ func drainChatMessages(ctx context.Context, js jetstream.JetStream, streamName, 
 	if err != nil {
 		return out
 	}
-	_, _ = replayStream(ctx, stream, func(env envelope.Message) error {
+	_, _ = replayStream(ctx, stream, chatHistoryLimit, func(env envelope.Message) error {
 		out = append(out, chatView(env, me))
 		return nil
 	})
@@ -418,8 +445,9 @@ func (s *Server) handleGUIChatWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	if stream != nil {
-		// 1) Drain retained history, capturing the last sequence.
-		lastSeq, derr := replayStream(ctx, stream, writeEnv)
+		// 1) Drain retained history (bounded to the most-recent
+		// chatHistoryLimit), capturing the last sequence.
+		lastSeq, derr := replayStream(ctx, stream, chatHistoryLimit, writeEnv)
 		if derr != nil && ctx.Err() != nil {
 			return // client went away mid-drain
 		}

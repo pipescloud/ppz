@@ -27,6 +27,11 @@ tabs.
   source's `heartbeat` stream using the same thresholds as `ppz who`.
 - Snapshot endpoint `GET …/chat/messages?kind=&target=` returns a window's
   buffered history as JSON (for scripts / non-browser clients).
+- **Bounded history.** Both the WS replay and the snapshot deliver at most the
+  most-recent 200 messages (tail-N), so opening a busy window can't dump an
+  unbounded backlog — one GetMsg round-trip per message — the same degeneracy
+  the CLI read-flood cap guards against. (Older scrollback awaits the
+  pagination cursor noted below.)
 - *Not yet:* per-window unread badges (needs a per-user server-side read
   cursor); DM reply-fanout (the console shows a target's inbox directly rather
   than reconstructing a participant's stitched view); addressing a source under

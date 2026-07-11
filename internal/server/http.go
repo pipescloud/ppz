@@ -105,9 +105,10 @@ func (s *Server) Routes() *http.ServeMux {
 	// handler splits on the last dot to recover manifold + leaf.
 	mux.HandleFunc("GET /orgs/{id}/pipes/{pipe}", s.requireSession(s.handleGUIUncollaredPipePage))
 	// Web `ppz chat` console — roster + live chat pane over the org's
-	// agents, inboxes and pipes. The page + snapshot + send are
-	// session-authed; the WS follows the terminal WS's (currently
-	// un-authed) precedent and is tightened in the same follow-up.
+	// agents, inboxes and pipes. All four routes (page, snapshot, send,
+	// live WS) are session-authed here and additionally membership-gated
+	// in their handlers (resolveChatOrg), since /chat is a read+write
+	// surface into the org's streams.
 	mux.HandleFunc("GET /orgs/{id}/chat", s.requireSession(s.handleGUIChatPage))
 	mux.HandleFunc("GET /orgs/{id}/chat/messages", s.requireSession(s.handleGUIChatMessages))
 	mux.HandleFunc("POST /orgs/{id}/chat/send", s.requireSession(s.handleGUIChatSend))

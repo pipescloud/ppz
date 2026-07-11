@@ -1,0 +1,5 @@
+count: 200
+newest: msg-210
+oldest-kept: msg-011
+msg-001-dropped: true
+exit=0

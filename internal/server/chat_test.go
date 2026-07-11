@@ -185,3 +185,32 @@ func TestResolveChatWindow(t *testing.T) {
 		})
 	}
 }
+
+// chatReplayStart bounds the history drain to the most-recent N messages
+// (tail-N), so a busy window doesn't stream (and GetMsg-round-trip) its entire
+// backlog every time it's opened. It maps a stream's [FirstSeq, LastSeq] window
+// to the first sequence to replay: the whole range when it fits under the cap,
+// otherwise LastSeq-limit+1 (clamped to FirstSeq). limit <= 0 means uncapped.
+func TestChatReplayStart(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		first, last, want uint64
+		limit             int
+	}{
+		{"uncapped-zero", 1, 1000, 1, 0},
+		{"uncapped-negative", 1, 1000, 1, -5},
+		{"under-cap", 1, 50, 1, 200},
+		{"exactly-at-cap", 1, 200, 1, 200},
+		{"over-cap-from-one", 1, 1000, 801, 200},
+		{"over-cap-nonzero-first", 500, 1000, 801, 200},
+		{"under-cap-nonzero-first", 900, 1000, 900, 200},
+		{"single-message", 7, 7, 7, 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := chatReplayStart(tc.first, tc.last, tc.limit); got != tc.want {
+				t.Errorf("chatReplayStart(first=%d, last=%d, limit=%d) = %d, want %d",
+					tc.first, tc.last, tc.limit, got, tc.want)
+			}
+		})
+	}
+}
