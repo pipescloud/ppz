@@ -151,6 +151,15 @@ ul.tidy li:hover { background: var(--row-hover); }
 }
 
 /* Tables */
+/* Data tables scroll horizontally inside their own box on narrow screens,
+   instead of overflowing the page (the pipes table has 5 columns). */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 6px;
+}
+.table-scroll > table { min-width: 32rem; }
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -820,17 +829,54 @@ header.chat-brand {
   word-break: break-word;
 }
 
+/* Composer — full-width text field with the send button below-right (Slack-
+   style). flex:0 0 auto docks it at the bottom of the chat pane; the log above
+   takes the remaining space and scrolls, so the composer is always visible. */
 .chat-composer {
   display: flex;
-  gap: 0.5rem;
+  flex-direction: column;
+  gap: 0.4rem;
   padding: 0.6rem 0.75rem;
   border-top: 1px solid var(--border);
   margin: 0;
+  flex: 0 0 auto;
 }
-.chat-composer input {
-  flex: 1 1 auto;
-  min-width: 0;
+.chat-composer textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  min-height: 2.4rem;
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 0.5rem 0.6rem;
+  font: inherit;
+  line-height: 1.4;
 }
+.chat-composer textarea:focus { outline: none; border-color: var(--accent); }
+.chat-composer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.chat-send {
+  flex: 0 0 auto;
+  width: auto;
+  border: 0;
+  border-radius: 6px;
+  background: var(--btn-bg);
+  color: #fff;
+  padding: 0.35rem 0.95rem;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.chat-send:hover:not(:disabled) { background: var(--btn-bg-hover); }
+.chat-send:disabled { opacity: 0.45; cursor: default; }
 /* "Send as" handle picker — the acting identity, TUI current-handle analog. */
 .chat-handle {
   flex: 0 0 auto;
@@ -849,7 +895,7 @@ header.chat-brand {
   color: var(--muted);
 }
 .chat-status {
-  padding: 0.2rem 0.85rem 0.5rem;
+  padding: 0;
   font: 12px/1.4 ui-monospace, monospace;
   color: var(--muted);
 }
@@ -879,9 +925,23 @@ header.chat-brand {
      conversation, and "‹ menu" swaps back. */
   .chat-shell { flex-direction: column; height: auto; }
   .chat-roster { flex-basis: auto; max-height: none; overflow: visible; }
-  .chat-main { min-height: 85vh; display: none; }
+  .chat-main { display: none; min-height: 0; }
   .chat-shell[data-view="chat"] .chat-roster { display: none; }
-  .chat-shell[data-view="chat"] .chat-main { display: flex; }
+  /* Conversation = a fixed full-screen panel sized to the *dynamic* viewport
+     (100dvh accounts for the mobile browser's address bar), so the log scrolls
+     internally and the composer is pinned to the bottom of the screen — never
+     bumped off. */
+  .chat-shell[data-view="chat"] .chat-main {
+    display: flex;
+    position: fixed;
+    inset: 0;
+    height: 100vh;
+    height: 100dvh;
+    z-index: 40;
+    border: 0;
+    border-radius: 0;
+  }
+  .chat-log { min-height: 0; }
 
   .chat-back {
     display: inline-block;

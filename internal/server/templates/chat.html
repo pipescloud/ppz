@@ -123,11 +123,15 @@
         </div>
         <div class="chat-log" id="chat-log" data-empty="1"></div>
         <form class="chat-composer" id="chat-composer" hidden>
-          <input type="text" id="chat-input" name="message" autocomplete="off"
-                 placeholder="message…" maxlength="2000" disabled>
-          <button type="submit" id="chat-send" disabled>Send</button>
+          <textarea id="chat-input" name="message" rows="1" autocomplete="off"
+                    placeholder="message…" maxlength="2000" disabled></textarea>
+          <div class="chat-composer-bar">
+            <div class="chat-status" id="chat-status" hidden></div>
+            <button type="submit" id="chat-send" class="chat-send" disabled aria-label="Send message">
+              Send <span aria-hidden="true">➤</span>
+            </button>
+          </div>
         </form>
-        <div class="chat-status" id="chat-status" hidden></div>
       </section>
     </div>
   </main>

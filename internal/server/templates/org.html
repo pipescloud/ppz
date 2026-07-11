@@ -32,6 +32,7 @@
     {{if eq .ActiveTab "pipes"}}
     <section id="section-pipes">
       {{if .Sources}}
+      <div class="table-scroll">
       <table id="pipes">
         <thead>
           <tr><th>namespace</th><th>source</th><th>pipe</th><th>Last Message</th><th>payload</th></tr>
@@ -55,6 +56,7 @@
           {{end}}
         </tbody>
       </table>
+      </div>
       {{else}}
       <p class="empty">No sources yet.</p>
       {{end}}

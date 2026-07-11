@@ -228,6 +228,20 @@
     });
   }
 
+  // Auto-grow the composer textarea up to a max, then scroll internally.
+  function autogrow() {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 160) + "px";
+  }
+  input.addEventListener("input", autogrow);
+  // Enter sends; Shift+Enter inserts a newline (Slack-style).
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && !ev.shiftKey) {
+      ev.preventDefault();
+      composer.requestSubmit();
+    }
+  });
+
   composer.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     if (!current) return;
@@ -238,6 +252,7 @@
     // Clear optimistically, but keep the text so we can restore it if the
     // send fails — a dropped message shouldn't cost the user their typing.
     input.value = "";
+    autogrow();
     try {
       const res = await fetch(
         "/orgs/" + encodeURIComponent(org) + "/chat/send",
