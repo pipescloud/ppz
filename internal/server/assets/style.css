@@ -1,37 +1,41 @@
 /* ppz server GUI — minimal, modern, readable. No framework. */
 
+/* Terminal palette — matches the `ppz chat` TUI (deep blue-black bg, cyan
+   accents, dim blue-grey secondary text). Applied in BOTH light and dark OS
+   modes so ppz-server reads as one system with the terminal UI. */
 :root {
-  --bg: #fafaf9;
-  --surface: #ffffff;
-  --border: #e5e5e3;
-  --text: #1c1c1a;
-  --muted: #71716e;
-  /* Sampled from the logo's pipe blue — a deeper royal that gives
-     enough contrast against white button text. Used by buttons,
-     active tab markers, and the primary CTA. */
-  --accent: #1d4ed8;
-  --accent-hover: #1e40af;
-  /* Buttons stay this saturated cobalt in BOTH light and dark mode
-     so they match the pipe in the logo. --accent itself shifts in
-     dark mode (for link legibility on near-black bg) — buttons do
-     not, because they always have white text on top. */
-  --btn-bg: #1d4ed8;
-  --btn-bg-hover: #1e40af;
-  --code-bg: #f1f1ef;
-  --row-hover: #f5f5f3;
+  --bg: #0c1119;
+  --surface: #121a24;
+  --border: #26454f;
+  --text: #c8d0da;
+  --muted: #6f7c8a;
+  /* Cyan/teal accent — the TUI's `ppz`, message senders, borders, markers.
+     Used for links, active tabs and (via --btn-bg) primary buttons. */
+  --accent: #4fbdd0;
+  --accent-hover: #74d4e5;
+  --btn-bg: #1f6d7e;
+  --btn-bg-hover: #2a8497;
+  --code-bg: #16202b;
+  --row-hover: #17212c;
+  /* Secondary / highlight — the TUI's green "online" blob. Liveness dots,
+     success status, and any positive/live accent. */
+  --online: #56c46a;
+  --stale: #d29922;
+  --offline: #6e7681;
 }
 
+/* Dark OS mode is the same terminal palette — no separate theme. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1a1a18;
-    --surface: #232321;
-    --border: #353532;
-    --text: #ececea;
-    --muted: #92928e;
-    --accent: #60a5fa;
-    --accent-hover: #93c5fd;
-    --code-bg: #2c2c2a;
-    --row-hover: #2a2a28;
+    --bg: #0c1119;
+    --surface: #121a24;
+    --border: #26454f;
+    --text: #c8d0da;
+    --muted: #6f7c8a;
+    --accent: #4fbdd0;
+    --accent-hover: #74d4e5;
+    --code-bg: #16202b;
+    --row-hover: #17212c;
   }
 }
 
@@ -42,8 +46,9 @@ html, body {
   padding: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Helvetica Neue", sans-serif;
-  font-size: 15px;
+  /* Monospace throughout — ppz-server mirrors the terminal UI. */
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 14px;
   line-height: 1.5;
 }
 
@@ -732,11 +737,11 @@ header.chat-brand {
   height: 0.6rem;
   border-radius: 50%;
   flex: 0 0 auto;
-  background: #9a9a96; /* offline / unknown */
+  background: var(--offline); /* offline / unknown */
 }
-.chat-dot-online { background: #3fb950; }
-.chat-dot-stale  { background: #d29922; }
-.chat-dot-offline { background: #6e6e6b; }
+.chat-dot-online { background: var(--online); box-shadow: 0 0 5px color-mix(in srgb, var(--online) 70%, transparent); }
+.chat-dot-stale  { background: var(--stale); }
+.chat-dot-offline { background: var(--offline); }
 
 /* Right pane */
 .chat-main {
@@ -801,8 +806,17 @@ header.chat-brand {
   font: 12px/1.4 ui-monospace, monospace;
   color: var(--muted);
 }
-.chat-status.ok  { color: #3fb950; }
-.chat-status.err { color: #c44; }
+.chat-status.ok  { color: var(--online); }
+.chat-status.err { color: #e06c6c; }
+
+/* Terminal-parity accents for the chat surfaces: brighter cyan panel borders
+   and a navy (not cyan) selected-row bar, matching the TUI. */
+.chat-roster,
+.chat-main { border-color: #2f6b7d; }
+.chat-entry.active { background: #17395e; color: #eef4f6; }
+.chat-entry.active .chat-dot { box-shadow: none; }
+.chat-title { color: var(--accent); }
+.chat-page h1 a { color: var(--accent); }
 
 @media (max-width: 720px) {
   .chat-shell { flex-direction: column; height: auto; }
