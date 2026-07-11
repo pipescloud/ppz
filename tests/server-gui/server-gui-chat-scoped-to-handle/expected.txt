@@ -3,5 +3,5 @@ data-chat-entry="inbox:ops"
 --- as ops ---
 data-chat-entry="inbox:desk"
 --- selected ---
-<option value="ops" selected
+<span class="chat-picker-current">ops</span>
 exit=0

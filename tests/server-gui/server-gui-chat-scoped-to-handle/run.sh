@@ -18,4 +18,4 @@ echo "--- as ops ---"
 curl_server "/orgs/alpha/chat?as=ops" | grep -oE 'data-chat-entry="inbox:[^"]+"' | sort
 # The top-bar switcher reflects who you're acting as.
 echo "--- selected ---"
-curl_server "/orgs/alpha/chat?as=ops" | grep -oE '<option value="ops" selected'
+curl_server "/orgs/alpha/chat?as=ops" | grep -oE '<span class="chat-picker-current">ops</span>'

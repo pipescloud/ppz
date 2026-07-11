@@ -104,9 +104,9 @@ func TestChatTemplate_HandlePicker_WhenOwned(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		`id="chat-handle"`,
-		`<option value="desk"`,
-		`<option value="ops"`,
+		`chat-picker`,
+		`data-handle="desk"`,
+		`data-handle="ops"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("handle picker output missing %q", want)
@@ -134,7 +134,7 @@ func TestChatTemplate_HandlePicker_WhenNone(t *testing.T) {
 	if !strings.Contains(out, "ppz source create") {
 		t.Error("no-handle notice should point the user at `ppz source create`")
 	}
-	if strings.Contains(out, `id="chat-handle"`) {
+	if strings.Contains(out, `chat-picker-btn`) {
 		t.Error("no handle picker should render when the viewer owns none")
 	}
 }

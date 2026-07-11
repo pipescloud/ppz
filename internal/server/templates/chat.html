@@ -14,11 +14,19 @@
       </div>
       <div class="chat-brand-right">
         {{if .Handles}}
-        <label class="chat-identity">you are
-          <select id="chat-handle" class="chat-handle" aria-label="acting handle">
-            {{range .Handles}}<option value="{{.}}"{{if and $.ActingHandle (eq . $.ActingHandle)}} selected{{end}}>{{.}}</option>{{end}}
-          </select>
-        </label>
+        <div class="chat-identity">you are
+          <div class="chat-picker" data-open="false">
+            <button type="button" class="chat-picker-btn" id="chat-handle-btn" aria-haspopup="listbox">
+              <span class="chat-picker-current">{{.ActingHandle}}</span><span class="chat-picker-caret" aria-hidden="true">▾</span>
+            </button>
+            <ul class="chat-picker-menu" role="listbox">
+              {{range .Handles}}
+              <li><a class="chat-picker-item{{if and $.ActingHandle (eq . $.ActingHandle)}} active{{end}}"
+                     data-handle="{{.}}" href="?as={{.}}">{{.}}</a></li>
+              {{end}}
+            </ul>
+          </div>
+        </div>
         {{else}}
         <span class="chat-no-handle">no handle — create one with <code>ppz source create &lt;name&gt;</code></span>
         {{end}}
@@ -26,7 +34,7 @@
       </div>
     </header>
 
-    <div class="chat-shell" data-org="{{.Org.Name}}" data-me="{{.Me}}">
+    <div class="chat-shell" data-org="{{.Org.Name}}" data-me="{{.Me}}" data-acting="{{.ActingHandle}}">
       <aside class="chat-roster">
         <section class="chat-section" data-section="agents">
           <h2>Agents</h2>

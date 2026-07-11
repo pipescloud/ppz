@@ -14,6 +14,6 @@ ppz_b source create barhandle >/dev/null
 wait_for 20 "ppz_b ls | grep -q barhandle" >/dev/null
 
 curl_server "/orgs/alpha/chat" \
-  | grep -oE '<option value="[^"]+"' \
-  | sed -E 's/<option value="([^"]+)"/\1/' \
+  | grep -oE 'data-handle="[^"]+"' \
+  | sed -E 's/data-handle="([^"]+)"/\1/' \
   | sort

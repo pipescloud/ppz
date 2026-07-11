@@ -615,16 +615,50 @@ header.chat-brand {
   font-size: 0.8rem;
   color: var(--muted);
 }
-.chat-identity .chat-handle {
-  max-width: 10rem;
+/* Custom identity dropdown (themed; native <select> popups can't be). */
+.chat-picker { position: relative; }
+.chat-picker-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 7rem;
+  justify-content: space-between;
   border: 1px solid var(--accent);
   border-radius: 6px;
   background: var(--surface);
   color: var(--text);
-  padding: 0.15rem 0.4rem;
+  padding: 0.2rem 0.55rem;
   font: inherit;
   font-weight: 600;
+  cursor: pointer;
 }
+.chat-picker-caret { color: var(--accent); font-size: 0.7rem; }
+.chat-picker-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  min-width: 100%;
+  margin: 0;
+  padding: 0.25rem;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  display: none;
+}
+.chat-picker[data-open="true"] .chat-picker-menu { display: block; }
+.chat-picker-item {
+  display: block;
+  padding: 0.25rem 0.55rem;
+  border-radius: 4px;
+  color: var(--text);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.chat-picker-item:hover { background: var(--row-hover); }
+.chat-picker-item.active { color: var(--accent); font-weight: 600; }
 .chat-counts {
   color: var(--muted);
   font: 12px/1.4 ui-monospace, monospace;

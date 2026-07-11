@@ -18,14 +18,14 @@
   const input = document.getElementById("chat-input");
   const sendBtn = document.getElementById("chat-send");
   const statusEl = document.getElementById("chat-status");
-  const handleSel = document.getElementById("chat-handle");
 
   // The handle the viewer is acting as (the "send as" identity — the web
-  // analog of the CLI current handle). "" when the user owns none, in which
-  // case the composer stays disabled. Stamped as the sender on send, and
-  // passed as ?as= so our own messages read back as "you".
+  // analog of the CLI current handle), rendered server-side for this view. ""
+  // when the user owns none, in which case the composer stays disabled.
+  // Stamped as the sender on send, and passed as ?as= so our own messages read
+  // back as "you". Switching identity is a navigation (the picker's ?as= links).
   function currentHandle() {
-    return handleSel ? handleSel.value : "";
+    return shell.getAttribute("data-acting") || "";
   }
 
   let ws = null;
@@ -204,13 +204,19 @@
     entryEl.addEventListener("click", () => selectEntry(entryEl));
   });
 
-  // Switching identity re-scopes the whole view (roster excludes the new self,
-  // DM threads + unread follow the new handle), so reload with ?as=<handle>.
-  if (handleSel) {
-    handleSel.addEventListener("change", () => {
-      const u = new URL(location.href);
-      u.searchParams.set("as", handleSel.value);
-      location.assign(u.pathname + u.search);
+  // Identity picker: a custom dropdown (native <select> can't be themed). The
+  // menu items are ?as=<handle> links, so choosing one navigates and re-scopes
+  // the whole view server-side — no JS needed beyond open/close.
+  const picker = document.querySelector(".chat-picker");
+  const pickerBtn = document.getElementById("chat-handle-btn");
+  if (picker && pickerBtn) {
+    pickerBtn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      picker.setAttribute("data-open", picker.getAttribute("data-open") === "true" ? "false" : "true");
+    });
+    document.addEventListener("click", () => picker.setAttribute("data-open", "false"));
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") picker.setAttribute("data-open", "false");
     });
   }
 
