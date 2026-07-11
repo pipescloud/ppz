@@ -162,11 +162,23 @@ ul.tidy li:hover { background: var(--row-hover); }
 
 @media (max-width: 720px) {
   /* Trim the pipes table to essentials on mobile: drop namespace (col 1) and
-     payload (col 5), keeping source / pipe / last message — enough to fit
-     without horizontal scroll. */
+     payload (col 5), keeping source / pipe / last message. */
   #pipes th:nth-child(1), #pipes td:nth-child(1),
   #pipes th:nth-child(5), #pipes td:nth-child(5) { display: none; }
   .table-scroll > #pipes { min-width: 0; }
+  /* Fixed layout with explicit widths — without the elastic payload cell, auto
+     layout gave each row different column widths (nothing lined up). Fixed +
+     percentages keep columns consistent and left-aligned; overflow ellipsises. */
+  #pipes { table-layout: fixed; }
+  #pipes th:nth-child(2), #pipes td:nth-child(2) { width: 28%; }
+  #pipes th:nth-child(3), #pipes td:nth-child(3) { width: 38%; }
+  #pipes th:nth-child(4), #pipes td:nth-child(4) { width: 34%; }
+  #pipes td {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 0;
+  }
 }
 
 table {
