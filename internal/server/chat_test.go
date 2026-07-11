@@ -114,6 +114,29 @@ func TestBuildChatRoster_ClassifiesAndSorts(t *testing.T) {
 	}
 }
 
+// Unread badges: a window's unread count is the number of stream sequences
+// past the viewer's read cursor — max(0, lastSeq - cursorSeq), clamped so a
+// cursor somehow ahead of the stream never goes negative.
+func TestUnreadCount(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		last, cursor     int64
+		want             int
+	}{
+		{"fresh-behind", 5, 2, 3},
+		{"caught-up", 2, 2, 0},
+		{"cursor-ahead-clamps", 2, 5, 0},
+		{"empty-stream", 0, 0, 0},
+		{"never-read", 4, 0, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := unreadCount(tc.last, tc.cursor); got != tc.want {
+				t.Errorf("unreadCount(%d,%d) = %d, want %d", tc.last, tc.cursor, got, tc.want)
+			}
+		})
+	}
+}
+
 // A web user acts AS one of their own message-kind handles (the analog of the
 // CLI's `ppz set handle`): the picker lists only sources the session user
 // created, and send re-validates ownership server-side. ownedMessageHandles is

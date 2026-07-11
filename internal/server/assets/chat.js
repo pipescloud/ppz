@@ -31,6 +31,41 @@
   let ws = null;
   let current = null; // { kind, target, entryEl }
   let seen = new Set();
+  let markReadTimer = null;
+
+  // Advance the server-side read cursor for a window (clears its unread badge).
+  function markRead(kind, target) {
+    fetch("/orgs/" + encodeURIComponent(org) + "/chat/read", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, target }),
+    }).catch(() => {});
+  }
+
+  // Debounced mark-read for the open window, so reading a live burst is one
+  // cursor write, not one per message.
+  function scheduleMarkRead() {
+    if (!current) return;
+    clearTimeout(markReadTimer);
+    const { kind, target } = current;
+    markReadTimer = setTimeout(() => markRead(kind, target), 800);
+  }
+
+  // Set (or clear) a roster row's unread badge.
+  function setUnreadBadge(entryEl, n) {
+    let b = entryEl.querySelector(".chat-unread");
+    if (n > 0) {
+      if (!b) {
+        b = document.createElement("span");
+        b.className = "chat-unread";
+        b.setAttribute("data-unread", "");
+        entryEl.appendChild(b);
+      }
+      b.textContent = String(n);
+    } else if (b) {
+      b.remove();
+    }
+  }
 
   function setStatus(text, kind) {
     if (!statusEl) return;
@@ -89,6 +124,9 @@
     // scrolled-up reader isn't yanked down by an incoming message.
     const atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
     if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+
+    // Seeing a message in the open window means we've read up to it.
+    scheduleMarkRead();
   }
 
   function clearLog() {
@@ -158,6 +196,10 @@
     // separate history fetch — the backlog crosses the wire once. (The
     // /chat/messages JSON endpoint still exists for scripts / the e2e suite.)
     openWS(kind, target);
+
+    // Opening a window reads it: clear its badge now and advance the cursor.
+    setUnreadBadge(entryEl, 0);
+    markRead(kind, target);
   }
 
   shell.querySelectorAll(".chat-entry").forEach((entryEl) => {
@@ -301,6 +343,18 @@
       // Keep the open window's header title fresh too.
       if (current && current.entryEl === el) titleEl.textContent = a.title;
     });
+    // Unread badges for every row. The open window stays 0 (we're reading it
+    // and the debounced mark-read keeps its cursor current).
+    const badges = (arr, prefix) => (arr || []).forEach((e) => {
+      const el = byKey[prefix + e.target];
+      if (!el) return;
+      const n = current && current.entryEl === el ? 0 : (e.unread || 0);
+      setUnreadBadge(el, n);
+    });
+    badges(data.agents, "agent:");
+    badges(data.inboxes, "inbox:");
+    badges(data.pipes, "pipe:");
+
     if (countsEl && data.online != null) {
       countsEl.textContent = data.online + " online · " +
         (data.agents || []).length + " agents · " + (data.pipes || []).length + " pipes";

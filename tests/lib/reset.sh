@@ -35,6 +35,10 @@ if command -v psql >/dev/null 2>&1; then
   PGPASSWORD=ppz psql -h postgres -U postgres -d ppz -v ON_ERROR_STOP=0 >/dev/null 2>&1 <<'SQL' || true
 TRUNCATE TABLE pipes;
 TRUNCATE TABLE sources CASCADE;
+-- Web chat read cursors are per-user, per-window and scenario-local; a
+-- leaked cursor makes a later scenario's "unread" count start non-zero.
+-- Tolerated if the 0005 migration hasn't landed (ON_ERROR_STOP=0).
+TRUNCATE TABLE chat_read_cursors;
 -- Scheduled sends (docs/specs/schedule.md): schedules are scenario-
 -- local, and a leaked `--every 1s` row would keep the server firing
 -- into every later scenario. Errors are tolerated (ON_ERROR_STOP=0)

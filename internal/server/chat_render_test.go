@@ -20,7 +20,7 @@ func TestChatTemplate_RendersThreeSections(t *testing.T) {
 			{Kind: chatKindAgent, Target: "codex", Label: "codex", Status: "offline", HasStatus: true, Title: "codex · dm · offline"},
 		},
 		Inboxes: []chatEntry{
-			{Kind: chatKindInbox, Target: "ops", Label: "ops", Title: "ops · dm · inbox"},
+			{Kind: chatKindInbox, Target: "ops", Label: "ops", Title: "ops · dm · inbox", Unread: 3},
 		},
 		Pipes: []chatEntry{
 			{Kind: chatKindPipe, Target: "eng.backend", Label: "backend", Namespace: "eng", Title: "#backend · pipe (uncollared)"},
@@ -62,6 +62,9 @@ func TestChatTemplate_RendersThreeSections(t *testing.T) {
 		`data-chat-title="#backend · pipe (uncollared)"`,
 		// Top-bar summary counts (1 of the 2 agents is online).
 		`1 online · 2 agents · 1 pipes`,
+		// Unread badge on the ops inbox (3 unread); the badge carries the count.
+		`chat-unread`,
+		`>3<`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("chat.html output missing %q", want)

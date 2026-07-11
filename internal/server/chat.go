@@ -47,6 +47,17 @@ type chatEntry struct {
 	State     string        `json:"state"`      // agent_state (idle/working/blocked) for agents; "" otherwise
 	HasStatus bool          `json:"has_status"` // agents render a live status dot; inboxes/pipes don't
 	Title     string        `json:"title"`      // chat-pane header text; parity with the TUI's tChatTitle
+	Unread    int           `json:"unread"`     // messages past the viewer's read cursor; 0 = none / caught up
+}
+
+// unreadCount is the number of stream sequences past the viewer's read cursor —
+// the badge on a roster row. Clamped at 0 so a cursor somehow ahead of the
+// stream (or an empty stream) never shows a negative count.
+func unreadCount(lastSeq, cursorSeq int64) int {
+	if lastSeq <= cursorSeq {
+		return 0
+	}
+	return int(lastSeq - cursorSeq)
 }
 
 // chatTitle reproduces the TUI's tChatTitle (internal/cli/tui.go) so the web

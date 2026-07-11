@@ -34,6 +34,7 @@
                 <span class="chat-dot chat-dot-{{.Status}}" aria-hidden="true"></span>
                 <span class="chat-entry-label">{{.Label}}</span>
                 {{if .State}}<span class="chat-entry-state">{{.State}}</span>{{end}}
+                {{if .Unread}}<span class="chat-unread" data-unread>{{.Unread}}</span>{{end}}
               </button>
             </li>
             {{end}}
@@ -56,6 +57,7 @@
                       data-chat-title="{{.Title}}">
                 <span class="chat-glyph" aria-hidden="true">@</span>
                 <span class="chat-entry-label">{{.Label}}</span>
+                {{if .Unread}}<span class="chat-unread" data-unread>{{.Unread}}</span>{{end}}
               </button>
             </li>
             {{end}}
@@ -79,6 +81,7 @@
                 <span class="chat-glyph" aria-hidden="true">#</span>
                 <span class="chat-entry-label">{{.Label}}</span>
                 {{if .Namespace}}<span class="chat-entry-ns">{{.Namespace}}</span>{{end}}
+                {{if .Unread}}<span class="chat-unread" data-unread>{{.Unread}}</span>{{end}}
               </button>
               <button type="button" class="chat-remove" data-remove-target="{{.Target}}"
                       title="remove pipe" aria-label="remove pipe {{.Label}}">&times;</button>

@@ -159,6 +159,67 @@ func (s *Server) gatherChatRoster(ctx context.Context, org db.Account, now time.
 	return buildChatRoster(srcInputs, pipeInputs, now), nil
 }
 
+// streamLastSeq returns a stream's newest sequence (0 if the stream is missing
+// or the org is unprovisioned). One Info() round-trip — cheap enough to fan out
+// across the roster.
+func streamLastSeq(ctx context.Context, js jetstream.JetStream, name string) int64 {
+	if js == nil {
+		return 0
+	}
+	stream, err := js.Stream(ctx, name)
+	if err != nil {
+		return 0
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		return 0
+	}
+	return int64(info.State.LastSeq)
+}
+
+// stampUnread fills each roster row's Unread from the viewer's read cursors:
+// unread = max(0, stream.LastSeq - last_read_seq). Cursors load in one query;
+// the per-window LastSeq reads fan out concurrently (like the liveness reads).
+// Best-effort — a cursor/JS failure yields no badges rather than a failed page.
+func (s *Server) stampUnread(ctx context.Context, org db.Account, userID uuid.UUID, roster chatRoster) chatRoster {
+	if userID == uuid.Nil {
+		return roster
+	}
+	cursors, err := db.ListChatReadCursors(ctx, s.Pool, org.ID, userID)
+	if err != nil {
+		return roster
+	}
+	js, _ := s.JSFor(ctx, org.ID)
+	if js == nil {
+		return roster
+	}
+	var wg sync.WaitGroup
+	stamp := func(entries []chatEntry, backendKind string) {
+		for i := range entries {
+			// Source windows (agents+inboxes) follow <handle>.inbox; pipe
+			// windows follow the uncollared stream. Cursor key is (backendKind,
+			// target) — the same key the mark-read endpoint writes.
+			var streamName string
+			if backendKind == "pipe" {
+				streamName = natsubj.BuildStreamName(org.ID, entries[i].Namespace, "", entries[i].Label)
+			} else {
+				streamName = natsubj.BuildStreamName(org.ID, entries[i].Namespace, entries[i].Target, "inbox")
+			}
+			cursor := cursors[db.ChatCursorKey(backendKind, entries[i].Target)]
+			wg.Add(1)
+			go func(i int, entries []chatEntry, streamName string, cursor int64) {
+				defer wg.Done()
+				entries[i].Unread = unreadCount(streamLastSeq(ctx, js, streamName), cursor)
+			}(i, entries, streamName, cursor)
+		}
+	}
+	stamp(roster.Agents, "source")
+	stamp(roster.Inboxes, "source")
+	stamp(roster.Pipes, "pipe")
+	wg.Wait()
+	return roster
+}
+
 // handleGUIChatPage renders the full chat console: the server-rendered roster
 // plus the mount points the browser JS wires the live viewport + composer to.
 //
@@ -175,6 +236,7 @@ func (s *Server) handleGUIChatPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	roster = s.stampUnread(ctx, org, UserIDFromCtx(r.Context()), roster)
 	// The "send as" picker: message handles the viewer created (the web analog
 	// of the CLI current handle). Empty => the composer blocks with guidance.
 	var handles []string
@@ -429,12 +491,49 @@ func (s *Server) handleGUIChatRoster(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	roster = s.stampUnread(ctx, org, UserIDFromCtx(r.Context()), roster)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"agents":  roster.Agents,
 		"inboxes": roster.Inboxes,
 		"pipes":   roster.Pipes,
 		"online":  roster.OnlineCount(),
 	})
+}
+
+// chatReadRequest is the POST body for advancing a window's read cursor.
+type chatReadRequest struct {
+	Kind   string `json:"kind"`
+	Target string `json:"target"`
+}
+
+// handleGUIChatMarkRead advances the viewer's read cursor for one window to the
+// stream's current newest sequence, clearing its unread badge. Called by the
+// browser when a window is opened (and periodically while it stays open).
+//
+// Route: POST /orgs/{id}/chat/read
+func (s *Server) handleGUIChatMarkRead(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := withTimeout(r)
+	defer cancel()
+	org, ok := s.resolveChatOrg(ctx, w, r)
+	if !ok {
+		return
+	}
+	var req chatReadRequest
+	if err := readJSON(r, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	_, streamName, ok := s.resolveChatWindowDB(ctx, w, org, req.Kind, req.Target)
+	if !ok {
+		return
+	}
+	js, _ := s.JSFor(ctx, org.ID)
+	last := streamLastSeq(ctx, js, streamName)
+	if err := db.UpsertChatReadCursor(ctx, s.Pool, org.ID, UserIDFromCtx(r.Context()), req.Kind, req.Target, last); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"unread": 0, "seq": last})
 }
 
 // chatAddPipeRequest is the POST body for creating a pipe from the console.
