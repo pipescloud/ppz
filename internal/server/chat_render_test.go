@@ -16,14 +16,14 @@ import (
 func TestChatTemplate_RendersThreeSections(t *testing.T) {
 	roster := chatRoster{
 		Agents: []chatEntry{
-			{Kind: chatKindAgent, Target: "claude", Label: "claude", Status: "online", State: "working", HasStatus: true},
-			{Kind: chatKindAgent, Target: "codex", Label: "codex", Status: "offline", HasStatus: true},
+			{Kind: chatKindAgent, Target: "claude", Label: "claude", Status: "online", State: "working", HasStatus: true, Title: "claude · dm · online|working"},
+			{Kind: chatKindAgent, Target: "codex", Label: "codex", Status: "offline", HasStatus: true, Title: "codex · dm · offline"},
 		},
 		Inboxes: []chatEntry{
-			{Kind: chatKindInbox, Target: "ops", Label: "ops"},
+			{Kind: chatKindInbox, Target: "ops", Label: "ops", Title: "ops · dm · inbox"},
 		},
 		Pipes: []chatEntry{
-			{Kind: chatKindPipe, Target: "eng.backend", Label: "backend", Namespace: "eng"},
+			{Kind: chatKindPipe, Target: "eng.backend", Label: "backend", Namespace: "eng", Title: "#backend · pipe (uncollared)"},
 		},
 	}
 	data := map[string]any{
@@ -56,6 +56,12 @@ func TestChatTemplate_RendersThreeSections(t *testing.T) {
 		`id="chat-input"`,
 		// The viewer's identity (used as the outbound sender) is exposed.
 		`data-me="james"`,
+		// TUI-parity chat-pane titles carried per row for the JS to display.
+		`data-chat-title="claude · dm · online|working"`,
+		`data-chat-title="ops · dm · inbox"`,
+		`data-chat-title="#backend · pipe (uncollared)"`,
+		// Top-bar summary counts (1 of the 2 agents is online).
+		`1 online · 2 agents · 1 pipes`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("chat.html output missing %q", want)
@@ -76,5 +82,56 @@ func TestChatTemplate_LoadsChatJS(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "/assets/chat.js") {
 		t.Error("chat.html does not load /assets/chat.js")
+	}
+}
+
+// When the viewer owns message handles, the composer renders a handle picker
+// (the "send as" identity, analog of the CLI current handle) listing exactly
+// those handles.
+func TestChatTemplate_HandlePicker_WhenOwned(t *testing.T) {
+	data := map[string]any{
+		"Org":     db.Account{ID: uuid.New(), Name: "alpha"},
+		"Roster":  chatRoster{},
+		"Me":      "foo",
+		"Handles": []string{"desk", "ops"},
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "chat.html", data); err != nil {
+		t.Fatalf("render chat.html: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		`id="chat-handle"`,
+		`<option value="desk"`,
+		`<option value="ops"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("handle picker output missing %q", want)
+		}
+	}
+}
+
+// When the viewer owns no handles, there is no picker; instead a notice points
+// them at `ppz set handle` and the composer stays unusable (block-send).
+func TestChatTemplate_HandlePicker_WhenNone(t *testing.T) {
+	data := map[string]any{
+		"Org":     db.Account{ID: uuid.New(), Name: "alpha"},
+		"Roster":  chatRoster{},
+		"Me":      "foo",
+		"Handles": []string{},
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "chat.html", data); err != nil {
+		t.Fatalf("render chat.html: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `chat-no-handle`) {
+		t.Error("expected a no-handle notice when the viewer owns no handles")
+	}
+	if !strings.Contains(out, "ppz set handle") {
+		t.Error("no-handle notice should point the user at `ppz set handle`")
+	}
+	if strings.Contains(out, `id="chat-handle"`) {
+		t.Error("no handle picker should render when the viewer owns none")
 	}
 }

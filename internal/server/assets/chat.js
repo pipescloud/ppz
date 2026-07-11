@@ -11,7 +11,6 @@
   if (!shell) return;
 
   const org = shell.getAttribute("data-org");
-  const me = shell.getAttribute("data-me") || "";
 
   const titleEl = document.getElementById("chat-title");
   const logEl = document.getElementById("chat-log");
@@ -19,6 +18,15 @@
   const input = document.getElementById("chat-input");
   const sendBtn = document.getElementById("chat-send");
   const statusEl = document.getElementById("chat-status");
+  const handleSel = document.getElementById("chat-handle");
+
+  // The handle the viewer is acting as (the "send as" identity — the web
+  // analog of the CLI current handle). "" when the user owns none, in which
+  // case the composer stays disabled. Stamped as the sender on send, and
+  // passed as ?as= so our own messages read back as "you".
+  function currentHandle() {
+    return handleSel ? handleSel.value : "";
+  }
 
   let ws = null;
   let current = null; // { kind, target, entryEl }
@@ -50,7 +58,8 @@
     // Trust our own identity over the server's `you` flag: the live tail
     // may arrive on a transport without the session (empty server-side me),
     // but the browser always knows who it is.
-    const mine = m.you || (!!me && m.sender === me);
+    const h = currentHandle();
+    const mine = m.you || (!!h && m.sender === h);
 
     const row = document.createElement("div");
     row.className = "chat-msg" + (mine ? " chat-msg-you" : "");
@@ -97,7 +106,8 @@
 
   function openWS(kind, target) {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const q = "?kind=" + encodeURIComponent(kind) + "&target=" + encodeURIComponent(target);
+    const q = "?kind=" + encodeURIComponent(kind) + "&target=" + encodeURIComponent(target) +
+      "&as=" + encodeURIComponent(currentHandle());
     const url = proto + "//" + location.host + "/orgs/" + encodeURIComponent(org) + "/chat/ws" + q;
     const sock = new WebSocket(url);
     ws = sock;
@@ -118,7 +128,12 @@
   function selectEntry(entryEl) {
     const kind = entryEl.getAttribute("data-chat-kind");
     const target = entryEl.getAttribute("data-chat-target");
-    const displayEntry = entryEl.getAttribute("data-chat-entry") || target;
+    // Server-computed header title (TUI-parity: "claude · dm · online|working",
+    // "#backend · pipe (uncollared)", …); fall back to the raw entry key.
+    const displayEntry =
+      entryEl.getAttribute("data-chat-title") ||
+      entryEl.getAttribute("data-chat-entry") ||
+      target;
 
     // Toggle active styling.
     document.querySelectorAll(".chat-entry.active")
@@ -131,9 +146,12 @@
 
     titleEl.textContent = displayEntry;
     composer.hidden = false;
-    input.disabled = false;
-    sendBtn.disabled = false;
-    input.focus();
+    // Only composable when acting as a handle you own; otherwise the window is
+    // view-only and the no-handle notice explains why.
+    const canSend = !!currentHandle();
+    input.disabled = !canSend;
+    sendBtn.disabled = !canSend;
+    if (canSend) input.focus();
     setStatus("loading…", "");
 
     // The WS both replays retained history and follows live, so there's no
@@ -146,9 +164,19 @@
     entryEl.addEventListener("click", () => selectEntry(entryEl));
   });
 
+  // Changing the acting handle re-opens the current window so history re-labels
+  // (and the live follow re-tags) under the new "you".
+  if (handleSel) {
+    handleSel.addEventListener("change", () => {
+      if (current) selectEntry(current.entryEl);
+    });
+  }
+
   composer.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     if (!current) return;
+    const as = currentHandle();
+    if (!as) return; // no handle to send as
     const payload = input.value.trim();
     if (!payload) return;
     // Clear optimistically, but keep the text so we can restore it if the
@@ -160,7 +188,7 @@
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ kind: current.kind, target: current.target, payload }),
+          body: JSON.stringify({ kind: current.kind, target: current.target, payload, as }),
         });
       if (!res.ok) {
         setStatus("send failed (" + res.status + ")", "err");
@@ -178,5 +206,57 @@
       setStatus("send error", "err");
       if (!input.value) input.value = payload;
     }
+  });
+
+  // ── Roster mutation: add / remove pipe (TUI `a` / `-` parity) ──────────
+  // Both reload the page afterward so the server re-renders the roster,
+  // handle picker and counts — no client-side roster surgery to drift.
+
+  const addPipeForm = document.getElementById("chat-add-pipe");
+  const addPipeInput = document.getElementById("chat-add-pipe-name");
+  if (addPipeForm) {
+    addPipeForm.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const name = addPipeInput.value.trim();
+      if (!name) return;
+      addPipeInput.disabled = true;
+      try {
+        const res = await fetch("/orgs/" + encodeURIComponent(org) + "/chat/pipes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        if (res.ok) {
+          location.reload();
+          return;
+        }
+        setStatus("add pipe failed (" + res.status + ")", "err");
+      } catch (_) {
+        setStatus("add pipe error", "err");
+      }
+      addPipeInput.disabled = false;
+    });
+  }
+
+  shell.querySelectorAll(".chat-remove").forEach((btn) => {
+    btn.addEventListener("click", async (ev) => {
+      ev.stopPropagation(); // don't also select the row
+      const target = btn.getAttribute("data-remove-target");
+      if (!target || !window.confirm('Remove pipe "' + target + '"?')) return;
+      btn.disabled = true;
+      try {
+        const res = await fetch(
+          "/orgs/" + encodeURIComponent(org) + "/chat/pipes?target=" + encodeURIComponent(target),
+          { method: "DELETE" });
+        if (res.ok) {
+          location.reload();
+          return;
+        }
+        setStatus("remove pipe failed (" + res.status + ")", "err");
+      } catch (_) {
+        setStatus("remove pipe error", "err");
+      }
+      btn.disabled = false;
+    });
   });
 })();

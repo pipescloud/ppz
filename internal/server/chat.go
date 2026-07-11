@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -44,6 +45,71 @@ type chatEntry struct {
 	Status    string // "online" | "stale" | "offline" for agents; "" otherwise
 	State     string // agent_state (idle/working/blocked) for agents; "" otherwise
 	HasStatus bool   // agents render a live status dot; inboxes/pipes don't
+	Title     string // chat-pane header text; parity with the TUI's tChatTitle
+}
+
+// chatTitle reproduces the TUI's tChatTitle (internal/cli/tui.go) so the web
+// chat-pane header reads identically:
+//
+//	agent:  "<label> · dm · <status>"   (+ "|<state>" when agent_state is set)
+//	inbox:  "<label> · dm · inbox"
+//	pipe:   "#<label> · pipe (uncollared)"
+//
+// A parity test (TestBuildChatRoster_TitleParity) pins the format.
+func chatTitle(kind chatEntryKind, label, status, state string) string {
+	switch kind {
+	case chatKindAgent:
+		st := status
+		if st == "" {
+			st = "—"
+		}
+		if state != "" {
+			st += "|" + state
+		}
+		return fmt.Sprintf("%s · dm · %s", label, st)
+	case chatKindInbox:
+		return fmt.Sprintf("%s · dm · inbox", label)
+	default: // pipe
+		return fmt.Sprintf("#%s · pipe (uncollared)", label)
+	}
+}
+
+// messageHandleOwnedBy reports whether userID may act AS this source — i.e.
+// stamp its handle as the sender on a web-originated send. Only message-kind
+// sources the user created qualify: it's the web analog of the CLI's current
+// handle (`ppz set handle` claims a bare message handle), and you can't
+// impersonate a pty/agent or someone else's inbox. The send path re-checks
+// this server-side so a crafted request can't spoof a handle the picker never
+// offered.
+func messageHandleOwnedBy(src db.Source, userID uuid.UUID) bool {
+	return src.Kind == db.SourceKindMessage && src.CreatedByUserID == userID
+}
+
+// ownedMessageHandles returns, sorted, the bare handles the user may send as —
+// the "send as" picker's contents. (Future no-auth mode, with no session user,
+// would instead offer every handle; not reachable while every route is
+// session-gated.)
+func ownedMessageHandles(sources []db.Source, userID uuid.UUID) []string {
+	var hs []string
+	for _, s := range sources {
+		if messageHandleOwnedBy(s, userID) {
+			hs = append(hs, s.Handle)
+		}
+	}
+	sort.Strings(hs)
+	return hs
+}
+
+// OnlineCount is the number of agents currently classified "online" — powers
+// the top-bar "<N> online · <N> agents · <N> pipes" summary (TUI titleBar).
+func (r chatRoster) OnlineCount() int {
+	n := 0
+	for _, a := range r.Agents {
+		if a.Status == "online" {
+			n++
+		}
+	}
+	return n
 }
 
 // chatRoster is the three-section menu.
@@ -104,14 +170,16 @@ func buildChatRoster(sources []chatSourceInput, pipes []chatPipeInput, now time.
 	for _, s := range sources {
 		switch s.Source.Kind {
 		case db.SourceKindPTY:
+			status := classifyAgentStatus(s.HeartbeatAt, now, s.IntervalSec)
 			r.Agents = append(r.Agents, chatEntry{
 				Kind:      chatKindAgent,
 				Target:    s.Source.Handle,
 				Label:     s.Source.Handle,
 				Namespace: s.Source.Manifold,
-				Status:    classifyAgentStatus(s.HeartbeatAt, now, s.IntervalSec),
+				Status:    status,
 				State:     s.AgentState,
 				HasStatus: true,
+				Title:     chatTitle(chatKindAgent, s.Source.Handle, status, s.AgentState),
 			})
 		default: // message
 			r.Inboxes = append(r.Inboxes, chatEntry{
@@ -119,6 +187,7 @@ func buildChatRoster(sources []chatSourceInput, pipes []chatPipeInput, now time.
 				Target:    s.Source.Handle,
 				Label:     s.Source.Handle,
 				Namespace: s.Source.Manifold,
+				Title:     chatTitle(chatKindInbox, s.Source.Handle, "", ""),
 			})
 		}
 	}
@@ -132,6 +201,7 @@ func buildChatRoster(sources []chatSourceInput, pipes []chatPipeInput, now time.
 			Target:    target,
 			Label:     p.Name,
 			Namespace: p.Manifold,
+			Title:     chatTitle(chatKindPipe, p.Name, "", ""),
 		})
 	}
 	sort.Slice(r.Agents, func(i, j int) bool { return r.Agents[i].Target < r.Agents[j].Target })

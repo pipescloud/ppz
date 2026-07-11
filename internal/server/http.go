@@ -75,6 +75,7 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /auth/github/callback", s.handleAuthGitHubCallback)
 	mux.HandleFunc("POST /auth/logout", s.handleAuthLogout)
 	mux.HandleFunc("POST /dev/login", s.handleDevLogin) // gated by s.DevLogin internally
+	mux.HandleFunc("GET /dev/login", s.handleDevLogin)  // GET+?next= for one-click local login
 
 	// Test-only: wipes JetStream state across every per-org account.
 	// 404s in prod (DevLogin=false). Phase 3.5 introduced per-org
@@ -112,6 +113,9 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /orgs/{id}/chat", s.requireSession(s.handleGUIChatPage))
 	mux.HandleFunc("GET /orgs/{id}/chat/messages", s.requireSession(s.handleGUIChatMessages))
 	mux.HandleFunc("POST /orgs/{id}/chat/send", s.requireSession(s.handleGUIChatSend))
+	// Add/remove uncollared pipes from the console (TUI `a` / `-` parity).
+	mux.HandleFunc("POST /orgs/{id}/chat/pipes", s.requireSession(s.handleGUIChatAddPipe))
+	mux.HandleFunc("DELETE /orgs/{id}/chat/pipes", s.requireSession(s.handleGUIChatRemovePipe))
 	// Unlike the terminal WS (left un-authed as a punt), the chat WS is
 	// session-gated: the browser handshake carries the session cookie, so
 	// the follow is access-controlled AND the server can stamp `you`

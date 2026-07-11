@@ -8,11 +8,12 @@
 </head>
 <body>
   <main class="wide">
-    <header class="brand">
+    <header class="brand chat-brand">
       <div>
         <h1><a href="/dashboard">ppz</a> / <a href="/orgs/{{.Org.Name}}">{{.Org.Name}}</a> / chat</h1>
         <div class="crumbs">live roster + chat over this org's agents, inboxes and pipes</div>
       </div>
+      <div class="chat-counts" aria-label="roster summary">{{.Roster.OnlineCount}} online · {{len .Roster.Agents}} agents · {{len .Roster.Pipes}} pipes</div>
     </header>
 
     <div class="chat-shell" data-org="{{.Org.Name}}" data-me="{{.Me}}">
@@ -28,7 +29,8 @@
                       data-chat-kind="source"
                       data-chat-target="{{.Target}}"
                       data-chat-status="{{.Status}}"
-                      data-chat-state="{{.State}}">
+                      data-chat-state="{{.State}}"
+                      data-chat-title="{{.Title}}">
                 <span class="chat-dot chat-dot-{{.Status}}" aria-hidden="true"></span>
                 <span class="chat-entry-label">{{.Label}}</span>
                 {{if .State}}<span class="chat-entry-state">{{.State}}</span>{{end}}
@@ -50,7 +52,8 @@
               <button type="button" class="chat-entry"
                       data-chat-entry="inbox:{{.Target}}"
                       data-chat-kind="source"
-                      data-chat-target="{{.Target}}">
+                      data-chat-target="{{.Target}}"
+                      data-chat-title="{{.Title}}">
                 <span class="chat-glyph" aria-hidden="true">@</span>
                 <span class="chat-entry-label">{{.Label}}</span>
               </button>
@@ -67,21 +70,28 @@
           {{if .Roster.Pipes}}
           <ul class="chat-list">
             {{range .Roster.Pipes}}
-            <li>
+            <li class="chat-pipe-row">
               <button type="button" class="chat-entry"
                       data-chat-entry="pipe:{{.Target}}"
                       data-chat-kind="pipe"
-                      data-chat-target="{{.Target}}">
+                      data-chat-target="{{.Target}}"
+                      data-chat-title="{{.Title}}">
                 <span class="chat-glyph" aria-hidden="true">#</span>
                 <span class="chat-entry-label">{{.Label}}</span>
                 {{if .Namespace}}<span class="chat-entry-ns">{{.Namespace}}</span>{{end}}
               </button>
+              <button type="button" class="chat-remove" data-remove-target="{{.Target}}"
+                      title="remove pipe" aria-label="remove pipe {{.Label}}">&times;</button>
             </li>
             {{end}}
           </ul>
           {{else}}
-          <p class="empty">No pipes. Add one with <code>ppz pipe create &lt;name&gt;</code>.</p>
+          <p class="empty">No pipes yet.</p>
           {{end}}
+          <form class="chat-add-pipe" id="chat-add-pipe">
+            <input type="text" id="chat-add-pipe-name" name="pipe" autocomplete="off"
+                   maxlength="128" placeholder="+ add pipe…">
+          </form>
         </section>
       </aside>
 
@@ -91,10 +101,19 @@
         </div>
         <div class="chat-log" id="chat-log" data-empty="1"></div>
         <form class="chat-composer" id="chat-composer" hidden>
+          {{if .Handles}}
+          <select id="chat-handle" class="chat-handle" aria-label="send as">
+            {{range .Handles}}<option value="{{.}}">{{.}}</option>{{end}}
+          </select>
+          {{end}}
           <input type="text" id="chat-input" name="message" autocomplete="off"
                  placeholder="message…" maxlength="2000" disabled>
           <button type="submit" id="chat-send" disabled>Send</button>
         </form>
+        {{if not .Handles}}
+        <p class="chat-no-handle">You have no handles yet — claim one with
+          <code>ppz set handle &lt;name&gt;</code> to send.</p>
+        {{end}}
         <div class="chat-status" id="chat-status" hidden></div>
       </section>
     </div>

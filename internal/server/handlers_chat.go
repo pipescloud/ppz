@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -174,11 +175,18 @@ func (s *Server) handleGUIChatPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	// The "send as" picker: message handles the viewer created (the web analog
+	// of the CLI current handle). Empty => the composer blocks with guidance.
+	var handles []string
+	if sources, serr := db.ListSourcesForOrg(ctx, s.Pool, org.ID); serr == nil {
+		handles = ownedMessageHandles(sources, UserIDFromCtx(r.Context()))
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	data := s.base()
 	data["Org"] = org
 	data["Roster"] = roster
 	data["Me"] = s.meFromCtx(r.Context())
+	data["Handles"] = handles
 	if err := tmpl.ExecuteTemplate(w, "chat.html", data); err != nil {
 		http.Error(w, err.Error(), 500)
 	}
@@ -317,23 +325,30 @@ func (s *Server) handleGUIChatMessages(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	me := s.meFromCtx(r.Context())
+	// `you` marks messages the viewer sent, keyed on the handle they're acting
+	// as (?as=). Read-side only, so it's cosmetic — unlike send, it isn't an
+	// ownership gate, so we don't validate it here.
+	me := r.URL.Query().Get("as")
 	js, _ := s.JSFor(ctx, org.ID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"messages": drainChatMessages(ctx, js, streamName, me),
 	})
 }
 
-// chatSendRequest is the POST body for a web-originated message.
+// chatSendRequest is the POST body for a web-originated message. As is the
+// handle the viewer is acting as — stamped as the envelope sender.
 type chatSendRequest struct {
 	Kind    string `json:"kind"`
 	Target  string `json:"target"`
 	Payload string `json:"payload"`
+	As      string `json:"as"` // sending handle; must be a message source the viewer created
 }
 
 // handleGUIChatSend publishes a message from the browser to the resolved
-// window's subject, stamping the sender with the viewer's username. Mirrors
-// the scheduler's durable publish (blocks for the JetStream PubAck).
+// window's subject, stamped with the viewer's chosen handle (req.As) as sender.
+// The handle must be a message source the session user created — enforced here
+// so a crafted request can't impersonate a handle the picker never offered.
+// Mirrors the scheduler's durable publish (blocks for the JetStream PubAck).
 //
 // Route: POST /orgs/{id}/chat/send
 func (s *Server) handleGUIChatSend(w http.ResponseWriter, r *http.Request) {
@@ -352,12 +367,25 @@ func (s *Server) handleGUIChatSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "empty payload", http.StatusBadRequest)
 		return
 	}
-	// Don't publish an unattributed message: if we can't resolve who the
-	// viewer is, fail loudly rather than write an envelope with an empty
-	// sender that everyone (including the sender) would see as "(unknown)".
-	me := s.meFromCtx(r.Context())
-	if me == "" {
-		http.Error(w, "could not resolve your identity", 500)
+	if req.As == "" {
+		http.Error(w, "missing sending handle", http.StatusBadRequest)
+		return
+	}
+	// Ownership gate: you may only send AS a message handle you created. A
+	// foreign or non-existent handle is a uniform 403 — we don't distinguish
+	// "not yours" from "doesn't exist" so the endpoint can't be used to probe
+	// which handles exist in the org.
+	src, err := db.GetSourceByHandle(ctx, s.Pool, org.ID, req.As)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			http.Error(w, "not your handle", http.StatusForbidden)
+		} else {
+			http.Error(w, err.Error(), 500)
+		}
+		return
+	}
+	if !messageHandleOwnedBy(src, UserIDFromCtx(r.Context())) {
+		http.Error(w, "not your handle", http.StatusForbidden)
 		return
 	}
 	subject, _, ok := s.resolveChatWindowDB(ctx, w, org, req.Kind, req.Target)
@@ -369,7 +397,7 @@ func (s *Server) handleGUIChatSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "org account: "+err.Error(), 500)
 		return
 	}
-	env := envelope.New(me, "", req.Payload, time.Now().UTC())
+	env := envelope.New(req.As, "", req.Payload, time.Now().UTC())
 	data, err := env.Marshal()
 	if err != nil {
 		http.Error(w, err.Error(), 500)
@@ -381,7 +409,108 @@ func (s *Server) handleGUIChatSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "publish: "+err.Error(), 502)
 		return
 	}
-	writeJSON(w, http.StatusOK, chatView(env, me))
+	writeJSON(w, http.StatusOK, chatView(env, req.As))
+}
+
+// chatAddPipeRequest is the POST body for creating a pipe from the console.
+type chatAddPipeRequest struct {
+	Name string `json:"name"`
+}
+
+// handleGUIChatAddPipe creates a root-manifold uncollared pipe (+ its stream)
+// from the web console — the browser analog of the TUI's `[+ add pipe]`. Bare
+// leaf only (matches the TUI affordance); collared pipes stay a CLI concern.
+//
+// Route: POST /orgs/{id}/chat/pipes
+func (s *Server) handleGUIChatAddPipe(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := withTimeout(r)
+	defer cancel()
+	org, ok := s.resolveChatOrg(ctx, w, r)
+	if !ok {
+		return
+	}
+	var req chatAddPipeRequest
+	if err := readJSON(r, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := natsubj.ValidateUserPipeName(req.Name); err != nil {
+		http.Error(w, "invalid pipe name", http.StatusBadRequest)
+		return
+	}
+	// First-wins collision: a source at the root manifold reserves its name.
+	if exists, err := db.SourceExistsAtManifold(ctx, s.Pool, org.ID, "", req.Name); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	} else if exists {
+		http.Error(w, "name taken by a source", http.StatusConflict)
+		return
+	}
+	pipe, err := db.InsertPipe(ctx, s.Pool, org.ID, "", nil, UserIDFromCtx(r.Context()), req.Name, nil, nil, nil)
+	if err != nil {
+		if errors.Is(err, db.ErrPipeNameTaken) {
+			http.Error(w, "pipe already exists", http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	js, err := s.JSFor(ctx, org.ID)
+	if err != nil {
+		http.Error(w, "org account: "+err.Error(), 500)
+		return
+	}
+	if err := ensurePipeStreamWithRetention(ctx, js, org.ID, "", "", pipe.Name,
+		defaultStreamMaxAge, defaultStreamMaxMsgs, int64(defaultStreamMaxBytes)); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"name": pipe.Name, "target": pipe.Name})
+}
+
+// handleGUIChatRemovePipe deletes an uncollared pipe (row + stream) from the
+// console — the browser analog of the TUI's `-`. target is the roster key
+// ("<manifold>.<name>" or bare "<name>"). Idempotent-ish: a missing row is 404.
+//
+// Route: DELETE /orgs/{id}/chat/pipes?target=
+func (s *Server) handleGUIChatRemovePipe(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := withTimeout(r)
+	defer cancel()
+	org, ok := s.resolveChatOrg(ctx, w, r)
+	if !ok {
+		return
+	}
+	manifold, name := splitManifoldName(r.URL.Query().Get("target"))
+	if err := natsubj.ValidatePipe(name); err != nil {
+		http.Error(w, "invalid pipe name", http.StatusBadRequest)
+		return
+	}
+	if manifold != "" {
+		for _, seg := range strings.Split(manifold, ".") {
+			if err := natsubj.ValidateHandle(seg); err != nil {
+				http.Error(w, "invalid pipe manifold", http.StatusBadRequest)
+				return
+			}
+		}
+	}
+	if err := db.DeleteUncollaredPipe(ctx, s.Pool, org.ID, manifold, name); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			http.Error(w, "pipe not found", 404)
+			return
+		}
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	js, err := s.JSFor(ctx, org.ID)
+	if err != nil {
+		http.Error(w, "org account: "+err.Error(), 500)
+		return
+	}
+	if err := deleteUncollaredPipeStream(ctx, js, org.ID, manifold, name); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleGUIChatWS streams a window's messages live: drains retained history
@@ -405,7 +534,7 @@ func (s *Server) handleGUIChatWS(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	me := s.meFromCtx(r.Context())
+	me := r.URL.Query().Get("as") // acting handle, for cosmetic `you` labeling
 	js, err := s.JSFor(ctx, org.ID)
 	if err != nil {
 		http.Error(w, "org account: "+err.Error(), 500)

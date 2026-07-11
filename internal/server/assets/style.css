@@ -587,6 +587,21 @@ body[data-page="device-verify"] .btn-primary {
    live chat pane on the right. Mirrors the `ppz chat` TUI.
    ────────────────────────────────────────────────────────────── */
 
+/* Top-bar summary counts (N online · N agents · N pipes), TUI titleBar
+   parity — pushed to the right of the brand header. */
+header.chat-brand {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.chat-counts {
+  color: var(--muted);
+  font: 12px/1.4 ui-monospace, monospace;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
 .chat-shell {
   display: flex;
   gap: 1rem;
@@ -612,6 +627,37 @@ body[data-page="device-verify"] .btn-primary {
 
 .chat-list { list-style: none; margin: 0; padding: 0; }
 .chat-list li { margin: 0; }
+
+/* Pipe rows carry a hover-revealed remove (✕) button beside the entry. */
+.chat-pipe-row { display: flex; align-items: center; }
+.chat-pipe-row .chat-entry { flex: 1 1 auto; }
+.chat-remove {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 0.6rem;
+  font-size: 1rem;
+  line-height: 1;
+  opacity: 0;
+}
+.chat-pipe-row:hover .chat-remove,
+.chat-remove:focus { opacity: 1; }
+.chat-remove:hover { color: #c44; }
+
+/* "+ add pipe" inline input at the foot of the PIPES section. */
+.chat-add-pipe { margin: 0.25rem 0.85rem 0; }
+.chat-add-pipe input {
+  width: 100%;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 0.3rem 0.5rem;
+  font: inherit;
+  font-size: 0.85rem;
+}
 
 .chat-entry {
   display: flex;
@@ -693,6 +739,23 @@ body[data-page="device-verify"] .btn-primary {
 .chat-composer input {
   flex: 1 1 auto;
   min-width: 0;
+}
+/* "Send as" handle picker — the acting identity, TUI current-handle analog. */
+.chat-handle {
+  flex: 0 0 auto;
+  max-width: 9rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 0 0.4rem;
+  font: inherit;
+}
+.chat-no-handle {
+  margin: 0;
+  padding: 0.5rem 0.85rem 0.6rem;
+  font-size: 0.85rem;
+  color: var(--muted);
 }
 .chat-status {
   padding: 0.2rem 0.85rem 0.5rem;

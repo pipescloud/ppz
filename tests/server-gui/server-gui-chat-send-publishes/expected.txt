@@ -1,2 +1,2 @@
-foo|hello-web|true
+desk|hello-web|true
 exit=0

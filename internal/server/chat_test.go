@@ -114,6 +114,96 @@ func TestBuildChatRoster_ClassifiesAndSorts(t *testing.T) {
 	}
 }
 
+// A web user acts AS one of their own message-kind handles (the analog of the
+// CLI's `ppz set handle`): the picker lists only sources the session user
+// created, and send re-validates ownership server-side. ownedMessageHandles is
+// the pure filter behind both — message-kind + created_by == me, sorted.
+func TestOwnedMessageHandles(t *testing.T) {
+	me := uuid.New()
+	other := uuid.New()
+	msg := func(h string, owner uuid.UUID) db.Source {
+		return db.Source{ID: uuid.New(), Handle: h, Kind: db.SourceKindMessage, CreatedByUserID: owner}
+	}
+	pty := func(h string, owner uuid.UUID) db.Source {
+		return db.Source{ID: uuid.New(), Handle: h, Kind: db.SourceKindPTY, CreatedByUserID: owner}
+	}
+	sources := []db.Source{
+		msg("zeta", me),      // owned message -> included
+		msg("alpha", me),     // owned message -> included (sorts first)
+		msg("foreign", other), // someone else's message -> excluded
+		pty("botty", me),     // my pty/agent -> excluded (can't act as an agent)
+	}
+	got := ownedMessageHandles(sources, me)
+	want := []string{"alpha", "zeta"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("ownedMessageHandles = %v, want %v", got, want)
+	}
+
+	// The predicate the send path re-checks: only my own message handle passes.
+	if !messageHandleOwnedBy(msg("desk", me), me) {
+		t.Error("own message handle should be actable")
+	}
+	if messageHandleOwnedBy(msg("desk", other), me) {
+		t.Error("someone else's handle must NOT be actable")
+	}
+	if messageHandleOwnedBy(pty("agent", me), me) {
+		t.Error("a pty/agent handle must NOT be actable (message-kind only)")
+	}
+}
+
+// The web chat pane header must match the TUI's tChatTitle byte-for-byte so
+// the two consoles read identically:
+//   - agent:  "<label> · dm · <status>"  (+ "|<state>" when an agent_state is set)
+//   - inbox:  "<label> · dm · inbox"
+//   - pipe:   "#<label> · pipe (uncollared)"
+// buildChatRoster stamps Title on each entry (server-side, so it's testable
+// here rather than living only in the browser JS).
+func TestBuildChatRoster_TitleParity(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	sources := []chatSourceInput{
+		{Source: ptySource("claude", ""), HeartbeatAt: now.Add(-5 * time.Second), IntervalSec: 60, AgentState: "working"},
+		{Source: ptySource("codex", ""), HeartbeatAt: time.Time{}}, // no beat -> offline, no state
+		{Source: msgSource("ops", "")},
+	}
+	pipes := []chatPipeInput{
+		{Manifold: "", Name: "general"},
+		{Manifold: "eng", Name: "backend"},
+	}
+	r := buildChatRoster(sources, pipes, now)
+
+	// agents sorted: claude, codex
+	if got := r.Agents[0].Title; got != "claude · dm · online|working" {
+		t.Errorf("agent title = %q, want %q", got, "claude · dm · online|working")
+	}
+	if got := r.Agents[1].Title; got != "codex · dm · offline" {
+		t.Errorf("agent(no state) title = %q, want %q", got, "codex · dm · offline")
+	}
+	if got := r.Inboxes[0].Title; got != "ops · dm · inbox" {
+		t.Errorf("inbox title = %q, want %q", got, "ops · dm · inbox")
+	}
+	// pipes sorted: general(root), then eng.backend
+	if got := r.Pipes[0].Title; got != "#general · pipe (uncollared)" {
+		t.Errorf("pipe(root) title = %q, want %q", got, "#general · pipe (uncollared)")
+	}
+	if got := r.Pipes[1].Title; got != "#backend · pipe (uncollared)" {
+		t.Errorf("pipe(manifolded) title = %q, want %q", got, "#backend · pipe (uncollared)")
+	}
+}
+
+// OnlineCount powers the top-bar "<N> online · <N> agents · <N> pipes" summary,
+// matching the TUI titleBar. Only agents with status "online" count.
+func TestChatRoster_OnlineCount(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	r := buildChatRoster([]chatSourceInput{
+		{Source: ptySource("a", ""), HeartbeatAt: now.Add(-5 * time.Second), IntervalSec: 60},
+		{Source: ptySource("b", ""), HeartbeatAt: now.Add(-5 * time.Minute), IntervalSec: 60}, // offline
+		{Source: ptySource("c", ""), HeartbeatAt: now.Add(-2 * time.Second), IntervalSec: 60},
+	}, nil, now)
+	if got := r.OnlineCount(); got != 2 {
+		t.Errorf("OnlineCount() = %d, want 2", got)
+	}
+}
+
 // resolveChatWindow validates a (kind,target) pair and, for pipe windows,
 // builds the JetStream subject + stream name (source windows are resolved
 // against the DB row by resolveChatWindowDB, so this pure resolver only
