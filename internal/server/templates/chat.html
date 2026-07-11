@@ -21,7 +21,7 @@
           </select>
         </label>
         {{else}}
-        <span class="chat-no-handle">no handle — claim one with <code>ppz set handle &lt;name&gt;</code></span>
+        <span class="chat-no-handle">no handle — create one with <code>ppz source create &lt;name&gt;</code></span>
         {{end}}
         <div class="chat-counts" aria-label="roster summary">{{.Roster.OnlineCount}} online · {{len .Roster.Agents}} agents · {{len .Roster.Pipes}} pipes</div>
       </div>

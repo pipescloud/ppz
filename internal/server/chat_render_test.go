@@ -115,7 +115,7 @@ func TestChatTemplate_HandlePicker_WhenOwned(t *testing.T) {
 }
 
 // When the viewer owns no handles, there is no picker; instead a notice points
-// them at `ppz set handle` and the composer stays unusable (block-send).
+// them at `ppz source create` and the composer stays unusable (block-send).
 func TestChatTemplate_HandlePicker_WhenNone(t *testing.T) {
 	data := map[string]any{
 		"Org":     db.Account{ID: uuid.New(), Name: "alpha"},
@@ -131,8 +131,8 @@ func TestChatTemplate_HandlePicker_WhenNone(t *testing.T) {
 	if !strings.Contains(out, `chat-no-handle`) {
 		t.Error("expected a no-handle notice when the viewer owns no handles")
 	}
-	if !strings.Contains(out, "ppz set handle") {
-		t.Error("no-handle notice should point the user at `ppz set handle`")
+	if !strings.Contains(out, "ppz source create") {
+		t.Error("no-handle notice should point the user at `ppz source create`")
 	}
 	if strings.Contains(out, `id="chat-handle"`) {
 		t.Error("no handle picker should render when the viewer owns none")
