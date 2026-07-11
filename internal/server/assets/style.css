@@ -710,20 +710,18 @@ header.chat-brand {
 .chat-entry.active .chat-entry-state { color: rgba(255,255,255,0.8); }
 
 .chat-entry-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Unread badge — count of messages past the viewer's read cursor. */
+/* Unread count — TUI-style "(n)" in the cyan accent, no pill (white-on-cyan
+   was unreadable). Parens come from CSS so the JS just sets the number. */
 .chat-unread {
   flex: 0 0 auto;
-  min-width: 1.1rem;
-  text-align: center;
-  padding: 0 0.35rem;
-  border-radius: 999px;
-  background: var(--accent);
-  color: #fff;
-  font-size: 0.7rem;
+  color: var(--accent);
+  font-size: 0.85rem;
   font-weight: 600;
-  line-height: 1.3;
+  padding-left: 0.4rem;
 }
-.chat-entry.active .chat-unread { background: rgba(255,255,255,0.25); }
+.chat-unread::before { content: "("; }
+.chat-unread::after  { content: ")"; }
+.chat-entry.active .chat-unread { color: #cfe8ee; }
 .chat-entry-ns,
 .chat-entry-state {
   font-size: 0.72rem;
