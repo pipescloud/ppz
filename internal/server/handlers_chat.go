@@ -245,10 +245,13 @@ func (s *Server) stampUnread(ctx context.Context, org db.Account, userID uuid.UU
 	}
 
 	var wg sync.WaitGroup
-	// Pipes: own-stream growth past the cursor.
+	// Pipes: own-stream growth past the cursor. Keyed by the acting handle so
+	// read state is per-identity (each handle is its own participant, like the
+	// TUI's per-handle chatstore) — reading a pipe as one handle doesn't mark it
+	// read for another.
 	for i := range roster.Pipes {
 		streamName := natsubj.BuildStreamName(org.ID, roster.Pipes[i].Namespace, "", roster.Pipes[i].Label)
-		cursor := cursors[db.ChatCursorKey("pipe", "", roster.Pipes[i].Target)]
+		cursor := cursors[db.ChatCursorKey("pipe", acting, roster.Pipes[i].Target)]
 		wg.Add(1)
 		go func(i int, streamName string, cursor int64) {
 			defer wg.Done()
@@ -697,6 +700,7 @@ func (s *Server) handleGUIChatMarkRead(w http.ResponseWriter, r *http.Request) {
 	var streamName, acting string
 	if win.Kind == "pipe" {
 		streamName = win.StreamName
+		acting = req.As // per-identity pipe read state
 	} else {
 		// DM: mark against MY inbox (acting handle), where the counterparty's
 		// messages land. No acting handle => the window's own inbox (god's-eye).
