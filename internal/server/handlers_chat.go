@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -351,21 +352,101 @@ func replayStream(ctx context.Context, stream jetstream.Stream, limit int, fn fu
 	return last, nil
 }
 
-// drainChatMessages reads a window's stream front-to-back into message views.
-// Missing stream / unprovisioned org => empty (not an error).
-func drainChatMessages(ctx context.Context, js jetstream.JetStream, streamName, me string) []chatMessageView {
+// chatReadLeg is one stream to read for a window, optionally filtered to a
+// single sender. A pipe (shared room) or a god's-eye inbox is a single
+// unfiltered leg; a DM thread is two filtered legs (my side + the
+// counterparty's side).
+type chatReadLeg struct {
+	StreamName string
+	WantSender string // "" = no sender filter
+}
+
+// resolveChatReadLegs validates a (kind,target) window and returns the legs
+// whose merged, sender-filtered messages are what the viewer should see.
+//
+// For a source (DM) window opened while acting as handle `as` (≠ the target),
+// that's the two-way thread — TUI participant parity: <target>.inbox filtered
+// to my sends, stitched with <as>.inbox filtered to the counterparty's replies.
+// With no acting handle (or acting-as the target itself) it degrades to the
+// single unfiltered inbox — the god's-eye view. Pipes are always one unfiltered
+// leg. Writes the HTTP error + returns false on failure.
+func (s *Server) resolveChatReadLegs(ctx context.Context, w http.ResponseWriter, org db.Account, kind, target, as string) ([]chatReadLeg, bool) {
+	win, err := resolveChatWindow(org.ID, kind, target)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return nil, false
+	}
+	if win.Kind == "pipe" {
+		exists, err := db.UncollaredPipeExists(ctx, s.Pool, org.ID, win.Manifold, win.Name)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return nil, false
+		}
+		if !exists {
+			http.Error(w, "pipe not found", 404)
+			return nil, false
+		}
+		return []chatReadLeg{{StreamName: win.StreamName}}, true
+	}
+	// source window
+	x, err := db.GetSourceByHandle(ctx, s.Pool, org.ID, win.Handle)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			http.Error(w, "source not found", 404)
+		} else {
+			http.Error(w, err.Error(), 500)
+		}
+		return nil, false
+	}
+	xStream := natsubj.BuildStreamName(org.ID, x.Manifold, x.Handle, "inbox")
+	if as == "" || as == x.Handle {
+		return []chatReadLeg{{StreamName: xStream}}, true // god's-eye / own inbox
+	}
+	// Resolve the acting handle's manifold (best-effort; root if unknown) to
+	// build its inbox stream — that's where the counterparty's replies land.
+	hManifold := ""
+	if h, herr := db.GetSourceByHandle(ctx, s.Pool, org.ID, as); herr == nil {
+		hManifold = h.Manifold
+	}
+	hStream := natsubj.BuildStreamName(org.ID, hManifold, as, "inbox")
+	return []chatReadLeg{
+		{StreamName: xStream, WantSender: as},       // my messages to the counterparty
+		{StreamName: hStream, WantSender: x.Handle}, // the counterparty's replies to me
+	}, true
+}
+
+// drainChatThread reads every leg, applies each leg's sender filter, merges by
+// created_at and dedups by id — the snapshot form of a window (a DM thread's
+// two legs, or a single pipe/inbox stream). Missing streams are skipped.
+func drainChatThread(ctx context.Context, js jetstream.JetStream, legs []chatReadLeg, me string) []chatMessageView {
 	out := []chatMessageView{}
 	if js == nil {
 		return out
 	}
-	stream, err := js.Stream(ctx, streamName)
-	if err != nil {
-		return out
+	seen := map[string]bool{}
+	for _, leg := range legs {
+		stream, err := js.Stream(ctx, leg.StreamName)
+		if err != nil {
+			continue
+		}
+		wantSender := leg.WantSender
+		_, _ = replayStream(ctx, stream, chatHistoryLimit, func(env envelope.Message) error {
+			if wantSender != "" && env.Sender != wantSender {
+				return nil
+			}
+			if env.ID != "" {
+				if seen[env.ID] {
+					return nil
+				}
+				seen[env.ID] = true
+			}
+			out = append(out, chatView(env, me))
+			return nil
+		})
 	}
-	_, _ = replayStream(ctx, stream, chatHistoryLimit, func(env envelope.Message) error {
-		out = append(out, chatView(env, me))
-		return nil
-	})
+	// created_at is RFC3339-UTC to the second, so a lexical sort is chronological;
+	// stable keeps same-second messages in leg order.
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt < out[j].CreatedAt })
 	return out
 }
 
@@ -383,17 +464,17 @@ func (s *Server) handleGUIChatMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	kind := r.URL.Query().Get("kind")
 	target := r.URL.Query().Get("target")
-	_, streamName, ok := s.resolveChatWindowDB(ctx, w, org, kind, target)
+	// `as` is the handle the viewer is acting as: it selects the DM thread's
+	// counterparty legs and keys the cosmetic `you` label. Read-side only, not
+	// an ownership gate (unlike send), so it isn't validated here.
+	me := r.URL.Query().Get("as")
+	legs, ok := s.resolveChatReadLegs(ctx, w, org, kind, target, me)
 	if !ok {
 		return
 	}
-	// `you` marks messages the viewer sent, keyed on the handle they're acting
-	// as (?as=). Read-side only, so it's cosmetic — unlike send, it isn't an
-	// ownership gate, so we don't validate it here.
-	me := r.URL.Query().Get("as")
 	js, _ := s.JSFor(ctx, org.ID)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"messages": drainChatMessages(ctx, js, streamName, me),
+		"messages": drainChatThread(ctx, js, legs, me),
 	})
 }
 
@@ -654,22 +735,16 @@ func (s *Server) handleGUIChatWS(w http.ResponseWriter, r *http.Request) {
 	}
 	kind := r.URL.Query().Get("kind")
 	target := r.URL.Query().Get("target")
-	subject, streamName, ok := s.resolveChatWindowDB(ctx, w, org, kind, target)
+	me := r.URL.Query().Get("as") // acting handle: selects DM legs + cosmetic `you`
+	legs, ok := s.resolveChatReadLegs(ctx, w, org, kind, target, me)
 	if !ok {
 		return
 	}
-	me := r.URL.Query().Get("as") // acting handle, for cosmetic `you` labeling
 	js, err := s.JSFor(ctx, org.ID)
 	if err != nil {
 		http.Error(w, "org account: "+err.Error(), 500)
 		return
 	}
-	// The window is valid (resolveChatWindowDB confirmed the source/pipe row);
-	// the backing stream may still be missing on an unprovisioned account. A
-	// nil stream just means "no history, nothing to follow yet" — we still
-	// accept the socket so the client shows a live (empty) window instead of a
-	// connection error.
-	stream, _ := js.Stream(ctx, streamName)
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
 	if err != nil {
@@ -677,11 +752,16 @@ func (s *Server) handleGUIChatWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	writeEnv := func(env envelope.Message) error {
-		b, err := json.Marshal(chatView(env, me))
+	// Serialize writes: a DM thread follows two legs (two consumer goroutines),
+	// and coder/websocket forbids concurrent writes on one connection.
+	var writeMu sync.Mutex
+	writeView := func(v chatMessageView) error {
+		b, err := json.Marshal(v)
 		if err != nil {
 			return nil // skip a bad view, don't tear down
 		}
+		writeMu.Lock()
+		defer writeMu.Unlock()
 		wctx, wcancel := context.WithTimeout(ctx, 5*time.Second)
 		defer wcancel()
 		return conn.Write(wctx, websocket.MessageText, b)
@@ -697,35 +777,71 @@ func (s *Server) handleGUIChatWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	if stream != nil {
-		// 1) Drain retained history (bounded to the most-recent
-		// chatHistoryLimit), capturing the last sequence.
-		lastSeq, derr := replayStream(ctx, stream, chatHistoryLimit, writeEnv)
+	// 1) Drain each leg's retained history (bounded + sender-filtered), merge
+	//    by created_at, and send once. Record each leg's last sequence so the
+	//    live follow resumes from just past it. A leg whose stream isn't
+	//    materialised yet is simply skipped (empty history, nothing to follow).
+	type legState struct {
+		stream     jetstream.Stream
+		wantSender string
+		lastSeq    uint64
+	}
+	var states []legState
+	var hist []chatMessageView
+	for _, leg := range legs {
+		stream, serr := js.Stream(ctx, leg.StreamName)
+		if serr != nil {
+			continue
+		}
+		wantSender := leg.WantSender
+		last, derr := replayStream(ctx, stream, chatHistoryLimit, func(env envelope.Message) error {
+			if wantSender == "" || env.Sender == wantSender {
+				hist = append(hist, chatView(env, me))
+			}
+			return nil
+		})
 		if derr != nil && ctx.Err() != nil {
 			return // client went away mid-drain
 		}
-		// 2) Follow live from just past the drained history.
-		consumer, cerr := stream.OrderedConsumer(ctx, jetstream.OrderedConsumerConfig{
-			FilterSubjects: []string{subject},
-			DeliverPolicy:  jetstream.DeliverByStartSequencePolicy,
-			OptStartSeq:    lastSeq + 1,
+		states = append(states, legState{stream: stream, wantSender: wantSender, lastSeq: last})
+	}
+	sort.SliceStable(hist, func(i, j int) bool { return hist[i].CreatedAt < hist[j].CreatedAt })
+	for _, v := range hist {
+		if err := writeView(v); err != nil {
+			return
+		}
+	}
+
+	// 2) Follow each leg live from just past its drained history. Per-leg
+	//    consumers deliver in arrival order (≈ time order for live traffic);
+	//    the browser dedups by id so any overlap is harmless.
+	for _, st := range states {
+		wantSender := st.wantSender
+		consumer, cerr := st.stream.OrderedConsumer(ctx, jetstream.OrderedConsumerConfig{
+			DeliverPolicy: jetstream.DeliverByStartSequencePolicy,
+			OptStartSeq:   st.lastSeq + 1,
 		})
-		if cerr == nil {
-			cc, ccerr := consumer.Consume(func(msg jetstream.Msg) {
-				env, uerr := envelope.Unmarshal(msg.Data())
-				if uerr != nil {
-					_ = msg.Ack()
-					return
-				}
-				if err := writeEnv(env); err != nil {
-					cancel()
-					return
-				}
+		if cerr != nil {
+			continue
+		}
+		cc, ccerr := consumer.Consume(func(msg jetstream.Msg) {
+			env, uerr := envelope.Unmarshal(msg.Data())
+			if uerr != nil {
 				_ = msg.Ack()
-			})
-			if ccerr == nil {
-				defer cc.Stop()
+				return
 			}
+			if wantSender != "" && env.Sender != wantSender {
+				_ = msg.Ack()
+				return
+			}
+			if err := writeView(chatView(env, me)); err != nil {
+				cancel()
+				return
+			}
+			_ = msg.Ack()
+		})
+		if ccerr == nil {
+			defer cc.Stop()
 		}
 	}
 
