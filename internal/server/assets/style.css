@@ -764,12 +764,27 @@ header.chat-brand {
   flex-direction: column;
   gap: 0.5rem;
 }
-.chat-msg { display: flex; flex-direction: column; gap: 0.1rem; }
-.chat-msg-meta { display: flex; gap: 0.5rem; align-items: baseline; }
-.chat-msg-time { color: var(--muted); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
-.chat-msg-sender { color: var(--accent); font-weight: 600; font-size: 0.85rem; }
-.chat-msg-you .chat-msg-sender { color: var(--muted); }
-.chat-msg-body { white-space: pre-wrap; word-break: break-word; }
+/* One inline row per message: [time] [sender] [body], body hanging-indented
+   under its own column — matches the `ppz chat` TUI. */
+.chat-msg { display: flex; gap: 0.85rem; align-items: baseline; }
+.chat-msg-time {
+  flex: 0 0 auto;
+  width: 3.1em;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.chat-msg-sender {
+  flex: 0 0 auto;
+  min-width: 6.5em;
+  color: var(--accent);
+  font-weight: 600;
+}
+.chat-msg-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
 .chat-composer {
   display: flex;

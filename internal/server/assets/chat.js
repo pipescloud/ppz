@@ -102,22 +102,19 @@
     row.setAttribute("data-msg-id", m.id || "");
     row.setAttribute("data-msg", (m.sender || "") + ":" + (m.payload || ""));
 
-    const meta = document.createElement("span");
-    meta.className = "chat-msg-meta";
+    // TUI-style single row: time · sender · body (body hanging-indented).
     const time = document.createElement("span");
     time.className = "chat-msg-time";
     time.textContent = hm(m.created_at);
     const who = document.createElement("span");
     who.className = "chat-msg-sender";
     who.textContent = mine ? "you" : (m.sender || "(unknown)");
-    meta.appendChild(time);
-    meta.appendChild(who);
-
     const body = document.createElement("span");
     body.className = "chat-msg-body";
     body.textContent = m.payload || "";
 
-    row.appendChild(meta);
+    row.appendChild(time);
+    row.appendChild(who);
     row.appendChild(body);
     logEl.appendChild(row);
 
