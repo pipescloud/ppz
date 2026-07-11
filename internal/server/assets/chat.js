@@ -198,6 +198,14 @@
     // Opening a window reads it: clear its badge now and advance the cursor.
     setUnreadBadge(entryEl, 0);
     markRead(kind, target);
+
+    // Mobile master-detail: swap from the roster to the conversation pane.
+    shell.setAttribute("data-view", "chat");
+  }
+
+  const backBtn = document.getElementById("chat-back");
+  if (backBtn) {
+    backBtn.addEventListener("click", () => shell.setAttribute("data-view", "roster"));
   }
 
   shell.querySelectorAll(".chat-entry").forEach((entryEl) => {

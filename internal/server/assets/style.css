@@ -682,9 +682,9 @@ header.chat-brand {
   background: var(--surface);
   padding: 0.5rem 0;
 }
-.chat-section { padding: 0.25rem 0 0.75rem; }
+.chat-section { padding: 0.1rem 0 0.4rem; }
 .chat-section > h2 {
-  margin: 0.5rem 0.85rem 0.35rem;
+  margin: 0.35rem 0.85rem 0.15rem;
   font-size: 0.7rem;
 }
 .chat-section .empty { margin: 0 0.85rem; font-size: 0.85rem; }
@@ -732,7 +732,7 @@ header.chat-brand {
   color: var(--text);
   border: 0;
   border-radius: 0;
-  padding: 0.4rem 0.85rem;
+  padding: 0.16rem 0.85rem;
   margin: 0;
   font: inherit;
   text-align: left;
@@ -865,8 +865,44 @@ header.chat-brand {
 .chat-title { color: var(--accent); }
 .chat-page h1 a { color: var(--accent); }
 
+/* The mobile "‹ menu" back button — hidden on desktop (two-pane). */
+.chat-back { display: none; }
+
 @media (max-width: 720px) {
+  /* Top bar: let the identity picker + counts wrap under the title. */
+  header.chat-brand { flex-wrap: wrap; }
+  .chat-brand-right { flex-wrap: wrap; gap: 0.5rem 0.9rem; }
+  .chat-picker-menu { right: auto; left: 0; }
+
+  /* Master-detail: one pane at a time. The roster is the screen (full height,
+     native page scroll — no cramped nested box); tapping an entry swaps to the
+     conversation, and "‹ menu" swaps back. */
   .chat-shell { flex-direction: column; height: auto; }
-  .chat-roster { flex-basis: auto; max-height: 40vh; }
-  .chat-main { min-height: 50vh; }
+  .chat-roster { flex-basis: auto; max-height: none; overflow: visible; }
+  .chat-main { min-height: 85vh; display: none; }
+  .chat-shell[data-view="chat"] .chat-roster { display: none; }
+  .chat-shell[data-view="chat"] .chat-main { display: flex; }
+
+  .chat-back {
+    display: inline-block;
+    align-self: flex-start;
+    margin: 0.5rem 0 0 0.5rem;
+    border: 0;
+    background: transparent;
+    color: var(--accent);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  /* Tighter message columns so the body keeps room on a narrow screen. */
+  .chat-msg { gap: 0.5rem; }
+  .chat-msg-time { width: 2.9em; }
+  .chat-msg-sender { min-width: 4.5em; }
+}
+
+@media (max-width: 420px) {
+  main.wide { padding: 1rem 0.75rem 2rem; }
+  h1 { font-size: 1.1rem; }
+  .chat-msg-sender { min-width: 3.5em; }
 }
