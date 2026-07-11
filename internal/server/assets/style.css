@@ -835,6 +835,7 @@ header.chat-brand {
 .chat-composer {
   display: flex;
   flex-direction: column;
+  align-items: stretch;
   gap: 0.4rem;
   padding: 0.6rem 0.75rem;
   border-top: 1px solid var(--border);
@@ -863,20 +864,33 @@ header.chat-brand {
   justify-content: space-between;
   gap: 0.5rem;
 }
+/* Small Slack-style icon send button — just an arrow. Subtle grey by default;
+   turns accent once there's text to send (.ready). */
 .chat-send {
   flex: 0 0 auto;
-  width: auto;
-  border: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--btn-bg);
-  color: #fff;
-  padding: 0.35rem 0.95rem;
+  background: transparent;
+  color: var(--muted);
   font: inherit;
-  font-weight: 600;
+  font-size: 1rem;
+  line-height: 1;
   cursor: pointer;
 }
-.chat-send:hover:not(:disabled) { background: var(--btn-bg-hover); }
-.chat-send:disabled { opacity: 0.45; cursor: default; }
+.chat-send:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.chat-send.ready {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #08222a;
+}
+.chat-send.ready:hover { background: var(--accent-hover); }
+.chat-send:disabled { opacity: 0.4; cursor: default; }
 /* "Send as" handle picker — the acting identity, TUI current-handle analog. */
 .chat-handle {
   flex: 0 0 auto;
