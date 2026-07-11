@@ -160,6 +160,15 @@ ul.tidy li:hover { background: var(--row-hover); }
 }
 .table-scroll > table { min-width: 32rem; }
 
+@media (max-width: 720px) {
+  /* Trim the pipes table to essentials on mobile: drop namespace (col 1) and
+     payload (col 5), keeping source / pipe / last message — enough to fit
+     without horizontal scroll. */
+  #pipes th:nth-child(1), #pipes td:nth-child(1),
+  #pipes th:nth-child(5), #pipes td:nth-child(5) { display: none; }
+  .table-scroll > #pipes { min-width: 0; }
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

@@ -21,12 +21,12 @@
     <nav class="tabs" data-active-tab="{{.ActiveTab}}">
       <a data-tab="pipes" href="/orgs/{{.Org.Name}}/pipes"
          class="{{if eq .ActiveTab "pipes"}}active{{end}}">Pipes</a>
+      <a data-tab="chat" href="/orgs/{{.Org.Name}}/chat"
+         data-chat-link="/orgs/{{.Org.Name}}/chat">Agents</a>
       <a data-tab="users" href="/orgs/{{.Org.Name}}/users"
          class="{{if eq .ActiveTab "users"}}active{{end}}">Users</a>
       <a data-tab="keys"  href="/orgs/{{.Org.Name}}/keys"
          class="{{if eq .ActiveTab "keys"}}active{{end}}">API keys</a>
-      <a data-tab="chat" href="/orgs/{{.Org.Name}}/chat"
-         data-chat-link="/orgs/{{.Org.Name}}/chat">Chat</a>
     </nav>
 
     {{if eq .ActiveTab "pipes"}}
