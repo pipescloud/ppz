@@ -42,7 +42,11 @@ type Source struct {
 //   - stdout: byte-faithful capture of the PTY master's output (ANSI
 //     escapes intact); both `ppz read` and `ppz terminal view` consume
 //     this pipe.
-//   - stdctrl: control plane (resize events, etc.).
+//   - stdctrl: control plane (resize/setsize events — device geometry).
+//   - system: session control plane — write-lease acquire/release requests
+//     (writer → host) and host-published lease-state events (host →
+//     observers). Distinct from stdctrl: stdctrl mutates the pty device,
+//     system coordinates who may write. See docs/WIRE.md.
 //
 // `broadcast` was an auto-provisioned pipe pre-launch; it was removed
 // in Phase 1 (locked decision #16) — teams now use explicit room pipes
@@ -51,7 +55,7 @@ type Source struct {
 func (s Source) Pipes() []string {
 	switch s.Kind {
 	case SourceKindPTY:
-		return []string{"stdin", "stdout", "stdctrl", "inbox", "heartbeat"}
+		return []string{"stdin", "stdout", "stdctrl", "system", "inbox", "heartbeat"}
 	default:
 		return []string{"inbox"}
 	}
@@ -114,6 +118,25 @@ func GetSourceByHandle(ctx context.Context, p *Pool, accountID uuid.UUID, handle
 	}
 	src.Kind = SourceKind(kind)
 	return src, err
+}
+
+// UpdateSourceKind changes an existing source's kind in place. Used by the
+// "ensure pty" upgrade path when a bare `terminal share` runs against an
+// inbox-only (message) source: sharing a source declares it a terminal, so
+// its kind is promoted to pty and its full pipe set provisioned. `kind` is a
+// plain mutable column. Returns ErrNotFound when (account, handle) is absent.
+// Idempotent: setting pty on an already-pty row affects one row, no error.
+func UpdateSourceKind(ctx context.Context, p *Pool, accountID uuid.UUID, handle string, kind SourceKind) error {
+	tag, err := p.Exec(ctx,
+		`UPDATE sources SET kind = $1 WHERE account_id = $2 AND handle = $3`,
+		string(kind), accountID, handle)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func ListSourcesForOrg(ctx context.Context, p *Pool, accountID uuid.UUID) ([]Source, error) {

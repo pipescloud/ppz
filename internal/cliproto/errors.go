@@ -63,6 +63,12 @@ const (
 	// one-offs delete their row; docs/specs/schedule.md).
 	EScheduleNotFound Code = "E_SCHEDULE_NOT_FOUND"
 
+	// ELeaseHeld is returned by `ppz terminal lease` when a different
+	// controller already holds the terminal's advisory write-lease. The
+	// acquirer is denied rather than stealing it; `ppz terminal control`
+	// treats this as the signal to fall back to a read-only attach.
+	ELeaseHeld Code = "E_LEASE_HELD"
+
 	// ENameTaken — Phase 1.5.1 first-wins collision rule. Within a
 	// manifold, user-typed names share a namespace across source
 	// handles and uncollared pipe names; a source at manifold M also
@@ -112,6 +118,8 @@ func ExitCode(c Code) int {
 		return 25
 	case EDaemonTimeout:
 		return 26
+	case ELeaseHeld:
+		return 27
 	}
 	return 1
 }
@@ -170,6 +178,8 @@ func Message(c Code) string {
 		return "delivery unconfirmed; the message was published but the server did not acknowledge it in time — it may or may not have landed; retry if your workflow tolerates a possible duplicate"
 	case EDaemonTimeout:
 		return "daemon did not respond in time; it may be busy or stuck (e.g. mid-restart) — retry, or run 'ppz daemon restart'"
+	case ELeaseHeld:
+		return "terminal write-lease is currently owned by another controller; retry after it releases or expires, or use 'ppz terminal control' to attach read-only"
 	}
 	return "unknown error"
 }

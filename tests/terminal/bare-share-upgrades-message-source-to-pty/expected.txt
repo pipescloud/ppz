@@ -1,0 +1,7 @@
+chat.heartbeat
+chat.inbox
+chat.stdctrl
+chat.stdin
+chat.stdout
+chat.system
+exit=0

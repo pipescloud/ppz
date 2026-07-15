@@ -349,6 +349,7 @@ Go types named here are the authoritative field source. Verbs:
 | `Status` | `StatusRequest` / `StatusReply` | daemon state, current handle, NATS state |
 | `Login` | `LoginRequest` / `LoginReply` | store credential, run /auth/exchange |
 | `Create` | `CreateRequest` / `CreateReply` | create a source, set session current |
+| `EnsurePTY` | `EnsurePTYRequest` / `EnsurePTYReply` | upgrade an existing source to a full pty terminal (kind=pty + all pty pipes); backs bare `terminal share`; idempotent |
 | `Switch` | `SwitchRequest` / `SwitchReply` | set session current handle |
 | `Send` | `SendRequest` / `SendReply` | publish one envelope (blocks for PubAck) |
 | `SendBatch` | `SendBatchRequest` / `SendBatchReply` | publish N envelopes, one flush |
@@ -635,9 +636,40 @@ exported to the child. Stdout chunks publish verbatim to `<handle>.stdout`;
 subscribed `<handle>.stdin` messages forward to the PTY master. Foreground;
 blocks until child exits. Exit 0 on clean child exit.
 
+Bare `ppz terminal share` (no handle) shares the session's current source. If
+that source is inbox-only (kind=message — e.g. from `source create` or
+`connect`), sharing it **upgrades it to a full terminal**: kind flips to pty and
+the complete pty pipe set is provisioned (incl. the reserved `system` and
+`inbox` pipes), via `EnsurePTY` (§7 / `POST /api/v1/sources/{handle}/ensure-pty`).
+Idempotent — re-sharing an already-pty source is a no-op. This makes a
+bare-shared terminal indistinguishable from one made with `terminal share H`:
+it shows in `ppz who`, renders as an Agent in the GUI, and is controllable
+(`terminal lease`/`control`).
+
 ### `ppz terminal watch HANDLE`
 TUI viewer: enters alt-screen, follows `<handle>.stdout` until SIGINT/Ctrl-C,
-exits alt-screen, exit 0.
+exits alt-screen, exit 0. Read-only — keystrokes are discarded. For an
+interactive attach see `terminal control`.
+
+### `ppz terminal control HANDLE`
+Interactive attach = `watch` (follows `<handle>.stdout`) PLUS forwarding local
+keystrokes to `<handle>.stdin`, after acquiring the advisory write-lease (see
+§12). Exits 10 if not logged in. If another controller already holds the lease,
+degrades to a read-only attach (streams output; keystrokes not forwarded)
+rather than failing. Forwarded stdin is stamped with the controller's
+`PPZ_CURRENT_HANDLE` so the host's lease check accepts it. On exit a writable
+session releases the lease so the terminal frees immediately.
+
+### `ppz terminal lease HANDLE DURATION`
+Acquires the write-lease on `HANDLE` for `DURATION` (Go duration: `60s`, `5m`).
+Blocks until the pty host grants or denies. Grant → exit 0; deny (someone else
+holds it) → prints `held by <holder>` and exits `E_LEASE_HELD` (27). Holder
+identity is `PPZ_CURRENT_HANDLE`.
+
+### `ppz terminal release HANDLE`
+Releases the caller's write-lease on `HANDLE`. A release by anyone but the
+current holder is a host-side no-op. Blocks briefly for the host's free-state
+confirmation so scripts can sequence on it.
 
 ## 9. Daemon on-disk state
 
@@ -696,3 +728,51 @@ show `-` for missing ones. (Source of truth: `HeartbeatPayload`,
 `ppz who --json` keeps `status` liveness-only; the table's combined
 `online|working` form is presentation (`CombineHeartbeatStatus`), not wire.
 See `docs/specs/agent-detection.md` for the detection design.
+
+## 12. Terminal write-lease (`<handle>.system`)
+
+`system` is a pty source's control-plane pipe (auto-provisioned; reserved from
+user `pipe create`). It carries the advisory **write-lease** that coordinates
+who may write to the wrapped child's stdin. Distinct from `stdctrl`: `stdctrl`
+mutates the pty *device* (resize/setsize), `system` coordinates *access*.
+
+**Why the lease.** Any client can publish to `<handle>.stdin` (`ppz send`,
+`ppz command`, `ppz terminal control`). Interleaving two writers' keystrokes
+corrupts a shell session, so the lease grants one writer exclusivity for a
+bounded window. It is enforced at the pty host — the `terminal share` process,
+the single point where every `.stdin` byte enters the child.
+
+**Advisory, not a security boundary.** The holder identity is the acquirer's
+envelope `sender` (the caller-supplied `PPZ_CURRENT_HANDLE`), which is not
+authenticated. The lease coordinates *cooperating* writers; it does not defend
+against a client that forges `sender`. Write-access enforcement against
+untrusted callers is a future ACL layer, orthogonal to this lease.
+
+**Local operator is never gated.** The host's local-stdin→PTY path does not
+traverse `.stdin`, and the lease only gates `.stdin`, so a lease can never block
+the person physically at the shared terminal. It governs remote writers only.
+
+### Messages (typed JSON on `<handle>.system`)
+
+| Payload | Direction | Meaning |
+|---|---|---|
+| `{"type":"lease-acquire","ttl_ms":N,"nonce":"..."}` | writer → host | Request/renew the lease for `ttl_ms` (holder = envelope sender). |
+| `{"type":"lease-release","nonce":"..."}` | writer → host | Release the lease (host-side no-op unless sender is the holder). |
+| `{"type":"lease-state","holder":H,"until":T,"reply_nonce":"..."}` | host → observers | Current holder (`""` = free) and RFC3339 expiry. `reply_nonce` echoes the request's `nonce` so an acquirer can correlate grant-vs-deny; absent for unsolicited state (TTL expiry). |
+
+### Host rules
+
+- **Acquire** when free, or a renew by the current holder (`holder==sender`):
+  grant, arm a TTL timer, publish `lease-state` with the new holder + `until`.
+- **Acquire** while held by someone else: deny — publish `lease-state` with the
+  *unchanged* current holder and the requester's `reply_nonce`.
+- **Release** by the holder: clear, publish free `lease-state`.
+- **TTL expiry**: clear, publish free `lease-state` (unsolicited, no
+  `reply_nonce`). Enforcement stops the instant the clock passes `until`, even
+  before the free state is published.
+- `stdin` enforcement: while a lease is held, the host drops `.stdin` messages
+  whose envelope sender ≠ holder before they reach the child.
+
+`terminal lease` / `release` / `control` are the CLI front-ends (§8). Source of
+truth: `internal/cli/terminal.go` (`leaseState`, `runLeaseManager`,
+`handleLeaseMessage`, `forwardStdin` enforcement).

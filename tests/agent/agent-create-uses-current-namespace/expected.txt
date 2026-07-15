@@ -3,4 +3,5 @@ pixel.cindy.inbox
 pixel.cindy.stdctrl
 pixel.cindy.stdin
 pixel.cindy.stdout
+pixel.cindy.system
 exit=0

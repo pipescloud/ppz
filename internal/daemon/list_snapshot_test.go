@@ -37,7 +37,7 @@ func TestPipesForSourceDedupeSortedAutoAndUserPipes(t *testing.T) {
 		Kind:  string(cliproto.KindPTY),
 		Pipes: []string{"archive", "stdout", "alerts"},
 	})
-	want := []string{"alerts", "archive", "heartbeat", "inbox", "stdctrl", "stdin", "stdout"}
+	want := []string{"alerts", "archive", "heartbeat", "inbox", "stdctrl", "stdin", "stdout", "system"}
 	if len(got) != len(want) {
 		t.Fatalf("pipesForSource len = %d (%v), want %d (%v)", len(got), got, len(want), want)
 	}

@@ -25,6 +25,11 @@ const (
 	IPCPipeCreate    = "PipeCreate"
 	IPCPipeDestroy   = "PipeDestroy"
 	IPCSourceDestroy = "SourceDestroy"
+	// IPCEnsurePTY promotes the session's current source to a full terminal
+	// (kind=pty + the complete pty pipe set incl. reserved system/inbox).
+	// Backs bare `ppz terminal share`, which shares an existing source that
+	// may have been created inbox-only. Idempotent.
+	IPCEnsurePTY = "EnsurePTY"
 
 	// Phase 1.5 namespace (manifold) state verbs. `ppz set namespace
 	// PATH` / `ppz unset namespace` — symmetric with handle. No
@@ -255,6 +260,21 @@ type CreateReply struct {
 	Manifold string   `json:"manifold,omitempty"` // Phase 1.5.1
 	Subject  string   `json:"subject"`
 	Pipes    []string `json:"pipes,omitempty"` // pipe names provisioned for this source
+}
+
+// EnsurePTYRequest promotes an existing source (identified by Handle, resolved
+// from the session's current source by the CLI) to a full terminal. Session
+// carries the shell session id so a namespace-aware daemon can resolve state.
+type EnsurePTYRequest struct {
+	Handle  string `json:"handle"`
+	Session string `json:"session,omitempty"`
+}
+
+type EnsurePTYReply struct {
+	Handle   string `json:"handle"`
+	Manifold string `json:"manifold,omitempty"`
+	Kind     string `json:"kind"`
+	Subject  string `json:"subject"`
 }
 
 type SwitchRequest struct {

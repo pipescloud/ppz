@@ -4,6 +4,7 @@ pty-pipe:inbox::
 pty-pipe:stdctrl:RELATIVE:STDCTRL_JSON
 pty-pipe:stdin::
 pty-pipe:stdout::
+pty-pipe:system::
 regular:inbox::
 --- pipe-links ---
 /orgs/alpha/sources/pty-pipe/pipes/heartbeat
@@ -11,5 +12,6 @@ regular:inbox::
 /orgs/alpha/sources/pty-pipe/pipes/stdctrl
 /orgs/alpha/sources/pty-pipe/pipes/stdin
 /orgs/alpha/sources/pty-pipe/pipes/stdout
+/orgs/alpha/sources/pty-pipe/pipes/system
 /orgs/alpha/sources/regular/pipes/inbox
 exit=0

@@ -326,6 +326,73 @@ func (s *Server) handleListSources(w http.ResponseWriter, r *http.Request, key d
 
 // handleCreatePipe: POST /api/v1/sources/{handle}/pipes
 //
+// handleEnsurePTY: POST /api/v1/sources/{handle}/ensure-pty
+//
+// Promotes an existing source to a full terminal, idempotently. Bare `ppz
+// terminal share` runs against the session's current source, which may have
+// been created inbox-only (kind=message, e.g. via `source create` or
+// `connect`). Sharing a source declares it a terminal, so this endpoint flips
+// its kind to pty and provisions the COMPLETE pty pipe set — including the
+// reserved `system` (write-lease) and `inbox` pipes that the user pipe-create
+// path refuses. Provisioning goes through ensurePipeStream (trusted, no
+// reserved-name gate), the same primitive source-creation uses.
+//
+// Idempotent in both directions: a source already pty is left as-is (kind
+// UPDATE is a harmless no-op change) and every stream ensure is
+// create-if-absent, so repeated bare shares converge without error.
+func (s *Server) handleEnsurePTY(w http.ResponseWriter, r *http.Request, key db.APIKey) {
+	handle := r.PathValue("handle")
+	if err := natsubj.ValidateHandle(handle); err != nil {
+		writeErr(w, cliproto.NewInvalidHandle(handle))
+		return
+	}
+	ctx, cancel := withTimeout(r)
+	defer cancel()
+
+	src, err := db.GetSourceByHandle(ctx, s.Pool, key.AccountID, handle)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			writeErr(w, cliproto.NewSourceNotFound(handle))
+			return
+		}
+		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
+		return
+	}
+
+	// Promote kind → pty when not already. Skip the write when it's a no-op so
+	// an already-pty source doesn't churn the row.
+	if src.Kind != db.SourceKindPTY {
+		if err := db.UpdateSourceKind(ctx, s.Pool, key.AccountID, handle, db.SourceKindPTY); err != nil {
+			writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
+			return
+		}
+		src.Kind = db.SourceKindPTY
+	}
+
+	// Provision the full pty pipe set via the trusted primitive (bypasses the
+	// reserved-name gate, so `system`/`inbox` get created). Idempotent per
+	// pipe.
+	js, err := s.JSFor(ctx, key.AccountID)
+	if err != nil {
+		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: "org account: " + err.Error()})
+		return
+	}
+	for _, p := range src.Pipes() {
+		if err := ensurePipeStream(ctx, js, key.AccountID, src.Manifold, src.Handle, p); err != nil {
+			writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, cliproto.CreateSourceReply{
+		ID:       src.ID.String(),
+		Handle:   src.Handle,
+		Manifold: src.Manifold,
+		Kind:     string(src.Kind),
+		Subject:  natsubj.BuildSubject(key.AccountID, src.Manifold, src.Handle, "inbox"),
+	})
+}
+
 // Body: cliproto.PipeCreateRequest. Validates pipe name (regex + reserved
 // + not auto-provisioned), inserts the row with retention overrides
 // (NULL → server default), provisions the JetStream stream with the

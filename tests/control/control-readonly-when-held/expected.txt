@@ -1,0 +1,3 @@
+stdout_visible: 1
+keystroke_delivered: 0
+exit=0

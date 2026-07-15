@@ -48,6 +48,7 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/sources", s.requireAPIKey(s.handleListSources))
 	mux.HandleFunc("GET /api/v1/sources/{handle}", s.requireAPIKey(s.handleGetSource))
 	mux.HandleFunc("DELETE /api/v1/sources/{handle}", s.requireAPIKey(s.handleDestroySource))
+	mux.HandleFunc("POST /api/v1/sources/{handle}/ensure-pty", s.requireAPIKey(s.handleEnsurePTY))
 	mux.HandleFunc("POST /api/v1/sources/{handle}/pipes", s.requireAPIKey(s.handleCreatePipe))
 	mux.HandleFunc("DELETE /api/v1/sources/{handle}/pipes/{name}", s.requireAPIKey(s.handleDestroyPipe))
 	mux.HandleFunc("POST /api/v1/pipes", s.requireAPIKey(s.handleCreatePipeFullPath))

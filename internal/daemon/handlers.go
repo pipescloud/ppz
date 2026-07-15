@@ -592,6 +592,43 @@ func (d *Daemon) handleCreate(ctx context.Context, conn net.Conn, params json.Ra
 	writeIPC(conn, cliproto.CreateReply{Handle: reply.Handle, Manifold: reply.Manifold, Subject: reply.Subject})
 }
 
+// handleEnsurePTY proxies bare `ppz terminal share`'s source upgrade to the
+// server: promote the handle to kind=pty and provision the full pty pipe set
+// (incl. reserved system/inbox). Idempotent — safe to call on a source that's
+// already a terminal. Mirrors handleCreate's proxy shape but hits the
+// ensure-pty endpoint and never touches session current (an upgrade doesn't
+// change who the operator is).
+func (d *Daemon) handleEnsurePTY(ctx context.Context, conn net.Conn, params json.RawMessage) {
+	var req cliproto.EnsurePTYRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		writeIPCErr(conn, &cliproto.Error{Code: "E_PROTOCOL", Message: err.Error()})
+		return
+	}
+	if _, ok := d.State.Credentials(); !ok {
+		writeIPCErr(conn, cliproto.New(cliproto.ENotLoggedIn))
+		return
+	}
+	if err := natsubj.ValidateHandle(req.Handle); err != nil {
+		writeIPCErr(conn, cliproto.NewInvalidHandle(req.Handle))
+		return
+	}
+	var reply cliproto.CreateSourceReply
+	if e := d.callServer(ctx, "POST", "/api/v1/sources/"+req.Handle+"/ensure-pty",
+		struct{}{}, &reply); e != nil {
+		writeIPCErr(conn, e)
+		return
+	}
+	// Keep the handle's inbox subscription current, matching handleCreate —
+	// idempotent, harmless if already present.
+	_ = d.Subs.Add(reply.Handle, reply.Handle+".inbox")
+	writeIPC(conn, cliproto.EnsurePTYReply{
+		Handle:   reply.Handle,
+		Manifold: reply.Manifold,
+		Kind:     reply.Kind,
+		Subject:  reply.Subject,
+	})
+}
+
 // handleConnect is the daemon-side combo verb for `ppz connect <handle>`:
 // idempotently ensure the source exists, then SetCurrent. Treats
 // E_SOURCE_TAKEN from the server as "already exists, nothing to do" and
@@ -1445,7 +1482,7 @@ func uncollaredPipeInfo(ctx context.Context, js jetstream.JetStream, accountID u
 // decision #16).
 func pipesForKind(kind string) []string {
 	if kind == string(cliproto.KindPTY) {
-		return []string{"heartbeat", "inbox", "stdctrl", "stdin", "stdout"}
+		return []string{"heartbeat", "inbox", "stdctrl", "stdin", "stdout", "system"}
 	}
 	return []string{"inbox"}
 }

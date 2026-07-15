@@ -86,7 +86,7 @@ func TestHandleComplete_ServesFromCache(t *testing.T) {
 	// — if a new auto-pipe lands (e.g. "stderr"), it must be added to
 	// wantAlice (PTY kind) too. Sorted-alpha order matches the input
 	// sort.Strings above so the comparison is deterministic.
-	wantAlice := []string{"alerts", "heartbeat", "inbox", "stdctrl", "stdin", "stdout"}
+	wantAlice := []string{"alerts", "heartbeat", "inbox", "stdctrl", "stdin", "stdout", "system"}
 	wantBob := []string{"inbox"}
 	if !slices.Equal(got["alice"], wantAlice) {
 		t.Errorf("alice pipes = %v, want %v", got["alice"], wantAlice)
