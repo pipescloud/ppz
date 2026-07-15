@@ -193,17 +193,23 @@ func TestMigrate_MergesIntoExisting(t *testing.T) {
 // a different server) must not see the previous account's history.
 func TestOpenForAccount_IsolatesByAccount(t *testing.T) {
 	home := t.TempDir()
-	a, _ := OpenForAccount(home, "orgA", "james")
+	open := func(account string) *Store {
+		t.Helper()
+		s, err := OpenForAccount(home, account, "james")
+		if err != nil {
+			t.Fatalf("open %s: %v", account, err)
+		}
+		return s
+	}
+	a := open("orgA")
 	a.Ingest(KindAgent, "alice", "alice", msg("m1", "in", "alice", "hi", "2026-07-15T09:00:00Z"))
 	if err := a.Flush(); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := OpenForAccount(home, "orgB", "james")
-	if got, _ := b.Messages(KindAgent, "alice"); len(got) != 0 {
+	if got, _ := open("orgB").Messages(KindAgent, "alice"); len(got) != 0 {
 		t.Fatalf("orgB must not see orgA's chat state, got %d msgs", len(got))
 	}
-	a2, _ := OpenForAccount(home, "orgA", "james")
-	if got, _ := a2.Messages(KindAgent, "alice"); len(got) != 1 {
+	if got, _ := open("orgA").Messages(KindAgent, "alice"); len(got) != 1 {
 		t.Fatalf("orgA reopen should see its own state, got %d", len(got))
 	}
 }
