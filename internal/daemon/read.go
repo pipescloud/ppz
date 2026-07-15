@@ -81,7 +81,7 @@ func (d *Daemon) handleRead(ctx context.Context, conn net.Conn, params json.RawM
 		return
 	}
 
-	// Register follow conns BEFORE the jetstream.New(d.NC) capture so a
+	// Register follow conns BEFORE the d.jetStream() capture so a
 	// concurrent swapNC (refresh-loop firing on another goroutine)
 	// can't slip in between js binding and registry insertion — that
 	// window would leave the follow anchored to a stale NC with no
@@ -106,9 +106,9 @@ func (d *Daemon) handleRead(ctx context.Context, conn net.Conn, params json.RawM
 		streamName = natsubj.BuildStreamName(accountID, d.State.HandleManifold(req.Handle), req.Handle, req.Channel)
 	}
 
-	js, err := jetstream.New(d.NC)
-	if err != nil {
-		writeReadErr(conn, cliproto.New(cliproto.ENATSUnreachable))
+	js, e := d.jetStream()
+	if e != nil {
+		writeReadErr(conn, e)
 		return
 	}
 	stream, err := js.Stream(ctx, streamName)
