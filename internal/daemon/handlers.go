@@ -1085,7 +1085,7 @@ func (d *Daemon) resolveSendTarget(ctx context.Context, reqHandle, reqChannel, b
 				return sendTarget{}, cliproto.New(cliproto.ENATSUnreachable)
 			}
 		}
-		js, jsErr := jetstream.New(d.NC)
+		js, jsErr := d.jetStream()
 		if jsErr == nil {
 			_, err := js.Stream(ctx, natsubj.BuildStreamName(accountID, manifold, "", bareTarget))
 			switch {
@@ -1183,7 +1183,7 @@ func (d *Daemon) resolveSendTarget(ctx context.Context, reqHandle, reqChannel, b
 	//     pipe invalidity misled agents away from the real cause.
 	//   - any other error → E_INVALID_PIPE catch-all. Truly unexpected.
 	currentManifold := d.State.HandleManifold(current)
-	if js, err := jetstream.New(d.NC); err == nil {
+	if js, err := d.jetStream(); err == nil {
 		if _, err := js.Stream(ctx, natsubj.BuildStreamName(accountID, currentManifold, current, pipe)); err != nil {
 			switch {
 			case errors.Is(err, jetstream.ErrStreamNotFound):
@@ -1309,9 +1309,9 @@ func (d *Daemon) handleList(ctx context.Context, conn net.Conn, params json.RawM
 		}
 		return
 	}
-	js, err := jetstream.New(d.NC)
-	if err != nil {
-		writeIPCErr(conn, cliproto.New(cliproto.ENATSUnreachable))
+	js, e := d.jetStream()
+	if e != nil {
+		writeIPCErr(conn, e)
 		return
 	}
 	accountID, err := uuid.Parse(d.State.AccountID())

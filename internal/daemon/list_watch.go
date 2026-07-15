@@ -119,6 +119,32 @@ func (d *Daemon) handleListWatch(ctx context.Context, conn net.Conn, params json
 	}
 }
 
+// jetStream returns a JetStream context bound to the daemon's current
+// NATS connection, reading d.NC under ncMu so a concurrent swapNC (logout
+// via the watchState watcher, or a JWT-rotation reconnect) can't leave the
+// caller dereferencing a conn that's been swapped to nil. jetstream.New
+// PANICS on a nil conn (setReplyPrefix), and that panic — unrecovered in
+// handleConn — took down the whole daemon in the share-inbox-logout flake:
+// an in-flight `subs wait` passed ensureNATS, then logout niled d.NC before
+// buildFilteredList's unlocked read reached jetstream.New. Every JetStream
+// entry point must go through here rather than touching d.NC directly.
+// Returns ENATSUnreachable when no connection is currently installed — the
+// same fail-soft error every existing call site already mapped a
+// jetstream.New failure to.
+func (d *Daemon) jetStream() (jetstream.JetStream, *cliproto.Error) {
+	d.ncMu.Lock()
+	nc := d.NC
+	d.ncMu.Unlock()
+	if nc == nil {
+		return nil, cliproto.New(cliproto.ENATSUnreachable)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil, cliproto.New(cliproto.ENATSUnreachable)
+	}
+	return js, nil
+}
+
 // buildFilteredList does the same per-pipe enumeration as handleList,
 // but filters by the patterns. Returns a ListReply whose Sources only
 // include matching handles AND whose UncollaredPipes only include
@@ -133,9 +159,9 @@ func (d *Daemon) buildFilteredList(ctx context.Context, accountID uuid.UUID, ses
 	}
 	d.refreshSourceCache(lr.Sources)
 
-	js, err := jetstream.New(d.NC)
-	if err != nil {
-		return cliproto.ListReply{}, cliproto.New(cliproto.ENATSUnreachable)
+	js, e := d.jetStream()
+	if e != nil {
+		return cliproto.ListReply{}, e
 	}
 
 	enriched, err := enrichSourcesWithPipeInfo(ctx, js, lr.Sources, accountID, session, patterns, cursorSnapshot(d.Cursors, session))

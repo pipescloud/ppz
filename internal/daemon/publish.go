@@ -29,9 +29,9 @@ var jsPublishAckTimeout = 5 * time.Second
 // primitive behind every send path. Returns nil only on a confirmed
 // PubAck; otherwise a classified *cliproto.Error.
 func (d *Daemon) publishWithAck(subject string, data []byte) *cliproto.Error {
-	js, err := jetstream.New(d.NC)
-	if err != nil {
-		return cliproto.New(cliproto.ENATSUnreachable)
+	js, e := d.jetStream()
+	if e != nil {
+		return e
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), jsPublishAckTimeout)
 	defer cancel()
@@ -55,9 +55,9 @@ func (d *Daemon) publishWithAck(subject string, data []byte) *cliproto.Error {
 // message fails the whole batch; partial delivery is never reported as
 // success.
 func (d *Daemon) publishBatchWithAck(subject string, datas [][]byte) *cliproto.Error {
-	js, err := jetstream.New(d.NC)
-	if err != nil {
-		return cliproto.New(cliproto.ENATSUnreachable)
+	js, e := d.jetStream()
+	if e != nil {
+		return e
 	}
 	futures := make([]jetstream.PubAckFuture, 0, len(datas))
 	for _, data := range datas {

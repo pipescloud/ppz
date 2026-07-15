@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"time"
 
 	"github.com/pipescloud/ppz/internal/cliproto"
@@ -51,6 +52,19 @@ func (d *Daemon) serveIPC(ctx context.Context, ln net.Listener) {
 
 func (d *Daemon) handleConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
+	// A panic in any handler must not take down the whole daemon: one
+	// connection's bug — e.g. a nil-conn deref racing a logout NC swap
+	// (the share-inbox-logout flake) — would otherwise SIGSEGV the process
+	// and orphan every other live session. Recover per-connection, log the
+	// stack to stderr (→ daemon.log) so it stays diagnosable, and hand this
+	// one client a generic internal error. Registered after conn.Close so
+	// it runs first (LIFO) and can still write the reply before the close.
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "panic in handleConn: %v\n%s\n", r, debug.Stack())
+			writeIPCErr(conn, &cliproto.Error{Code: "E_INTERNAL", Message: "daemon internal error"})
+		}
+	}()
 	br := bufio.NewReader(conn)
 	line, err := br.ReadBytes('\n')
 	if err != nil {
