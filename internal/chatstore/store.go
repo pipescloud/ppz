@@ -113,8 +113,19 @@ func sanitize(s string) string {
 
 // Open resolves (and creates) <home>/chat/<handle>/ and loads any existing
 // window files into memory.
+// Open is account-agnostic (tests / legacy callers): equivalent to
+// OpenForAccount with an empty account.
 func Open(home, handle string) (*Store, error) {
-	dir := filepath.Join(home, "chat", handle)
+	return OpenForAccount(home, "", handle)
+}
+
+// OpenForAccount resolves (and creates) <home>/chat/<account>/<handle>/ and
+// loads any existing window files. Scoping by account isolates chat state
+// across orgs/servers — a handle is unique only within its account.
+func OpenForAccount(home, account, handle string) (*Store, error) {
+	// sanitize(account) keeps it filesystem-safe; an empty account collapses
+	// (filepath.Join drops "") to the legacy <home>/chat/<handle> path.
+	dir := filepath.Join(home, "chat", sanitize(account), handle)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}

@@ -1438,10 +1438,11 @@ func cmdChat(args []string) error {
 	sock := ipcSocket()
 	session := sessionID()
 
-	// Preflight so a not-running / not-logged-in daemon errors on the plain
-	// terminal instead of behind the alt-screen.
-	var reply cliproto.WhoReply
-	if err := daemon.Call(sock, cliproto.IPCWho, cliproto.WhoRequest{}, &reply); err != nil {
+	// Preflight — errors on the plain terminal if the daemon's down, instead of
+	// behind the alt-screen. Also yields the account id, which scopes the chat
+	// store so a different org/server doesn't see this account's history.
+	var st cliproto.StatusReply
+	if err := daemon.Call(sock, cliproto.IPCStatus, cliproto.StatusRequest{Session: session}, &st); err != nil {
 		return err
 	}
 
@@ -1455,8 +1456,9 @@ func cmdChat(args []string) error {
 		cliproto.ReadRequest{Handle: me, Channel: "inbox", Follow: true, Session: session, Sender: me},
 		func(rm cliproto.ReadMessage) tea.Msg { return inboundMsg{rm} }, events)
 
-	// Durable chat store, keyed by identity (survives restarts/terminals).
-	store, err := chatstore.Open(home(), me)
+	// Durable chat store, scoped by account + identity so it's isolated across
+	// orgs/servers and survives restarts/terminals.
+	store, err := chatstore.OpenForAccount(home(), st.AccountID, me)
 	if err != nil {
 		return err
 	}
