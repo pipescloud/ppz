@@ -15,7 +15,7 @@ func TestSourcePipes_MessageSourceIncludesInbox(t *testing.T) {
 
 func TestSourcePipes_PTYSourceIncludesInbox(t *testing.T) {
 	got := (Source{Kind: SourceKindPTY}).Pipes()
-	want := []string{"stdin", "stdout", "stdctrl", "inbox", "heartbeat"}
+	want := []string{"stdin", "stdout", "stdctrl", "system", "inbox", "heartbeat"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("pty source pipes = %#v, want %#v", got, want)
 	}

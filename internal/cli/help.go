@@ -313,10 +313,13 @@ Glob-destroy sources or pipes:
 
 Examples: destroy '*' · destroy 'agent-*' · destroy '*.stdout' · destroy apple`,
 
-	"terminal": `usage: ppz terminal {share|watch|read} ...
+	"terminal": `usage: ppz terminal {share|watch|control|lease|release|read} ...
 
   ppz terminal share H [-- CMD...]  run CMD (or $SHELL) in a pty bound to H
-  ppz terminal watch H              follow H.stdout in an alt-screen TUI
+  ppz terminal watch H              follow H.stdout in an alt-screen TUI (read-only)
+  ppz terminal control H            attach interactively: watch + forward keystrokes (holds the write-lease)
+  ppz terminal lease H DURATION     acquire the advisory write-lease on H for DURATION
+  ppz terminal release H            release the write-lease on H
   ppz terminal read H [flags]       render H.stdout (reread with --tty default)
 
 Run 'ppz terminal <subverb> --help' for details.`,
@@ -332,6 +335,18 @@ Follow H.stdout live in an alt-screen TUI. Interactive — for scripted/agent us
 	"terminal read": `usage: ppz terminal read H [reread-flags]
 
 Wrapper for 'ppz reread H.stdout' with --tty as the default output mode (a vt10x screen render that rebuilds cumulative terminal state). Accepts the same flags as 'ppz reread'.`,
+
+	"terminal control": `usage: ppz terminal control H
+
+Attach interactively to the pty bound to handle H: follow H.stdout (like 'watch') AND forward your keystrokes to H.stdin, after acquiring the advisory write-lease. If another controller already holds the lease, control degrades to a read-only attach (streams output; keystrokes not forwarded). Ctrl-C / Ctrl-D detaches and releases the lease. See 'ppz help' and docs/WIRE.md §12 for the lease model.`,
+
+	"terminal lease": `usage: ppz terminal lease H DURATION
+
+Acquire the advisory write-lease on handle H for DURATION (Go duration, e.g. 60s, 5m). Blocks until the pty host grants or denies. On grant exits 0; if another controller holds it, prints 'held by <holder>' and exits 27 (E_LEASE_HELD). The lease coordinates cooperating writers to H.stdin — it is keyed on your PPZ_CURRENT_HANDLE and is advisory, not an authenticated boundary.`,
+
+	"terminal release": `usage: ppz terminal release H
+
+Release your write-lease on handle H. A release by anyone but the current holder is a no-op. Blocks briefly for the host's confirmation so scripts can sequence a follow-on send.`,
 
 	"agent": `usage: ppz agent create NAME [PROMPT] [flags]
 

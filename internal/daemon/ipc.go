@@ -83,6 +83,8 @@ func (d *Daemon) handleConn(ctx context.Context, conn net.Conn) {
 		d.ipcLogin(ctx, conn, req.Params)
 	case cliproto.IPCCreate:
 		d.ipcCreate(ctx, conn, req.Params)
+	case cliproto.IPCEnsurePTY:
+		d.ipcEnsurePTY(ctx, conn, req.Params)
 	case cliproto.IPCSwitch:
 		d.ipcSwitch(ctx, conn, req.Params)
 	case cliproto.IPCSend:
@@ -211,6 +213,9 @@ func (d *Daemon) ipcLogin(ctx context.Context, conn net.Conn, params json.RawMes
 }
 func (d *Daemon) ipcCreate(ctx context.Context, conn net.Conn, params json.RawMessage) {
 	d.handleCreate(ctx, conn, params)
+}
+func (d *Daemon) ipcEnsurePTY(ctx context.Context, conn net.Conn, params json.RawMessage) {
+	d.handleEnsurePTY(ctx, conn, params)
 }
 func (d *Daemon) ipcSwitch(ctx context.Context, conn net.Conn, params json.RawMessage) {
 	d.handleSwitch(ctx, conn, params)

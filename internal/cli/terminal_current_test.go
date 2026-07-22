@@ -34,18 +34,21 @@ func TestCmdTerminalShare_BareInvocationPrefersEnvCurrentHandle(t *testing.T) {
 		t.Fatalf("cmdTerminalShare bare: %v", err)
 	}
 
-	if requests.pipeCreates.count() != 3 {
-		t.Fatalf("pipe create request count = %d, want 3", requests.pipeCreates.count())
+	// Bare share upgrades the current source to a full pty terminal via a
+	// single IPCEnsurePTY call. It must target the env-provided current
+	// handle, not the daemon's own current.
+	if requests.ensurePTY.count() != 1 {
+		t.Fatalf("ensure-pty request count = %d, want 1", requests.ensurePTY.count())
 	}
-	for _, got := range requests.pipeCreates.snapshot() {
+	for _, got := range requests.ensurePTY.snapshot() {
 		if got.Handle != "env-current" {
-			t.Fatalf("terminal share provisioned pipe %q on handle %q, want env-current", got.Name, got.Handle)
+			t.Fatalf("terminal share upgraded handle %q, want env-current", got.Handle)
 		}
 	}
 }
 
 type terminalCurrentRequests struct {
-	pipeCreates recorder[cliproto.PipeCreateRequest]
+	ensurePTY recorder[cliproto.EnsurePTYRequest]
 }
 
 func serveTerminalCurrentDaemon(t *testing.T, sock, current string) *terminalCurrentRequests {
@@ -93,12 +96,12 @@ func handleTerminalCurrentDaemonConn(conn net.Conn, current string, requests *te
 		_ = enc.Encode(map[string]any{
 			"result": cliproto.StatusReply{DaemonPID: 1234, LoggedIn: true, Current: current},
 		})
-	case cliproto.IPCPipeCreate:
-		var pc cliproto.PipeCreateRequest
-		_ = json.Unmarshal(req.Params, &pc)
-		requests.pipeCreates.add(pc)
+	case cliproto.IPCEnsurePTY:
+		var ep cliproto.EnsurePTYRequest
+		_ = json.Unmarshal(req.Params, &ep)
+		requests.ensurePTY.add(ep)
 		_ = enc.Encode(map[string]any{
-			"result": cliproto.PipeCreateReply{Handle: pc.Handle, Name: pc.Name},
+			"result": cliproto.EnsurePTYReply{Handle: ep.Handle, Kind: "pty"},
 		})
 	case cliproto.IPCSend:
 		var br cliproto.SendRequest

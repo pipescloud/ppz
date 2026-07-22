@@ -64,7 +64,9 @@ func TestForwardStdinWritesPayloadVerbatim(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 
-			go forwardStdin(ctx, "myhost", w)
+			// No lease held (fresh leaseState → "" holder), so enforcement
+			// is inert and every message forwards verbatim, as before.
+			go forwardStdin(ctx, "myhost", w, newLeaseState())
 
 			buf := make([]byte, 64)
 			_ = r.SetReadDeadline(time.Now().Add(time.Second))

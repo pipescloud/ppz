@@ -1,0 +1,4 @@
+first_rc: 0
+second_rc: 0
+system_pipe: present
+exit=0

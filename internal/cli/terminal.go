@@ -3,6 +3,8 @@ package cli
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,6 +55,12 @@ func cmdTerminal(args []string) error {
 		return cmdTerminalShare(args[1:])
 	case "watch":
 		return cmdTerminalView(args[1:])
+	case "control":
+		return cmdTerminalControl(args[1:])
+	case "lease":
+		return cmdTerminalLease(args[1:])
+	case "release":
+		return cmdTerminalRelease(args[1:])
 	case "read":
 		return cmdTerminalRead(args[1:])
 	}
@@ -195,20 +203,18 @@ func cmdTerminalShare(args []string) error {
 	}
 
 	if bare {
-		// Source already exists. Ensure stdin + stdout + stdctrl pipes are
-		// provisioned via the same path users would invoke manually.
-		// Idempotent on E_PIPE_TAKEN — the source might already have these
-		// (pty kind, or previously shared).
-		for _, name := range []string{"stdin", "stdout", "stdctrl"} {
-			var reply cliproto.PipeCreateReply
-			err := daemon.Call(ipcSocket(), cliproto.IPCPipeCreate,
-				cliproto.PipeCreateRequest{Handle: handle, Name: name, Session: sessionID()}, &reply)
-			if err != nil {
-				if e, ok := err.(*cliproto.Error); ok && e.Code == cliproto.EPipeTaken {
-					continue
-				}
-				return err
-			}
+		// Source already exists but may be inbox-only (kind=message, e.g.
+		// created via `source create` or `connect`). Sharing a source
+		// declares it a terminal, so upgrade it in place: flip kind→pty and
+		// provision the FULL pty pipe set (stdin/stdout/stdctrl/system/inbox/
+		// heartbeat) via the daemon's trusted ensure-pty path. This is the
+		// only way to provision the reserved `system` (write-lease) and
+		// `inbox` pipes — the user pipe-create verb refuses reserved names.
+		// Idempotent: a no-op when the source is already a pty terminal.
+		var reply cliproto.EnsurePTYReply
+		if err := daemon.Call(ipcSocket(), cliproto.IPCEnsurePTY,
+			cliproto.EnsurePTYRequest{Handle: handle, Session: sessionID()}, &reply); err != nil {
+			return err
 		}
 	} else {
 		// Provision a fresh pty source: server-side creates the row + the
@@ -415,12 +421,28 @@ func cmdTerminalShare(args []string) error {
 		publishAndDisplayStdout(handle, harnessOutputReader{r: ptmx, det: det, screen: screen}, stdout)
 	}()
 
+	// Advisory write-lease state, owned by this pty host. The lease manager
+	// (below) consumes <handle>.system to grant/release/expire it; forwardStdin
+	// reads it to gate which sender's bytes reach the child. Local keystrokes
+	// (the stdin→PTY goroutine above) never traverse .stdin, so the lease
+	// cannot block the local operator — it only coordinates remote writers.
+	lease := newLeaseState()
+
 	// Subscribe to <handle>.stdin → write to PTY master (external `ppz send`
-	// reaches the wrapped child via this path).
+	// reaches the wrapped child via this path). Gated by the lease: while a
+	// lease is held, only the holder's bytes pass.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		forwardStdin(ctx, handle, harnessInputWriter{ptmx, det})
+		forwardStdin(ctx, handle, harnessInputWriter{ptmx, det}, lease)
+	}()
+
+	// Subscribe to <handle>.system → arbitrate the write-lease (acquire /
+	// release / TTL expiry) and publish lease-state back to observers.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		runLeaseManager(ctx, handle, lease)
 	}()
 
 	// Subscribe to <handle>.stdctrl → apply viewer-requested resizes to
@@ -675,14 +697,14 @@ func publishWinsize(handle string, ptmx *os.File) {
 // already written to the PTY by tracking message IDs in a bounded
 // ring. Without dedupe, every reconnect would replay history into
 // the wrapped child.
-func forwardStdin(ctx context.Context, handle string, master io.Writer) {
+func forwardStdin(ctx context.Context, handle string, master io.Writer, lease *leaseState) {
 	seen := newSeenIDRing(1024)
 
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		streamForwardStdinOnce(ctx, handle, master, seen)
+		streamForwardStdinOnce(ctx, handle, master, seen, lease)
 		if ctx.Err() != nil {
 			return
 		}
@@ -697,7 +719,7 @@ func forwardStdin(ctx context.Context, handle string, master io.Writer) {
 	}
 }
 
-func streamForwardStdinOnce(ctx context.Context, handle string, master io.Writer, seen *seenIDRing) {
+func streamForwardStdinOnce(ctx context.Context, handle string, master io.Writer, seen *seenIDRing, lease *leaseState) {
 	conn, err := net.Dial("unix", ipcSocket())
 	if err != nil {
 		return
@@ -739,9 +761,555 @@ func streamForwardStdinOnce(ctx context.Context, handle string, master io.Writer
 		if seen.has(evt.Message.ID) {
 			continue
 		}
+		// Advisory write-lease enforcement: while a lease is held, drop
+		// stdin bytes from anyone but the holder. Identity is the message's
+		// envelope sender (best-effort / cooperative — see WIRE.md). A
+		// dropped message is marked seen so a reconnect replay can't inject
+		// it late after the lease has moved on.
+		if lease != nil {
+			if holder := lease.holderAt(time.Now()); holder != "" && evt.Message.Sender != holder {
+				seen.add(evt.Message.ID)
+				continue
+			}
+		}
 		_, _ = io.WriteString(master, evt.Message.Payload)
 		seen.add(evt.Message.ID)
 	}
+}
+
+// --- Advisory terminal write-lease (see docs/WIRE.md §terminal control) ---
+//
+// The lease is arbitrated by the pty host (the `terminal share` process),
+// the single serialization point where every .stdin byte enters the child.
+// Requests and state travel on <handle>.system as typed JSON:
+//
+//	{"type":"lease-acquire","ttl_ms":N,"nonce":"..."}                 writer → host
+//	{"type":"lease-release","nonce":"..."}                            writer → host
+//	{"type":"lease-state","holder":H,"until":T,"reply_nonce":"..."}   host → observers
+//
+// The holder identity is the acquirer's envelope sender — advisory: it is the
+// caller-supplied PPZ_CURRENT_HANDLE, not an authenticated principal, so this
+// coordinates cooperating writers rather than defending against hostile ones
+// (ACLs are the eventual write-access boundary). The lease is time-bounded so
+// a crashed controller self-heals; the holder renews by re-acquiring
+// (cur==sender grants) and releases explicitly.
+const (
+	// defaultLeaseTTL bounds a lease whose acquire carried no positive ttl.
+	defaultLeaseTTL = 60 * time.Second
+	// leaseAcquireTimeout bounds how long the CLI waits for the host's
+	// grant/deny before giving up (host down, .system unprovisioned).
+	leaseAcquireTimeout = 5 * time.Second
+	// controlLeaseTTL is the window `ppz terminal control` acquires; it
+	// renews at controlLeaseRenew while attached so a live session never
+	// expires mid-use.
+	controlLeaseTTL   = 30 * time.Second
+	controlLeaseRenew = 10 * time.Second
+)
+
+// leaseState is the pty host's in-memory view of the current write-lease.
+// runLeaseManager mutates it; forwardStdin reads it. "" holder = free.
+type leaseState struct {
+	mu      sync.Mutex
+	holder  string
+	expires time.Time
+}
+
+func newLeaseState() *leaseState { return &leaseState{} }
+
+// holderAt returns the effective holder at `now` — "" when free or expired.
+func (l *leaseState) holderAt(now time.Time) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.holder == "" || !now.Before(l.expires) {
+		return ""
+	}
+	return l.holder
+}
+
+func (l *leaseState) expiresAt() time.Time {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.expires
+}
+
+func (l *leaseState) grant(holder string, expires time.Time) {
+	l.mu.Lock()
+	l.holder, l.expires = holder, expires
+	l.mu.Unlock()
+}
+
+func (l *leaseState) clear() {
+	l.mu.Lock()
+	l.holder, l.expires = "", time.Time{}
+	l.mu.Unlock()
+}
+
+// expireIfDue clears the lease iff it is held but past its expiry, reporting
+// whether it did so — so the caller publishes the free state exactly once.
+func (l *leaseState) expireIfDue(now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.holder != "" && !now.Before(l.expires) {
+		l.holder, l.expires = "", time.Time{}
+		return true
+	}
+	return false
+}
+
+// leaseMsg is the shared shape of every <handle>.system payload.
+type leaseMsg struct {
+	Type       string `json:"type"`
+	TTLMs      int64  `json:"ttl_ms,omitempty"`
+	Holder     string `json:"holder,omitempty"`
+	Until      string `json:"until,omitempty"`
+	Nonce      string `json:"nonce,omitempty"`
+	ReplyNonce string `json:"reply_nonce,omitempty"`
+}
+
+// leaseNonce returns a short random token correlating a host reply
+// (lease-state.reply_nonce) with the acquire/release that triggered it.
+func leaseNonce() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "n"
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// publishLeaseState emits a host→observers lease-state on <handle>.system.
+func publishLeaseState(handle, holder string, until time.Time, replyNonce string) {
+	m := leaseMsg{Type: "lease-state", Holder: holder, ReplyNonce: replyNonce}
+	if !until.IsZero() {
+		m.Until = until.UTC().Format(time.RFC3339)
+	}
+	payload, err := json.Marshal(m)
+	if err != nil {
+		return
+	}
+	_ = sendStreamLine(handle, "system", string(payload))
+}
+
+// publishLeaseRequest publishes an acquire/release on <handle>.system stamped
+// with `sender` as the caller identity. Returns the daemon error (so an
+// unauthenticated caller surfaces ENotLoggedIn → exit 10).
+func publishLeaseRequest(handle, sender, msgType, nonce string, ttl time.Duration) error {
+	m := leaseMsg{Type: msgType, Nonce: nonce}
+	if ttl > 0 {
+		m.TTLMs = ttl.Milliseconds()
+	}
+	payload, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	var reply cliproto.SendReply
+	return daemon.Call(ipcSocket(), cliproto.IPCSend, cliproto.SendRequest{
+		Handle:  handle,
+		Channel: "system",
+		Payload: string(payload),
+		Sender:  sender,
+		Session: sessionID(),
+	}, &reply)
+}
+
+// runLeaseManager consumes <handle>.system and arbitrates the write-lease.
+// Mirrors forwardResize's resilient redial loop.
+func runLeaseManager(ctx context.Context, handle string, lease *leaseState) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		streamLeaseManagerOnce(ctx, handle, lease)
+		if ctx.Err() != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+func streamLeaseManagerOnce(ctx context.Context, handle string, lease *leaseState) {
+	conn, err := net.Dial("unix", ipcSocket())
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	body, _ := json.Marshal(cliproto.ReadRequest{
+		Handle:    handle,
+		Channel:   "system",
+		Follow:    true,
+		NoAdvance: true,
+	})
+	if err := json.NewEncoder(conn).Encode(map[string]any{"method": cliproto.IPCRead, "params": json.RawMessage(body)}); err != nil {
+		return
+	}
+
+	stopCloser := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-stopCloser:
+		}
+	}()
+	defer close(stopCloser)
+
+	// A lease expires on the clock, not on traffic, so we can't block solely
+	// on the scanner: a reader goroutine feeds a channel and the main loop
+	// selects over {message, expiry timer, ctx}.
+	msgCh := make(chan cliproto.ReadMessage, 16)
+	go func() {
+		dec := bufio.NewScanner(conn)
+		dec.Buffer(make([]byte, 0, 64*1024), 1*1024*1024)
+		for dec.Scan() {
+			var evt cliproto.ReadEvent
+			if err := json.Unmarshal(dec.Bytes(), &evt); err != nil || evt.Message == nil {
+				continue
+			}
+			select {
+			case msgCh <- *evt.Message:
+			case <-ctx.Done():
+				return
+			}
+		}
+		close(msgCh)
+	}()
+
+	expiry := time.NewTimer(time.Hour)
+	if !expiry.Stop() {
+		<-expiry.C
+	}
+	defer expiry.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-expiry.C:
+			if lease.expireIfDue(time.Now()) {
+				publishLeaseState(handle, "", time.Time{}, "")
+			}
+		case msg, ok := <-msgCh:
+			if !ok {
+				return // connection ended → redial
+			}
+			handleLeaseMessage(handle, lease, msg, expiry)
+		}
+	}
+}
+
+// handleLeaseMessage applies one <handle>.system request to the lease and
+// publishes the resulting state. Own lease-state echoes and unknown types are
+// ignored, so there's no feedback loop.
+func handleLeaseMessage(handle string, lease *leaseState, msg cliproto.ReadMessage, expiry *time.Timer) {
+	var p leaseMsg
+	if err := json.Unmarshal([]byte(msg.Payload), &p); err != nil {
+		return
+	}
+	now := time.Now()
+	switch p.Type {
+	case "lease-acquire":
+		cur := lease.holderAt(now)
+		if cur == "" || cur == msg.Sender {
+			ttl := time.Duration(p.TTLMs) * time.Millisecond
+			if ttl <= 0 {
+				ttl = defaultLeaseTTL
+			}
+			exp := now.Add(ttl)
+			lease.grant(msg.Sender, exp)
+			armTimer(expiry, ttl)
+			publishLeaseState(handle, msg.Sender, exp, p.Nonce)
+		} else {
+			// Denied — echo the current holder back to the requester so its
+			// CLI distinguishes deny from grant via reply_nonce.
+			publishLeaseState(handle, cur, lease.expiresAt(), p.Nonce)
+		}
+	case "lease-release":
+		if lease.holderAt(now) == msg.Sender {
+			lease.clear()
+			stopTimer(expiry)
+			publishLeaseState(handle, "", time.Time{}, p.Nonce)
+		}
+	}
+}
+
+// armTimer resets t to fire after d, draining any pending fire first
+// (single-consumer, so the drain is race-free).
+func armTimer(t *time.Timer, d time.Duration) {
+	stopTimer(t)
+	t.Reset(d)
+}
+
+func stopTimer(t *time.Timer) {
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+}
+
+// awaitLeaseGrant follows <handle>.system after an acquire/release and returns
+// the holder the host reported for our request (matched by reply_nonce). A
+// timeout returns EDaemonTimeout so the CLI never hangs on a dead host.
+func awaitLeaseGrant(handle, nonce string, timeout time.Duration) (string, error) {
+	conn, err := net.Dial("unix", ipcSocket())
+	if err != nil {
+		return "", cliproto.New(cliproto.EDaemonNotRunning)
+	}
+	defer conn.Close()
+
+	body, _ := json.Marshal(cliproto.ReadRequest{
+		Handle:    handle,
+		Channel:   "system",
+		Follow:    true,
+		NoAdvance: true,
+		Session:   sessionID(),
+	})
+	if err := json.NewEncoder(conn).Encode(map[string]any{"method": cliproto.IPCRead, "params": json.RawMessage(body)}); err != nil {
+		return "", err
+	}
+
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-time.After(timeout):
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
+
+	dec := bufio.NewScanner(conn)
+	dec.Buffer(make([]byte, 0, 64*1024), 1*1024*1024)
+	for dec.Scan() {
+		var evt cliproto.ReadEvent
+		if err := json.Unmarshal(dec.Bytes(), &evt); err != nil || evt.Message == nil {
+			continue
+		}
+		var p leaseMsg
+		if err := json.Unmarshal([]byte(evt.Message.Payload), &p); err != nil {
+			continue
+		}
+		if p.Type == "lease-state" && p.ReplyNonce == nonce {
+			return p.Holder, nil
+		}
+	}
+	return "", cliproto.New(cliproto.EDaemonTimeout)
+}
+
+// cmdTerminalLease: ppz terminal lease <handle> <duration>
+//
+// Acquires the advisory write-lease on <handle> for <duration> (Go duration:
+// 60s, 5m). Blocks until the pty host grants or denies. On grant, exits 0; on
+// deny (someone else holds it), prints "held by <holder>" and exits
+// E_LEASE_HELD (27). The holder identity is PPZ_CURRENT_HANDLE.
+func cmdTerminalLease(args []string) error {
+	if len(args) != 2 {
+		usageExit("terminal lease")
+	}
+	handle := args[0]
+	if handle == "" || strings.Contains(handle, ".") {
+		return cliproto.New(cliproto.EInvalidHandle)
+	}
+	dur, err := time.ParseDuration(args[1])
+	if err != nil || dur <= 0 {
+		return fmt.Errorf("ppz terminal lease: invalid duration %q (use e.g. 60s, 5m)", args[1])
+	}
+	sender := os.Getenv("PPZ_CURRENT_HANDLE")
+	nonce := leaseNonce()
+	if err := publishLeaseRequest(handle, sender, "lease-acquire", nonce, dur); err != nil {
+		return err
+	}
+	holder, err := awaitLeaseGrant(handle, nonce, leaseAcquireTimeout)
+	if err != nil {
+		return err
+	}
+	if holder != sender {
+		fmt.Fprintf(os.Stderr, "held by %s\n", holder)
+		return cliproto.New(cliproto.ELeaseHeld)
+	}
+	fmt.Fprintf(os.Stderr, "leased %s for %s\n", handle, dur)
+	return nil
+}
+
+// cmdTerminalRelease: ppz terminal release <handle>
+//
+// Releases the caller's write-lease on <handle>. A release by anyone other
+// than the current holder is a no-op on the host. Blocks briefly for the
+// host's confirmation (the free lease-state) so callers can sequence on it.
+func cmdTerminalRelease(args []string) error {
+	if len(args) != 1 {
+		usageExit("terminal release")
+	}
+	handle := args[0]
+	if handle == "" || strings.Contains(handle, ".") {
+		return cliproto.New(cliproto.EInvalidHandle)
+	}
+	sender := os.Getenv("PPZ_CURRENT_HANDLE")
+	nonce := leaseNonce()
+	if err := publishLeaseRequest(handle, sender, "lease-release", nonce, 0); err != nil {
+		return err
+	}
+	// Best-effort: the host only replies (free state) when the caller was
+	// the holder; a non-holder release times out silently, which is fine.
+	_, _ = awaitLeaseGrant(handle, nonce, leaseAcquireTimeout)
+	fmt.Fprintf(os.Stderr, "released %s\n", handle)
+	return nil
+}
+
+// cmdTerminalControl: ppz terminal control <handle>
+//
+// Interactive attach = `terminal watch` (follow .stdout) PLUS forwarding the
+// operator's keystrokes to .stdin, after acquiring the write-lease. If another
+// controller already holds the lease, control degrades to a read-only attach
+// (streams output, keystrokes not forwarded) rather than failing. Exits 10 if
+// the daemon isn't logged in.
+func cmdTerminalControl(args []string) error {
+	if len(args) != 1 {
+		usageExit("terminal control")
+	}
+	handle := args[0]
+	if handle == "" || strings.Contains(handle, ".") {
+		return cliproto.New(cliproto.EInvalidHandle)
+	}
+	sender := os.Getenv("PPZ_CURRENT_HANDLE")
+
+	// Acquire first: surfaces ENotLoggedIn (exit 10) before we attach, and a
+	// deny tells us to fall back to read-only.
+	nonce := leaseNonce()
+	if err := publishLeaseRequest(handle, sender, "lease-acquire", nonce, controlLeaseTTL); err != nil {
+		return err
+	}
+	holder, err := awaitLeaseGrant(handle, nonce, leaseAcquireTimeout)
+	if err != nil {
+		return err
+	}
+	writable := holder == sender
+	if !writable {
+		fmt.Fprintf(os.Stderr, "ppz terminal control: %s is controlled by %s — attaching read-only\n", handle, holder)
+	}
+	return attachTerminal(handle, sender, writable)
+}
+
+// attachTerminal streams <handle>.stdout to the local terminal and, when
+// `writable`, forwards local keystrokes to <handle>.stdin (stamped with
+// `sender` so the host's lease check passes) and renews the lease until exit.
+// Ctrl-C / Ctrl-D or SIGINT/SIGTERM ends the session; a writable session
+// releases the lease on the way out so the terminal frees immediately.
+func attachTerminal(handle, sender string, writable bool) error {
+	conn, err := net.Dial("unix", ipcSocket())
+	if err != nil {
+		return cliproto.New(cliproto.EDaemonNotRunning)
+	}
+	defer conn.Close()
+
+	body, _ := json.Marshal(cliproto.ReadRequest{
+		Handle:    handle,
+		Channel:   "stdout",
+		Follow:    true,
+		Session:   sessionID(),
+		NoAdvance: true,
+	})
+	if err := json.NewEncoder(conn).Encode(map[string]any{"method": cliproto.IPCRead, "params": json.RawMessage(body)}); err != nil {
+		return err
+	}
+
+	stdin, stdout := os.Stdin, os.Stdout
+	restoreRaw := setLocalRawMode(stdin.Fd())
+	defer restoreRaw()
+
+	_, _ = io.WriteString(stdout, "\x1b[?1049h\x1b[H\x1b[2J")
+	defer func() { _, _ = io.WriteString(stdout, "\x1b[?1049l") }()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	go func() { <-ctx.Done(); _ = conn.Close() }()
+
+	// Free the lease promptly on exit rather than waiting out the TTL.
+	if writable {
+		defer func() { _ = publishLeaseRequest(handle, sender, "lease-release", leaseNonce(), 0) }()
+	}
+
+	// Local stdin → forward to .stdin (when writable) + exit on Ctrl-C/D.
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			n, rerr := stdin.Read(buf)
+			if n > 0 {
+				chunk := buf[:n]
+				exit := false
+				for _, b := range chunk {
+					if b == 0x03 || b == 0x04 { // Ctrl-C, Ctrl-D
+						exit = true
+					}
+				}
+				if writable {
+					publishStdin(handle, sender, chunk)
+				}
+				if exit {
+					cancel()
+					return
+				}
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
+
+	// Keep the lease alive for the session's duration.
+	if writable {
+		go func() {
+			t := time.NewTicker(controlLeaseRenew)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					_ = publishLeaseRequest(handle, sender, "lease-acquire", leaseNonce(), controlLeaseTTL)
+				}
+			}
+		}()
+	}
+
+	dec := bufio.NewScanner(conn)
+	dec.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for dec.Scan() {
+		var evt cliproto.ReadEvent
+		if err := json.Unmarshal(dec.Bytes(), &evt); err != nil {
+			continue
+		}
+		if evt.Error != nil {
+			return evt.Error
+		}
+		if evt.Message != nil {
+			_, _ = io.WriteString(stdout, evt.Message.Payload)
+		}
+	}
+	return nil
+}
+
+// publishStdin forwards a keystroke chunk to <handle>.stdin stamped with the
+// controller's identity so the host's write-lease check accepts it.
+func publishStdin(handle, sender string, data []byte) {
+	var reply cliproto.SendReply
+	_ = daemon.Call(ipcSocket(), cliproto.IPCSend, cliproto.SendRequest{
+		Handle:  handle,
+		Channel: "stdin",
+		Payload: string(data),
+		Sender:  sender,
+		Session: sessionID(),
+	}, &reply)
 }
 
 // forwardResize subscribes to <handle>.stdctrl and applies viewer

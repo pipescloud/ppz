@@ -1,0 +1,3 @@
+heartbeat_pipe: present
+heartbeat_published: yes
+exit=0

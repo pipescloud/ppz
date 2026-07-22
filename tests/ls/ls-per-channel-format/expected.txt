@@ -3,5 +3,6 @@ pty-pipe.inbox 0 0 - - foo
 pty-pipe.stdctrl 1 1 RELATIVE STDCTRL_JSON foo
 pty-pipe.stdin 0 0 - - foo
 pty-pipe.stdout 0 0 - - foo
+pty-pipe.system 0 0 - - foo
 regular.inbox 0 0 - - foo
 exit=0
