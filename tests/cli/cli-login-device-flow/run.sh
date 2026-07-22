@@ -45,7 +45,7 @@ echo "cli_exit_code: $CLI_RC"
 
 # 5. Daemon should now be authed.
 echo "--- daemon status ---"
-ppz_a status | grep -qE 'logged in' && echo "login=ok" || echo "login=fail"
+ppz_a status | matches -E 'logged in' && echo "login=ok" || echo "login=fail"
 
 # 6. Daemon can list pipes (proves the bearer works).
 echo ""

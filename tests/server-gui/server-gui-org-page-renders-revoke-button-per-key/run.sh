@@ -23,25 +23,25 @@ curl_server "/api/v1/keys/$id_b/revoke" -X POST -o /dev/null -w '' || true
 page="$(curl_server "/orgs/$org_id/keys")"
 
 echo "--- active key has a revoke form pointing at its id ---"
-if printf '%s' "$page" | grep -qF "action=\"/api/v1/keys/$id_a/revoke\""; then
+if printf '%s' "$page" | matches -F "action=\"/api/v1/keys/$id_a/revoke\""; then
   echo "active-revoke-form=present"
 else
   echo "active-revoke-form=missing"
 fi
 
 echo "--- revoked key has NO revoke form ---"
-if printf '%s' "$page" | grep -qF "action=\"/api/v1/keys/$id_b/revoke\""; then
+if printf '%s' "$page" | matches -F "action=\"/api/v1/keys/$id_b/revoke\""; then
   echo "revoked-revoke-form=present (BUG)"
 else
   echo "revoked-revoke-form=absent"
 fi
 
 echo "--- revoked key is marked with data-key-state=revoked ---"
-# pipefail off in a subshell: grep -q exits on match and SIGPIPEs the
-# upstream tr (which streams the whole page); that 141 would otherwise
-# flip this assertion to a false miss for a large page.
-if (set +o pipefail; printf '%s' "$page" | tr '\n' ' ' \
-   | grep -qE "data-key-state=\"revoked\"[^>]*>[^<]*will-be-revoked|data-key-id=\"$id_b\"[^>]*data-key-state=\"revoked\""); then
+# `matches`, not `grep -q`: a short-circuiting grep would SIGPIPE the
+# upstream tr (which streams the whole page) and flip this assertion to
+# a false miss on a large page. See matches in common.sh.
+if printf '%s' "$page" | tr '\n' ' ' \
+   | matches -E "data-key-state=\"revoked\"[^>]*>[^<]*will-be-revoked|data-key-id=\"$id_b\"[^>]*data-key-state=\"revoked\""; then
   echo "revoked-state-marker=present"
 else
   echo "revoked-state-marker=missing"

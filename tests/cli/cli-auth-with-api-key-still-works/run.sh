@@ -7,7 +7,7 @@
 ppz_a daemon login "$PPZ_SERVER_URL" -apikey "$(key_alpha)" >/dev/null
 
 echo "--- daemon-a status reports logged-in ---"
-ppz_a status | grep -qE 'logged in' && echo "login=ok" || echo "login=fail"
+ppz_a status | matches -E 'logged in' && echo "login=ok" || echo "login=fail"
 
 echo ""
 echo "--- ls works against the API ---"

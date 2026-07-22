@@ -83,6 +83,35 @@ wait_for() {
   return 1
 }
 
+# `grep -q` for the tail of a pipeline: same question ("did anything
+# match?"), same exit status, but it reads stdin to EOF instead of
+# exiting on the first hit.
+#
+#   ppz_a ls | ls_normalize | matches '^chat.heartbeat'
+#   printf '%s' "$page" | matches -F "$needle"
+#
+# Flags and patterns pass straight through to grep.
+#
+# Why this exists: `grep -q` short-circuits, and whatever is still
+# writing upstream then takes SIGPIPE — awk/sed inside ls_normalize, or
+# a Go CLI, whose os.Stdout is unbuffered and so writes one syscall per
+# line. Under this file's `set -o pipefail` that 141 becomes the
+# pipeline's status, so the assertion reads as a miss even though the
+# pattern matched. It is a race (does grep exit before upstream's next
+# write?), so it shows up as a rare CI flake, and it is worst when the
+# match is on an early line: measured ~3% of runs for the first row of
+# a six-row `ppz ls`, 0% for the last. That was PR #184; wait_for
+# documents the same trap above.
+#
+# Reading to EOF removes the cause rather than masking the status, so
+# call sites keep their literal pipeline (no subshell, no eval quoting).
+# Plain `grep -q` stays fine where nothing can be signalled: a file
+# argument (`grep -q x "$err"`), a lone builtin upstream (`echo "$body" |
+# grep -q x` — one write, and a shell variable fits the 64K pipe
+# buffer), or a stream you deliberately want to stop reading. Reach for
+# `matches` as soon as a real process is upstream.
+matches() { grep -c "$@" >/dev/null; }
+
 # Print only the last broadcast payload visible to daemon A for handle $1.
 # Post-v0.34: NAMESPACE column owns field index 1; PIPE moved to $2.
 # The header's PIPE field is the literal "PIPE", which won't match a
