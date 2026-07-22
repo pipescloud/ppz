@@ -762,6 +762,11 @@ the person physically at the shared terminal. It governs remote writers only.
 
 ### Host rules
 
+- **Stale-acquire guard**: an `acquire` whose age (`now − created_at`) exceeds
+  its own `ttl_ms` is ignored (no grant, no publish). The manager follows
+  `.system` with `NoAdvance`, so JetStream redelivers retained acquires (on
+  reconnect / ack-wait); without this guard a long-dead acquire would re-grant a
+  phantom lease on every redelivery. Live acquires/renewals have age ~0.
 - **Acquire** when free, or a renew by the current holder (`holder==sender`):
   grant, arm a TTL timer, publish `lease-state` with the new holder + `until`.
 - **Acquire** while held by someone else: deny — publish `lease-state` with the

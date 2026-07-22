@@ -1012,12 +1012,25 @@ func handleLeaseMessage(handle string, lease *leaseState, msg cliproto.ReadMessa
 	now := time.Now()
 	switch p.Type {
 	case "lease-acquire":
+		ttl := time.Duration(p.TTLMs) * time.Millisecond
+		if ttl <= 0 {
+			ttl = defaultLeaseTTL
+		}
+		// Stale-acquire guard. The lease manager follows .system with
+		// NoAdvance, so JetStream redelivers retained acquires (on reconnect
+		// or ack-wait expiry). Without this, an acquire that has long outlived
+		// its TTL re-grants a phantom lease on every redelivery — generating a
+		// perpetual lease-state burst until the message ages out (24h). A live
+		// acquire/renewal has age ~0; a redelivered stale one is minutes/hours
+		// old. Drop anything older than its own TTL. Uses the message's publish
+		// time and assumes roughly NTP-synced clocks (the full-TTL comparison
+		// absorbs sub-second skew). An absent/unparseable timestamp fails open
+		// (processed) rather than dropping a possibly-valid acquire.
+		if created, err := time.Parse(time.RFC3339, msg.CreatedAt); err == nil && now.Sub(created) > ttl {
+			return
+		}
 		cur := lease.holderAt(now)
 		if cur == "" || cur == msg.Sender {
-			ttl := time.Duration(p.TTLMs) * time.Millisecond
-			if ttl <= 0 {
-				ttl = defaultLeaseTTL
-			}
 			exp := now.Add(ttl)
 			lease.grant(msg.Sender, exp)
 			armTimer(expiry, ttl)
