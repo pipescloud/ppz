@@ -24,7 +24,7 @@ wait_for 20 "ppz_a reread esc-filter.stdout --json | jq -r '.payload' | tr -d '\
 
 stdout=$(ppz_a reread esc-filter.stdout --json | jq -r '.payload' | tr -d '\n\r')
 echo "stdout=$stdout"
-if echo "$stdout" | grep -q '?1;2c'; then
+if echo "$stdout" | matches '?1;2c'; then
   echo "esc-leaked=yes"
 else
   echo "esc-leaked=no"

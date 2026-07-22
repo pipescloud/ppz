@@ -22,4 +22,4 @@ echo "minted: $([[ -n "$USER_CODE" ]] && echo true || echo false)"
 echo ""
 echo "--- GET /oauth/device/verify → page names the client ---"
 body=$(curl_server "/oauth/device/verify?user_code=$USER_CODE" -b "$COOKIE_JAR" -s)
-echo "client_name_present: $(echo "$body" | grep -qF "$CLIENT" && echo true || echo false)"
+echo "client_name_present: $(echo "$body" | matches -F "$CLIENT" && echo true || echo false)"

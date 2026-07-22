@@ -18,7 +18,7 @@ curl_server "/orgs/alpha/invites" -X POST -d "username=alice" -o /dev/null
 auth_as alice
 body=$(curl_server "/dashboard" -s)
 
-echo "invites_section_present: $(echo "$body" | grep -q 'Invitations' && echo true || echo false)"
-echo "alpha_invite_present:    $(echo "$body" | grep -q 'Pending invitation to <strong>alpha' && echo true || echo false)"
-echo "accept_form_present:     $(echo "$body" | grep -q 'action="/invites/.*/accept"' && echo true || echo false)"
-echo "decline_form_present:    $(echo "$body" | grep -q 'action="/invites/.*/decline"' && echo true || echo false)"
+echo "invites_section_present: $(echo "$body" | matches 'Invitations' && echo true || echo false)"
+echo "alpha_invite_present:    $(echo "$body" | matches 'Pending invitation to <strong>alpha' && echo true || echo false)"
+echo "accept_form_present:     $(echo "$body" | matches 'action="/invites/.*/accept"' && echo true || echo false)"
+echo "decline_form_present:    $(echo "$body" | matches 'action="/invites/.*/decline"' && echo true || echo false)"

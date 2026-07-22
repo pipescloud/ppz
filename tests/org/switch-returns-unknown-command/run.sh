@@ -8,7 +8,7 @@ stderr=$(ppz_a org switch beta 2>&1 1>/dev/null)
 rc=$?
 
 echo "exit=$rc"
-if echo "$stderr" | grep -qE 'unknown (command|subcommand)'; then
+if echo "$stderr" | matches -E 'unknown (command|subcommand)'; then
   echo "stderr_contains_unknown=yes"
 else
   echo "stderr_contains_unknown=no"

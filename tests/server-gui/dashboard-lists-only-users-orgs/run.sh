@@ -33,13 +33,13 @@ dashboard_for() {
 
 echo "--- foo (owns+member alpha; nothing else) ---"
 body=$(dashboard_for foo)
-echo "alpha_present:               $(echo "$body" | grep -q '>alpha<' && echo true || echo false)"
-echo "beta_present:                $(echo "$body" | grep -q '>beta<' && echo true || echo false)"
-echo "tenant_leak_canary_present:  $(echo "$body" | grep -q 'tenant-leak-canary' && echo true || echo false)"
+echo "alpha_present:               $(echo "$body" | matches '>alpha<' && echo true || echo false)"
+echo "beta_present:                $(echo "$body" | matches '>beta<' && echo true || echo false)"
+echo "tenant_leak_canary_present:  $(echo "$body" | matches 'tenant-leak-canary' && echo true || echo false)"
 
 echo ""
 echo "--- bar (member of alpha + beta) ---"
 body=$(dashboard_for bar)
-echo "alpha_present:               $(echo "$body" | grep -q '>alpha<' && echo true || echo false)"
-echo "beta_present:                $(echo "$body" | grep -q '>beta<' && echo true || echo false)"
-echo "tenant_leak_canary_present:  $(echo "$body" | grep -q 'tenant-leak-canary' && echo true || echo false)"
+echo "alpha_present:               $(echo "$body" | matches '>alpha<' && echo true || echo false)"
+echo "beta_present:                $(echo "$body" | matches '>beta<' && echo true || echo false)"
+echo "tenant_leak_canary_present:  $(echo "$body" | matches 'tenant-leak-canary' && echo true || echo false)"

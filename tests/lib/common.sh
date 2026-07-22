@@ -105,11 +105,18 @@ wait_for() {
 #
 # Reading to EOF removes the cause rather than masking the status, so
 # call sites keep their literal pipeline (no subshell, no eval quoting).
-# Plain `grep -q` stays fine where nothing can be signalled: a file
-# argument (`grep -q x "$err"`), a lone builtin upstream (`echo "$body" |
-# grep -q x` — one write, and a shell variable fits the 64K pipe
-# buffer), or a stream you deliberately want to stop reading. Reach for
-# `matches` as soon as a real process is upstream.
+#
+# The rule is therefore just: never end a pipeline in `grep -q`. No
+# judgement call about which upstreams are "safe enough" — a builtin
+# looks immune only while the data fits the 64K pipe buffer, and bash's
+# printf returns nonzero on EPIPE like anything else. Every piped site
+# in tests/ uses `matches`.
+#
+# `grep -q` is still right where nothing can be signalled — a file
+# argument, `grep -q x "$err"` — and on a producer that never closes
+# stdout, where short-circuiting is the point and `matches` would block
+# forever. wait_for keeps its own guard because it evals arbitrary
+# expressions.
 matches() { grep -c "$@" >/dev/null; }
 
 # Print only the last broadcast payload visible to daemon A for handle $1.

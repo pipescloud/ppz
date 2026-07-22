@@ -17,7 +17,7 @@ USER_CODE=$(echo "$mint" | grep -oE '"user_code":"[^"]+"' | sed -E 's/.*:"([^"]+
 
 page=$(curl_server "/oauth/device/verify?user_code=$USER_CODE" -b "$COOKIE_JAR" -s)
 
-echo "has_select: $(echo "$page" | grep -qE '<select[^>]*name="account_id"' && echo true || echo false)"
-echo "has_alpha: $(echo "$page" | grep -qE '<option[^>]*>alpha</option>' && echo true || echo false)"
-echo "has_beta: $(echo "$page" | grep -qE '<option[^>]*>beta</option>' && echo true || echo false)"
+echo "has_select: $(echo "$page" | matches -E '<select[^>]*name="account_id"' && echo true || echo false)"
+echo "has_alpha: $(echo "$page" | matches -E '<option[^>]*>alpha</option>' && echo true || echo false)"
+echo "has_beta: $(echo "$page" | matches -E '<option[^>]*>beta</option>' && echo true || echo false)"
 echo "default_selected: $(echo "$page" | grep -oE '<option value="[^"]*" selected>[^<]+</option>' | sed -E 's/.*>([^<]+)<.*/\1/')"
