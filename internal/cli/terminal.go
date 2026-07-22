@@ -289,7 +289,40 @@ func cmdTerminalShare(args []string) error {
 	if stdinIsTTY {
 		oldState, err := term.MakeRaw(int(stdin.Fd()))
 		if err == nil {
-			defer func() { _ = term.Restore(int(stdin.Fd()), oldState) }()
+			restoreTTY := func() { _ = term.Restore(int(stdin.Fd()), oldState) }
+			// Clean-exit restore (child exits, we return normally).
+			defer restoreTTY()
+
+			// Killing-signal restore. The defer above only runs on a clean
+			// return; a process killed by SIGINT/SIGTERM (`kill`, or the
+			// `zsh: terminated ppz terminal share` a user sees) takes Go's
+			// default disposition, which terminates immediately WITHOUT
+			// running defers — leaving the shell's tty in raw mode so every
+			// later command's output staircases (OPOST cleared → no
+			// "\n"→"\r\n"). We block on cmd.Wait() below, which a signal
+			// can't unblock, so we can't rely on returning: catch the signal,
+			// restore the tty inline, then re-raise with the default handler
+			// so the exit status still reflects the signal. `ppz terminal
+			// view` gets this for free via NotifyContext because closing its
+			// socket unblocks its loop; share's cmd.Wait() does not, hence the
+			// explicit handler. (Ctrl-C never reaches here: raw mode clears
+			// ISIG, so the keystroke flows to the wrapped child as a 0x03
+			// byte rather than generating SIGINT.) Regression: staircase-tty
+			// after kill — see TestCmdTerminalShareRestoresTerminalOnSIGTERM.
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+			defer func() { signal.Stop(sigCh); close(sigCh) }()
+			go func() {
+				sig, ok := <-sigCh
+				if !ok {
+					return // clean exit: channel closed by the defer above.
+				}
+				restoreTTY()
+				signal.Stop(sigCh)
+				if s, ok := sig.(syscall.Signal); ok {
+					_ = syscall.Kill(os.Getpid(), s)
+				}
+			}()
 		}
 		_ = pty.InheritSize(stdin, ptmx)
 		publishWinsize(handle, ptmx)
