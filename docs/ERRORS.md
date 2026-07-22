@@ -31,6 +31,11 @@ error codes, and HTTP error response codes all derive from it.
 | 21 | `E_PIPE_TAKEN` | pipe with this name already exists on this source | 409 |
 | 22 | `E_PIPE_NOT_FOUND` | no pipe with this name on this source | 404 |
 | 23 | `E_INVALID_SUBJECT` | `--subject` value violates a reserved-prefix rule (the `ack:` prefix is daemon-internal) | 400 |
+| 24 | `E_INVALID_MANIFOLD` | a manifold (namespace) path segment fails the handle regex | 400 |
+| 25 | `E_DELIVERY_UNCONFIRMED` | `send` published but the server did not ack the PubAck in time (may or may not have landed) | — |
+| 26 | `E_DAEMON_TIMEOUT` | the local daemon accepted the IPC connection but did not reply within the deadline | — |
+| 27 | `E_LEASE_HELD` | `terminal lease`: a different controller already holds the terminal's write-lease | — |
+| 28 | `E_LEASE_NO_HOST` | `terminal lease`/`control`: acquire published but no terminal host answered (offline, or a ppz predating terminal control) | — |
 
 Exit codes 21 and 22 are reserved here for the user-creatable-pipes feature
 that lands in a later phase; nothing in the current code path returns them

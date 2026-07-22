@@ -1054,7 +1054,10 @@ func stopTimer(t *time.Timer) {
 
 // awaitLeaseGrant follows <handle>.system after an acquire/release and returns
 // the holder the host reported for our request (matched by reply_nonce). A
-// timeout returns EDaemonTimeout so the CLI never hangs on a dead host.
+// timeout returns E_LEASE_NO_HOST — the acquire was published but no terminal
+// host answered, so the CLI never hangs on an offline/old host. (Distinct from
+// EDaemonTimeout: the caller's local daemon is fine; it's the remote host that
+// isn't responding.)
 func awaitLeaseGrant(handle, nonce string, timeout time.Duration) (string, error) {
 	conn, err := net.Dial("unix", ipcSocket())
 	if err != nil {
@@ -1098,7 +1101,7 @@ func awaitLeaseGrant(handle, nonce string, timeout time.Duration) (string, error
 			return p.Holder, nil
 		}
 	}
-	return "", cliproto.New(cliproto.EDaemonTimeout)
+	return "", cliproto.NewLeaseNoHost(handle)
 }
 
 // cmdTerminalLease: ppz terminal lease <handle> <duration>
