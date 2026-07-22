@@ -16,7 +16,13 @@ ppz_a terminal share -- sh -c 'stty -echo 2>/dev/null; exec cat' >/dev/null 2>&1
 TERM_PID=$!
 wait_for 20 "ppz_a ls 2>/dev/null | ls_normalize | grep -q '^chat.stdout'" >/dev/null
 
-if ppz_a ls | ls_normalize | grep -q '^chat.heartbeat'; then
+# Subshell with pipefail off: `heartbeat` sorts FIRST among the pty
+# pipes, so grep -q matches row 1 and exits while ls_normalize's
+# awk/sed still have five rows to write — they take SIGPIPE, and under
+# common.sh's `set -o pipefail` that 141 becomes the pipeline status
+# and reports "missing" for a pipe that is right there. Same trap
+# wait_for documents (measured ~3% of runs on the alpine test image).
+if (set +o pipefail; ppz_a ls | ls_normalize | grep -q '^chat.heartbeat'); then
   echo "heartbeat_pipe: present"
 else
   echo "heartbeat_pipe: missing"
