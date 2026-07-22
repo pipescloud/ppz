@@ -654,17 +654,23 @@ interactive attach see `terminal control`.
 ### `ppz terminal control HANDLE`
 Interactive attach = `watch` (follows `<handle>.stdout`) PLUS forwarding local
 keystrokes to `<handle>.stdin`, after acquiring the advisory write-lease (see
-§12). Exits 10 if not logged in. If another controller already holds the lease,
-degrades to a read-only attach (streams output; keystrokes not forwarded)
-rather than failing. Forwarded stdin is stamped with the controller's
-`PPZ_CURRENT_HANDLE` so the host's lease check accepts it. On exit a writable
-session releases the lease so the terminal frees immediately.
+§12). Exits 10 if not logged in; `E_LEASE_NO_HOST` (28) if no terminal host
+answers the acquire. If another controller already holds the lease, degrades to
+a read-only attach (streams output; keystrokes not forwarded) rather than
+failing. The controller identity — used both for the grant comparison and to
+stamp forwarded stdin — is `PPZ_CURRENT_HANDLE` when set, else the session's
+current source (matching how the daemon stamps senders), so the host's lease
+check accepts the controller's keystrokes. On exit a writable session releases
+the lease so the terminal frees immediately.
 
 ### `ppz terminal lease HANDLE DURATION`
 Acquires the write-lease on `HANDLE` for `DURATION` (Go duration: `60s`, `5m`).
 Blocks until the pty host grants or denies. Grant → exit 0; deny (someone else
-holds it) → prints `held by <holder>` and exits `E_LEASE_HELD` (27). Holder
-identity is `PPZ_CURRENT_HANDLE`.
+holds it) → prints `held by <holder>` and exits `E_LEASE_HELD` (27); no host
+answered (offline / pre-feature ppz) → `E_LEASE_NO_HOST` (28). Holder identity
+is resolved the same way `send`/`command` stamp the sender: `PPZ_CURRENT_HANDLE`
+when set (wrapped pty), else the session's current source — so the CLI's
+grant-vs-deny comparison matches the sender the daemon actually stamped.
 
 ### `ppz terminal release HANDLE`
 Releases the caller's write-lease on `HANDLE`. A release by anyone but the

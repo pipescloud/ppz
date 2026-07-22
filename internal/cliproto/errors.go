@@ -69,6 +69,15 @@ const (
 	// treats this as the signal to fall back to a read-only attach.
 	ELeaseHeld Code = "E_LEASE_HELD"
 
+	// ELeaseNoHost is returned by `ppz terminal lease`/`control` when the
+	// acquire was published but no terminal host answered within the deadline
+	// — the source has a `.system` pipe but no live `terminal share` process
+	// running the lease manager (offline, or an older ppz predating terminal
+	// control). Distinct from EDaemonTimeout so the message points at the
+	// remote host rather than telling the user to restart their healthy local
+	// daemon.
+	ELeaseNoHost Code = "E_LEASE_NO_HOST"
+
 	// ENameTaken — Phase 1.5.1 first-wins collision rule. Within a
 	// manifold, user-typed names share a namespace across source
 	// handles and uncollared pipe names; a source at manifold M also
@@ -120,6 +129,8 @@ func ExitCode(c Code) int {
 		return 26
 	case ELeaseHeld:
 		return 27
+	case ELeaseNoHost:
+		return 28
 	}
 	return 1
 }
@@ -180,6 +191,8 @@ func Message(c Code) string {
 		return "daemon did not respond in time; it may be busy or stuck (e.g. mid-restart) — retry, or run 'ppz daemon restart'"
 	case ELeaseHeld:
 		return "terminal write-lease is currently owned by another controller; retry after it releases or expires, or use 'ppz terminal control' to attach read-only"
+	case ELeaseNoHost:
+		return "no terminal host answered the lease request; the source's 'terminal share' process may be offline or running a ppz that predates terminal control — check 'ppz who' that the host is online and upgraded"
 	}
 	return "unknown error"
 }
@@ -291,6 +304,12 @@ func NewInvalidPipeReserved(name string) *Error {
 // NewInvalidPipeName: pipe name 'X' is invalid (regex rejection / etc.)
 func NewInvalidPipeName(name string) *Error {
 	return &Error{Code: EInvalidPipe, Message: fmt.Sprintf("pipe name '%s' is invalid: must match [a-z0-9-] (max 32, no leading/trailing -)", name)}
+}
+
+// NewLeaseNoHost: no terminal host answered the lease request for 'alice' …
+func NewLeaseNoHost(handle string) *Error {
+	return &Error{Code: ELeaseNoHost, Message: fmt.Sprintf(
+		"no terminal host answered the lease request for '%s'; its 'terminal share' process may be offline or running a ppz that predates terminal control — check 'ppz who' that the host is online and upgraded", handle)}
 }
 
 // NewInvalidHandle: invalid handle 'BAD'

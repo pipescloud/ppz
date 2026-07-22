@@ -1054,7 +1054,10 @@ func stopTimer(t *time.Timer) {
 
 // awaitLeaseGrant follows <handle>.system after an acquire/release and returns
 // the holder the host reported for our request (matched by reply_nonce). A
-// timeout returns EDaemonTimeout so the CLI never hangs on a dead host.
+// timeout returns E_LEASE_NO_HOST — the acquire was published but no terminal
+// host answered, so the CLI never hangs on an offline/old host. (Distinct from
+// EDaemonTimeout: the caller's local daemon is fine; it's the remote host that
+// isn't responding.)
 func awaitLeaseGrant(handle, nonce string, timeout time.Duration) (string, error) {
 	conn, err := net.Dial("unix", ipcSocket())
 	if err != nil {
@@ -1098,7 +1101,7 @@ func awaitLeaseGrant(handle, nonce string, timeout time.Duration) (string, error
 			return p.Holder, nil
 		}
 	}
-	return "", cliproto.New(cliproto.EDaemonTimeout)
+	return "", cliproto.NewLeaseNoHost(handle)
 }
 
 // cmdTerminalLease: ppz terminal lease <handle> <duration>
@@ -1119,16 +1122,28 @@ func cmdTerminalLease(args []string) error {
 	if err != nil || dur <= 0 {
 		return fmt.Errorf("ppz terminal lease: invalid duration %q (use e.g. 60s, 5m)", args[1])
 	}
-	sender := os.Getenv("PPZ_CURRENT_HANDLE")
+	// Identity hint for the acquire: the wrapped-pty env var if present, else
+	// empty — in which case the daemon stamps the acquire's sender from the
+	// session's current source (same resolution as `ppz send`/`command`).
+	// Publishing first also gates login (daemon → ENotLoggedIn, exit 10).
+	hint := os.Getenv("PPZ_CURRENT_HANDLE")
 	nonce := leaseNonce()
-	if err := publishLeaseRequest(handle, sender, "lease-acquire", nonce, dur); err != nil {
+	if err := publishLeaseRequest(handle, hint, "lease-acquire", nonce, dur); err != nil {
 		return err
 	}
 	holder, err := awaitLeaseGrant(handle, nonce, leaseAcquireTimeout)
 	if err != nil {
 		return err
 	}
-	if holder != sender {
+	// Compare the grant's holder against OUR identity resolved the same way the
+	// daemon stamped it (env hint, else session current). Comparing against the
+	// raw env var alone misreads a granted lease as "held by <myself>" whenever
+	// identity comes from the current source rather than PPZ_CURRENT_HANDLE.
+	me, err := effectiveCurrentHandle()
+	if err != nil {
+		return err
+	}
+	if holder != me {
 		fmt.Fprintf(os.Stderr, "held by %s\n", holder)
 		return cliproto.New(cliproto.ELeaseHeld)
 	}
@@ -1176,23 +1191,32 @@ func cmdTerminalControl(args []string) error {
 	if handle == "" || strings.Contains(handle, ".") {
 		return cliproto.New(cliproto.EInvalidHandle)
 	}
-	sender := os.Getenv("PPZ_CURRENT_HANDLE")
-
+	// Identity hint for the acquire: the wrapped-pty env var if present, else
+	// empty (daemon then stamps the sender from the session's current source).
 	// Acquire first: surfaces ENotLoggedIn (exit 10) before we attach, and a
 	// deny tells us to fall back to read-only.
+	hint := os.Getenv("PPZ_CURRENT_HANDLE")
 	nonce := leaseNonce()
-	if err := publishLeaseRequest(handle, sender, "lease-acquire", nonce, controlLeaseTTL); err != nil {
+	if err := publishLeaseRequest(handle, hint, "lease-acquire", nonce, controlLeaseTTL); err != nil {
 		return err
 	}
 	holder, err := awaitLeaseGrant(handle, nonce, leaseAcquireTimeout)
 	if err != nil {
 		return err
 	}
-	writable := holder == sender
+	// Resolve OUR identity the way the daemon stamped the acquire (env hint,
+	// else session current) so we compare like-for-like — otherwise a lease
+	// granted to our current source reads as "controlled by <ourselves>" and
+	// wrongly downgrades to read-only, blocking our own keystrokes.
+	me, err := effectiveCurrentHandle()
+	if err != nil {
+		return err
+	}
+	writable := holder == me
 	if !writable {
 		fmt.Fprintf(os.Stderr, "ppz terminal control: %s is controlled by %s — attaching read-only\n", handle, holder)
 	}
-	return attachTerminal(handle, sender, writable)
+	return attachTerminal(handle, me, writable)
 }
 
 // attachTerminal streams <handle>.stdout to the local terminal and, when
