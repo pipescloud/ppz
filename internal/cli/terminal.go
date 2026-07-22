@@ -804,6 +804,13 @@ const (
 	// expires mid-use.
 	controlLeaseTTL   = 30 * time.Second
 	controlLeaseRenew = 10 * time.Second
+	// leaseStaleGrace pads the stale-acquire guard. created_at is emitted at
+	// second granularity (truncated), so a just-published acquire can read up
+	// to ~1s older than its real publish time; add processing/redelivery slop
+	// and clock skew. Without slack a short-TTL acquire (e.g. `lease box 1s`)
+	// would be falsely dropped. The churn this guards against is minutes-to-
+	// hours-old, so a few seconds of grace costs nothing.
+	leaseStaleGrace = 3 * time.Second
 )
 
 // leaseState is the pty host's in-memory view of the current write-lease.
@@ -1022,11 +1029,12 @@ func handleLeaseMessage(handle string, lease *leaseState, msg cliproto.ReadMessa
 		// its TTL re-grants a phantom lease on every redelivery — generating a
 		// perpetual lease-state burst until the message ages out (24h). A live
 		// acquire/renewal has age ~0; a redelivered stale one is minutes/hours
-		// old. Drop anything older than its own TTL. Uses the message's publish
-		// time and assumes roughly NTP-synced clocks (the full-TTL comparison
-		// absorbs sub-second skew). An absent/unparseable timestamp fails open
-		// (processed) rather than dropping a possibly-valid acquire.
-		if created, err := time.Parse(time.RFC3339, msg.CreatedAt); err == nil && now.Sub(created) > ttl {
+		// old. Drop anything older than its TTL plus leaseStaleGrace — the
+		// grace covers second-granularity created_at truncation (~1s),
+		// redelivery/processing slop, and clock skew, so short-TTL acquires
+		// (`lease box 1s`) aren't falsely dropped. An absent/unparseable
+		// timestamp fails open (processed) rather than dropping a valid acquire.
+		if created, err := time.Parse(time.RFC3339, msg.CreatedAt); err == nil && now.Sub(created) > ttl+leaseStaleGrace {
 			return
 		}
 		cur := lease.holderAt(now)

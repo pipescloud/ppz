@@ -62,3 +62,27 @@ func TestHandleLeaseMessage_GrantsFreshAcquire(t *testing.T) {
 		t.Fatalf("fresh acquire holder = %q, want james", h)
 	}
 }
+
+// TestHandleLeaseMessage_GrantsShortTTLDespiteTimestampTruncation covers a real
+// regression: created_at is emitted at second granularity (truncated), so a
+// just-published acquire can carry a timestamp up to ~1s older than its real
+// publish time. For a short TTL (`ppz terminal lease box 1s`) a plain age>ttl
+// check would then falsely drop a VALID acquire — timing the caller out with
+// E_LEASE_NO_HOST. The stale guard must include a grace margin so short-lived
+// leases still grant. Here: a valid acquire whose truncated timestamp reads
+// ~1.2s old under a 1s TTL must still be granted.
+func TestHandleLeaseMessage_GrantsShortTTLDespiteTimestampTruncation(t *testing.T) {
+	t.Setenv("PPZ_IPC_SOCKET", "/nonexistent/ppz-shortttl-test.sock")
+	lease := newLeaseState()
+	timer := stoppedLeaseTimer()
+	defer timer.Stop()
+
+	// TTL 1s; timestamp reads 1.2s old (truncation + processing), i.e. just
+	// over the raw TTL but well within any sane grace window.
+	msg := leaseAcquireMsg("james", "short1", 1_000, time.Now().Add(-1200*time.Millisecond))
+	handleLeaseMessage("alice", lease, msg, timer)
+
+	if h := lease.holderAt(time.Now()); h != "james" {
+		t.Fatalf("short-TTL acquire holder = %q, want james (truncation must not falsely drop a valid acquire)", h)
+	}
+}
