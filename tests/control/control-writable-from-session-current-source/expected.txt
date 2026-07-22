@@ -1,0 +1,3 @@
+keystroke_delivered: 1
+attached_readonly: 0
+exit=0
