@@ -36,13 +36,11 @@ sleep 100
 out=$(ppz_a diagnostics 2>/dev/null)
 
 # Event lines render as: <type> <timestamp> caller=... nc=... reason="..."
-# Collect the refresh_error lines once. NB: avoid `grep -E ... | grep -q`
-# under `set -o pipefail` (set by common.sh) — the downstream `grep -q`
-# exits on its first match and SIGPIPEs the upstream grep, whose 141 then
-# becomes the pipeline status and flips the verdict. The hazard is
-# timing-sensitive (it worsens as the daemon accumulates more
-# refresh_error events), exactly the trap wait_for documents. So capture
-# into a var and use `grep -c` (reads all input, never early-exits).
+# Collect the refresh_error lines once — the reason check below needs
+# them anyway. (Never `grep -E … | grep -q` here: the short-circuiting
+# grep would SIGPIPE its upstream and flip the verdict, worsening as the
+# daemon accumulates events. `matches` in common.sh is the pipeline-safe
+# form when you only need the yes/no.)
 errs=$(echo "$out" | grep -E '^refresh_error')
 
 if [ -n "$errs" ]; then

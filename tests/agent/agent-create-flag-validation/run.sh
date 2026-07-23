@@ -33,7 +33,7 @@ ppz_a agent create test-x positional --prompt-file /etc/hostname 2>&1; echo "rc=
 
 echo "--- 6: --new-window flag is accepted by parser ---"
 out=$(ppz_a agent create test-y --new-window 2>&1 || true)
-if echo "$out" | grep -q "flag provided but not defined"; then
+if echo "$out" | matches "flag provided but not defined"; then
   echo "FAIL: --new-window rejected by flag parser"
 else
   echo "OK: --new-window accepted by flag parser"

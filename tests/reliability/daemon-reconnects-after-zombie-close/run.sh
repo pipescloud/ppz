@@ -65,7 +65,11 @@ fi
 # deterministic. (Checking after unpause races a fast self-heal — the
 # very behaviour this scenario demands.) If still "connected" the send
 # never tripped reportNATSFailure and the verdict below is meaningless.
-if ppz_a status | grep -q '^nats: connected'; then
+# `matches`, not `grep -q`: a short-circuiting grep can SIGPIPE ppz
+# (Go writes stdout a line per syscall), and that 141 would silently
+# take the else branch — i.e. fake the result this guard exists to
+# verify. See matches in common.sh.
+if ppz_a status | matches '^nats: connected'; then
   echo "zombie-closed=NO"
 else
   echo "zombie-closed=YES"

@@ -49,11 +49,10 @@ nats --server="nats://ppz-server:4222" --creds="$CREDS" \
 
 echo ""
 echo "--- beta's data is still intact ---"
-# Subshell with pipefail off: grep -q exits on first match and SIGPIPEs
-# the upstream ls_normalize (awk/sed); under common.sh's `set -o
-# pipefail` that 141 would become the pipeline status and flip this
-# (security) assertion to a false failure. Same trap wait_for documents.
-if (set +o pipefail; ppz_b ls | ls_normalize | grep -qE 'canary.inbox +1 +1 .*beta-data'); then
+# `matches`, not `grep -q`: a short-circuiting grep would SIGPIPE the
+# upstream ls_normalize (awk/sed) and flip this security assertion to a
+# false failure. See matches in common.sh.
+if ppz_b ls | ls_normalize | matches -E 'canary.inbox +1 +1 .*beta-data'; then
   echo "beta_data_still_intact: true"
 else
   echo "beta_data_still_intact: false"

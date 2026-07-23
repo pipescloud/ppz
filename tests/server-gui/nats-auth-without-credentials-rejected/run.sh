@@ -7,7 +7,7 @@
 echo "--- raw nats.Connect with no creds ---"
 out=$(nats --server="nats://ppz-server:4222" \
     pub "anything.foo.broadcast" "no-auth attempt" 2>&1 || true)
-if echo "$out" | grep -qiE 'authorization|unauthorized|permissions'; then
+if echo "$out" | matches -iE 'authorization|unauthorized|permissions'; then
   echo "rejected=true"
 else
   echo "rejected=false"

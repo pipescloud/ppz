@@ -26,7 +26,7 @@ wait_for 20 "ppz_a reread no-echo.stdout --json | jq -r '.payload' | tr -d '\n' 
 
 stdout=$(ppz_a reread no-echo.stdout --json | jq -r '.payload' | tr -d '\n')
 echo "stdout=$stdout"
-if echo "$stdout" | grep -q INPUT; then
+if echo "$stdout" | matches INPUT; then
   echo "input-leaked=yes"
 else
   echo "input-leaked=no"

@@ -24,7 +24,7 @@ ppz_a reread bob.inbox -l 1 --bare
 # schedule_id marker distinguishes scheduled messages from live sends.
 row=$(ppz_a reread bob.inbox -l 1 --json)
 echo "$row" | grep -o '"sender":"alice"'
-if echo "$row" | grep -q '"schedule_id":"'; then echo "schedule_id=present"; fi
+if echo "$row" | matches '"schedule_id":"'; then echo "schedule_id=present"; fi
 
 # Fired one-offs leave the table (no STATUS column, no tombstone).
 echo "rows-after=$(ppz_a schedule ls | wc -l | tr -d ' ')"

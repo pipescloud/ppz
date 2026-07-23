@@ -18,11 +18,11 @@ curl_server "/dev/login?user=foo" -X POST -c "$COOKIE_JAR" -o /dev/null -s
 
 echo "--- GET /oauth/device/verify (no approved flag) → renders the form ---"
 body=$(curl_server "/oauth/device/verify?user_code=TEST-CODE" -b "$COOKIE_JAR" -s)
-echo "form_button_present: $(echo "$body" | grep -q 'Approve as me' && echo true || echo false)"
-echo "approved_message_present: $(echo "$body" | grep -q "You're all set" && echo true || echo false)"
+echo "form_button_present: $(echo "$body" | matches 'Approve as me' && echo true || echo false)"
+echo "approved_message_present: $(echo "$body" | matches "You're all set" && echo true || echo false)"
 
 echo ""
 echo "--- GET /oauth/device/verify?approved=1 → renders the success message ---"
 body=$(curl_server "/oauth/device/verify?user_code=TEST-CODE&approved=1" -b "$COOKIE_JAR" -s)
-echo "form_button_present: $(echo "$body" | grep -q 'Approve as me' && echo true || echo false)"
-echo "approved_message_present: $(echo "$body" | grep -q "You're all set" && echo true || echo false)"
+echo "form_button_present: $(echo "$body" | matches 'Approve as me' && echo true || echo false)"
+echo "approved_message_present: $(echo "$body" | matches "You're all set" && echo true || echo false)"

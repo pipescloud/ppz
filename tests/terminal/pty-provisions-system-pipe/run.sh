@@ -12,7 +12,7 @@ PPZ_IPC_SOCKET="$PPZ_DAEMON_A_SOCK" ppz terminal share box -- \
 TERM_PID=$!
 wait_for 20 "ppz_a ls 2>/dev/null | ls_normalize | grep -q '^box.stdout'" >/dev/null
 
-if ppz_a ls | ls_normalize | grep -q '^box.system'; then
+if ppz_a ls | ls_normalize | matches '^box.system'; then
   echo "system_pipe: present"
 else
   echo "system_pipe: missing"

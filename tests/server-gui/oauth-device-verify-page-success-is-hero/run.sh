@@ -15,10 +15,10 @@ curl_server "/dev/login?user=foo" -X POST -c "$COOKIE_JAR" -o /dev/null -s
 
 echo "--- form branch (no approved flag) → no success <h1> ---"
 body=$(curl_server "/oauth/device/verify?user_code=TEST" -b "$COOKIE_JAR" -s)
-echo "h1_present: $(echo "$body" | grep -q '<h1' && echo true || echo false)"
+echo "h1_present: $(echo "$body" | matches '<h1' && echo true || echo false)"
 
 echo ""
 echo "--- success branch (?approved=1) → renders hero <h1> + close-window copy ---"
 body=$(curl_server "/oauth/device/verify?user_code=TEST&approved=1" -b "$COOKIE_JAR" -s)
-echo "h1_present: $(echo "$body" | grep -q '<h1' && echo true || echo false)"
-echo "close_window_copy: $(echo "$body" | grep -qiE 'close this window' && echo true || echo false)"
+echo "h1_present: $(echo "$body" | matches '<h1' && echo true || echo false)"
+echo "close_window_copy: $(echo "$body" | matches -iE 'close this window' && echo true || echo false)"

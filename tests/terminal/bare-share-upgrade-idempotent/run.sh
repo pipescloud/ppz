@@ -18,7 +18,7 @@ ppz_a terminal share -- printf "two" >/dev/null 2>&1
 echo "second_rc: $?"
 
 # System pipe still present after the idempotent second run.
-if ppz_a ls | ls_normalize | grep -q '^chat.system'; then
+if ppz_a ls | ls_normalize | matches '^chat.system'; then
   echo "system_pipe: present"
 else
   echo "system_pipe: missing"

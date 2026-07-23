@@ -15,7 +15,7 @@ echo "response-occurrences=$(printf '%s' "$resp" | grep -oE 'data-new-key="[^"]+
 # Assert plaintext NOT in subsequent keys-tab page (the only place
 # keys get listed, so the strongest negative check).
 followup="$(curl_server "/orgs/$org_id/keys")"
-if [[ -n "$plaintext" ]] && printf '%s' "$followup" | grep -qF "$plaintext"; then
+if [[ -n "$plaintext" ]] && printf '%s' "$followup" | matches -F "$plaintext"; then
   echo "leaked-plaintext=true"
 else
   echo "leaked-plaintext=false"

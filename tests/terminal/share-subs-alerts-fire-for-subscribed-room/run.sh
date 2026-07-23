@@ -71,7 +71,7 @@ wait_for 50 "ppz_s ls 2>/dev/null | grep -q '^share-subs-room.stdout'"
 ppz_b send room-x.inbox "alert me about a room message" >/dev/null
 wait_for 60 "ppz_s reread share-subs-room.stdout --raw 2>/dev/null | grep -q \"Please run 'ppz subs read'\""
 
-if ppz_s reread share-subs-room.stdout --raw 2>/dev/null | grep -q "Please run 'ppz subs read'"; then
+if ppz_s reread share-subs-room.stdout --raw 2>/dev/null | matches "Please run 'ppz subs read'"; then
   echo "alert_fired_for_room: yes"
 else
   echo "alert_fired_for_room: no"

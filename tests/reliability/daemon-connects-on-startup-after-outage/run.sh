@@ -62,7 +62,11 @@ wait_for 300 'ppz_a status >/dev/null 2>&1'
 # DOWN so the read is deterministic (checking after start would race the
 # self-heal we want to observe). If this says connected, the outage
 # wasn't real and the verdict below would be meaningless.
-if ppz_a status | grep -q '^nats: connected'; then
+# `matches`, not `grep -q`: a short-circuiting grep can SIGPIPE ppz
+# (Go writes stdout a line per syscall), and that 141 would silently
+# take the else branch — i.e. fake the result this guard exists to
+# verify. See matches in common.sh.
+if ppz_a status | matches '^nats: connected'; then
   echo "down-state=CONNECTED-UNEXPECTED"
 else
   echo "down-state=NOT-CONNECTED"

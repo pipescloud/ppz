@@ -88,7 +88,7 @@ sleep 0.5
 # never returns an empty reply. Assert the read really drained msg-1
 # so a silent read failure can't masquerade as a pass below.
 READ_OUT=$(PPZ_SESSION=share-norenag ppz_s subs read 2>/dev/null)
-echo "$READ_OUT" | grep -q "msg-1" && echo "subs_read_done: yes" || echo "subs_read_done: no"
+echo "$READ_OUT" | matches "msg-1" && echo "subs_read_done: yes" || echo "subs_read_done: no"
 ALERT_COUNT_AT_READ=$(alert_count)
 
 # Quiet window: 5s ≫ cooldown (2s) + flush tick (1s) + idle (200ms).

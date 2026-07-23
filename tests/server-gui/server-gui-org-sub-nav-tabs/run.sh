@@ -27,7 +27,7 @@ check_tab() {
 
   # Only the active section renders.
   for s in pipes users keys; do
-    if printf '%s' "$page" | grep -qE "id=\"section-$s\""; then
+    if printf '%s' "$page" | matches -E "id=\"section-$s\""; then
       echo "section-$s=present"
     else
       echo "section-$s=absent"
