@@ -338,7 +338,7 @@ Wrapper for 'ppz reread H.stdout' with --tty as the default output mode (a vt10x
 
 	"terminal control": `usage: ppz terminal control H
 
-Attach interactively to the pty bound to handle H: follow H.stdout (like 'watch') AND forward your keystrokes to H.stdin, after acquiring the advisory write-lease. If another controller already holds the lease, control degrades to a read-only attach (streams output; keystrokes not forwarded). Ctrl-C / Ctrl-D detaches and releases the lease. See 'ppz help' and docs/WIRE.md §12 for the lease model.`,
+Attach interactively to the pty bound to handle H: follow H.stdout (like 'watch') AND forward your keystrokes to H.stdin, after acquiring the advisory write-lease. If another controller already holds the lease, control degrades to a read-only attach (streams output; keystrokes not forwarded). Keystrokes — including Ctrl-C — pass through to the remote, so Ctrl-C interrupts the remote foreground process; press Ctrl-D to detach (this releases the lease). See 'ppz help' and docs/WIRE.md §12 for the lease model.`,
 
 	"terminal lease": `usage: ppz terminal lease H DURATION
 

@@ -660,8 +660,11 @@ a read-only attach (streams output; keystrokes not forwarded) rather than
 failing. The controller identity — used both for the grant comparison and to
 stamp forwarded stdin — is `PPZ_CURRENT_HANDLE` when set, else the session's
 current source (matching how the daemon stamps senders), so the host's lease
-check accepts the controller's keystrokes. On exit a writable session releases
-the lease so the terminal frees immediately.
+check accepts the controller's keystrokes. All keystrokes — including Ctrl-C
+(0x03) — are forwarded to the remote, so Ctrl-C interrupts the remote foreground
+process rather than detaching; **Ctrl-D (0x04) detaches** the session locally
+(consumed, not forwarded). On exit a writable session releases the lease so the
+terminal frees immediately.
 
 ### `ppz terminal lease HANDLE DURATION`
 Acquires the write-lease on `HANDLE` for `DURATION` (Go duration: `60s`, `5m`).

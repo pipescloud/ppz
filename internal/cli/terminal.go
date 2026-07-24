@@ -1237,6 +1237,28 @@ func cmdTerminalRelease(args []string) error {
 // controller already holds the lease, control degrades to a read-only attach
 // (streams output, keystrokes not forwarded) rather than failing. Exits 10 if
 // the daemon isn't logged in.
+// controlDetachKey ends an interactive `terminal control` session. Ctrl-D
+// (0x04) — the familiar "exit" gesture — so Ctrl-C stays free to interrupt the
+// remote process. The detach byte is consumed locally, never forwarded, so the
+// remote's shell doesn't receive an EOF on detach.
+const controlDetachKey byte = 0x04
+
+// controlInputAction decides what to do with a chunk of local keystrokes in an
+// interactive control session: which bytes to forward to the remote, and
+// whether this chunk ends the session. The detach key detaches; every other
+// byte (Ctrl-C included) is forwarded. Bytes before a detach key in the same
+// chunk are still forwarded, then the session detaches.
+func controlInputAction(chunk []byte, detachKey byte) (forward []byte, detach bool) {
+	for i, b := range chunk {
+		if b == detachKey {
+			// Forward anything typed before the detach key, then detach.
+			// The detach byte itself is consumed locally (not forwarded).
+			return chunk[:i], true
+		}
+	}
+	return chunk, false
+}
+
 func cmdTerminalControl(args []string) error {
 	if len(args) != 1 {
 		usageExit("terminal control")
@@ -1297,6 +1319,11 @@ func attachTerminal(handle, sender string, writable bool) error {
 	}
 
 	stdin, stdout := os.Stdin, os.Stdout
+	if writable {
+		fmt.Fprintf(os.Stderr, "[ppz] attached to %s — Ctrl-C interrupts the remote; Ctrl-D detaches\n", handle)
+	} else {
+		fmt.Fprintf(os.Stderr, "[ppz] attached to %s (read-only) — Ctrl-D detaches\n", handle)
+	}
 	restoreRaw := setLocalRawMode(stdin.Fd())
 	defer restoreRaw()
 
@@ -1312,7 +1339,9 @@ func attachTerminal(handle, sender string, writable bool) error {
 		defer func() { _ = publishLeaseRequest(handle, sender, "lease-release", leaseNonce(), 0) }()
 	}
 
-	// Local stdin → forward to .stdin (when writable) + exit on Ctrl-C/D.
+	// Local stdin → forward to .stdin (when writable). Ctrl-D detaches the
+	// session locally; every other key — including Ctrl-C — is forwarded so
+	// the controller can interrupt/EOF remote processes while staying attached.
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -1323,17 +1352,11 @@ func attachTerminal(handle, sender string, writable bool) error {
 			}
 			n, rerr := stdin.Read(buf)
 			if n > 0 {
-				chunk := buf[:n]
-				exit := false
-				for _, b := range chunk {
-					if b == 0x03 || b == 0x04 { // Ctrl-C, Ctrl-D
-						exit = true
-					}
+				forward, detach := controlInputAction(buf[:n], controlDetachKey)
+				if writable && len(forward) > 0 {
+					publishStdin(handle, sender, forward)
 				}
-				if writable {
-					publishStdin(handle, sender, chunk)
-				}
-				if exit {
+				if detach {
 					cancel()
 					return
 				}
