@@ -666,6 +666,14 @@ process rather than detaching; **Ctrl-D (0x04) detaches** the session locally
 (consumed, not forwarded). On exit a writable session releases the lease so the
 terminal frees immediately.
 
+Known limitation (echo): the local attach is raw (no local echo), so a
+controller's keystrokes are echoed only by the *remote*. A headless share
+suppresses pty input echo (so injected `send`/`command`/alert input isn't
+doubled into `.stdout`), so a **plain remote shell won't echo a controller's
+typing**. Full-screen/TUI programs render their own input, so typing is visible
+there. Making a plain shell echo under `control` requires decoupling the
+injected-input echo suppression from the child's own echo — deferred.
+
 ### `ppz terminal lease HANDLE DURATION`
 Acquires the write-lease on `HANDLE` for `DURATION` (Go duration: `60s`, `5m`).
 Blocks until the pty host grants or denies. Grant → exit 0; deny (someone else
