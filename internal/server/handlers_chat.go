@@ -260,7 +260,9 @@ func (s *Server) stampUnread(ctx context.Context, org db.Account, userID uuid.UU
 		}(i, streamName, cursor)
 	}
 
-	// Source windows (agents+inboxes) = DMs.
+	// Source windows (agents+inboxes) = DMs. A DM needs an acting identity to
+	// filter to; without one the window is blocked (see chatSourceLegs), so we
+	// leave its unread at 0 rather than leaking the target inbox's raw growth.
 	if acting != "" {
 		hManifold := ""
 		if h, herr := db.GetSourceByHandle(ctx, s.Pool, org.ID, acting); herr == nil {
@@ -275,21 +277,6 @@ func (s *Server) stampUnread(ctx context.Context, org db.Account, userID uuid.UU
 		}
 		mark(roster.Agents)
 		mark(roster.Inboxes)
-	} else {
-		// God's-eye fallback: a source's own-inbox growth.
-		stampOwn := func(entries []chatEntry) {
-			for i := range entries {
-				streamName := natsubj.BuildStreamName(org.ID, entries[i].Namespace, entries[i].Target, "inbox")
-				cursor := cursors[db.ChatCursorKey("source", "", entries[i].Target)]
-				wg.Add(1)
-				go func(i int, entries []chatEntry, streamName string, cursor int64) {
-					defer wg.Done()
-					entries[i].Unread = unreadCount(streamLastSeq(ctx, js, streamName), cursor)
-				}(i, entries, streamName, cursor)
-			}
-		}
-		stampOwn(roster.Agents)
-		stampOwn(roster.Inboxes)
 	}
 	wg.Wait()
 	return roster
@@ -451,9 +438,13 @@ type chatReadLeg struct {
 // For a source (DM) window opened while acting as handle `as` (≠ the target),
 // that's the two-way thread — TUI participant parity: <target>.inbox filtered
 // to my sends, stitched with <as>.inbox filtered to the counterparty's replies.
-// With no acting handle (or acting-as the target itself) it degrades to the
-// single unfiltered inbox — the god's-eye view. Pipes are always one unfiltered
-// leg. Writes the HTTP error + returns false on failure.
+// Acting-as the target itself yields the single unfiltered leg (your own
+// inbox). With NO acting handle the window is blocked (no legs): a DM needs a
+// "you" to filter to, and we deliberately don't fall back to surfacing the
+// target's raw inbox — that would leak every sender's messages to that handle.
+// Pipes are always one unfiltered leg (shared rooms, no identity needed).
+// Writes the HTTP error + returns false on failure. (ok=true with nil legs is
+// the blocked case — the caller renders an empty thread.)
 func (s *Server) resolveChatReadLegs(ctx context.Context, w http.ResponseWriter, org db.Account, kind, target, as string) ([]chatReadLeg, bool) {
 	win, err := resolveChatWindow(org.ID, kind, target)
 	if err != nil {
@@ -483,20 +474,43 @@ func (s *Server) resolveChatReadLegs(ctx context.Context, w http.ResponseWriter,
 		return nil, false
 	}
 	xStream := natsubj.BuildStreamName(org.ID, x.Manifold, x.Handle, "inbox")
-	if as == "" || as == x.Handle {
-		return []chatReadLeg{{StreamName: xStream}}, true // god's-eye / own inbox
+	// Resolve the acting handle's inbox stream (where the counterparty's replies
+	// land) only for a genuine two-way thread; the blocked/own-inbox cases don't
+	// need it, so skip the DB lookup — GetSourceByHandle("") would just error.
+	actingStream := ""
+	if as != "" && as != x.Handle {
+		hManifold := "" // best-effort; root if unknown
+		if h, herr := db.GetSourceByHandle(ctx, s.Pool, org.ID, as); herr == nil {
+			hManifold = h.Manifold
+		}
+		actingStream = natsubj.BuildStreamName(org.ID, hManifold, as, "inbox")
 	}
-	// Resolve the acting handle's manifold (best-effort; root if unknown) to
-	// build its inbox stream — that's where the counterparty's replies land.
-	hManifold := ""
-	if h, herr := db.GetSourceByHandle(ctx, s.Pool, org.ID, as); herr == nil {
-		hManifold = h.Manifold
+	return chatSourceLegs(as, x.Handle, xStream, actingStream), true
+}
+
+// chatSourceLegs decides the read legs for a source (DM) window from the
+// viewer's acting handle. Pure (no DB/JetStream) so the blocking rule is
+// unit-testable:
+//
+//   - as == "": no acting identity → no legs. A DM has no "you" to filter to,
+//     so the window shows nothing rather than the target's raw inbox (which
+//     would surface every sender's messages to that handle). The viewer must
+//     pick a send-as identity first.
+//   - as == targetHandle: you're viewing your OWN inbox → one unfiltered leg.
+//   - otherwise: the two-way thread — <target>.inbox filtered to my sends,
+//     stitched with <as>.inbox filtered to the counterparty's replies.
+func chatSourceLegs(as, targetHandle, targetStream, actingStream string) []chatReadLeg {
+	switch {
+	case as == "":
+		return nil
+	case as == targetHandle:
+		return []chatReadLeg{{StreamName: targetStream}}
+	default:
+		return []chatReadLeg{
+			{StreamName: targetStream, WantSender: as},           // my messages to the counterparty
+			{StreamName: actingStream, WantSender: targetHandle}, // the counterparty's replies to me
+		}
 	}
-	hStream := natsubj.BuildStreamName(org.ID, hManifold, as, "inbox")
-	return []chatReadLeg{
-		{StreamName: xStream, WantSender: as},       // my messages to the counterparty
-		{StreamName: hStream, WantSender: x.Handle}, // the counterparty's replies to me
-	}, true
 }
 
 // drainChatThread reads every leg, applies each leg's sender filter, merges by

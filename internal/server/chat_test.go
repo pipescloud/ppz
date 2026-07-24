@@ -136,6 +136,39 @@ func TestPickActingHandle(t *testing.T) {
 	}
 }
 
+// A source (DM) window's read legs turn on the acting identity:
+//   - no identity   -> blocked: NO legs, so the target's raw inbox (every
+//     sender's messages to that handle) is never surfaced.
+//   - acting as self -> one unfiltered leg: your own inbox.
+//   - acting as X    -> the two-way thread: target.inbox filtered to my sends +
+//     my inbox filtered to the counterparty's replies.
+func TestChatSourceLegs(t *testing.T) {
+	const targetStream, actingStream = "pipe_acct_ops_inbox", "pipe_acct_desk_inbox"
+
+	// Blocked: no acting handle → no legs (the core of the fix).
+	if legs := chatSourceLegs("", "ops", targetStream, actingStream); legs != nil {
+		t.Errorf("no acting handle must yield no legs (blocked), got %+v", legs)
+	}
+
+	// Own inbox: acting as the target handle → single unfiltered leg.
+	own := chatSourceLegs("ops", "ops", targetStream, actingStream)
+	if len(own) != 1 || own[0].StreamName != targetStream || own[0].WantSender != "" {
+		t.Errorf("acting-as-self should be one unfiltered own-inbox leg, got %+v", own)
+	}
+
+	// DM thread: acting as desk, target ops → two sender-filtered legs.
+	dm := chatSourceLegs("desk", "ops", targetStream, actingStream)
+	if len(dm) != 2 {
+		t.Fatalf("a DM thread should be two legs, got %+v", dm)
+	}
+	if dm[0].StreamName != targetStream || dm[0].WantSender != "desk" {
+		t.Errorf("leg 0 should be target.inbox filtered to my sends, got %+v", dm[0])
+	}
+	if dm[1].StreamName != actingStream || dm[1].WantSender != "ops" {
+		t.Errorf("leg 1 should be my inbox filtered to the counterparty's replies, got %+v", dm[1])
+	}
+}
+
 // The roster is scoped to the acting identity: your own handle is dropped from
 // the DM-able sections (agents/inboxes) so you can't DM yourself — matching the
 // TUI's `Handle == m.me` exclusion. Pipes (shared rooms) are untouched.
@@ -163,9 +196,9 @@ func TestChatRoster_ExcludeHandle(t *testing.T) {
 // cursor somehow ahead of the stream never goes negative.
 func TestUnreadCount(t *testing.T) {
 	for _, tc := range []struct {
-		name             string
-		last, cursor     int64
-		want             int
+		name         string
+		last, cursor int64
+		want         int
 	}{
 		{"fresh-behind", 5, 2, 3},
 		{"caught-up", 2, 2, 0},
@@ -195,10 +228,10 @@ func TestOwnedMessageHandles(t *testing.T) {
 		return db.Source{ID: uuid.New(), Handle: h, Kind: db.SourceKindPTY, CreatedByUserID: owner}
 	}
 	sources := []db.Source{
-		msg("zeta", me),      // owned message -> included
-		msg("alpha", me),     // owned message -> included (sorts first)
+		msg("zeta", me),       // owned message -> included
+		msg("alpha", me),      // owned message -> included (sorts first)
 		msg("foreign", other), // someone else's message -> excluded
-		pty("botty", me),     // my pty/agent -> excluded (can't act as an agent)
+		pty("botty", me),      // my pty/agent -> excluded (can't act as an agent)
 	}
 	got := ownedMessageHandles(sources, me)
 	want := []string{"alpha", "zeta"}
@@ -223,6 +256,7 @@ func TestOwnedMessageHandles(t *testing.T) {
 //   - agent:  "<label> · dm · <status>"  (+ "|<state>" when an agent_state is set)
 //   - inbox:  "<label> · dm · inbox"
 //   - pipe:   "#<label> · pipe (uncollared)"
+//
 // buildChatRoster stamps Title on each entry (server-side, so it's testable
 // here rather than living only in the browser JS).
 func TestBuildChatRoster_TitleParity(t *testing.T) {
