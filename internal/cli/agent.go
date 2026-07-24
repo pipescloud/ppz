@@ -802,7 +802,7 @@ func shareInvocation(handle string, envPairs, argv []string) string {
 }
 
 // bashSingleQuote wraps s in bash-safe single quotes. Embedded single
-// quotes are emitted as `'\”` (close-quote, escaped quote, reopen) —
+// quotes are emitted as `'\''` (close-quote, escaped quote, reopen) —
 // the standard pattern for shell-injecting an arbitrary string into a
 // command line.
 func bashSingleQuote(s string) string {
@@ -902,11 +902,11 @@ func isWSL(procVersion string) bool {
 //     contains three of them; wt.exe truncates the script at the first
 //     one and launches the trailing chunks as standalone Windows
 //     programs.
-//  2. It collapses `”` (adjacent close-quote / open-quote) sequences,
+//  2. It collapses `''` (adjacent close-quote / open-quote) sequences,
 //     which is exactly the middle of the standard bash single-quote
-//     escape `'\”` (used by bashSingleQuote to embed a literal `'`
+//     escape `'\''` (used by bashSingleQuote to embed a literal `'`
 //     into a single-quoted string). A prompt containing `isn't`
-//     becomes `isn'\”t` in the script, which wt.exe collapses to
+//     becomes `isn'\''t` in the script, which wt.exe collapses to
 //     `isn'\t'` — bash then sees an unmatched closing quote and hangs
 //     at the PS2 continuation prompt. The "flashing cursor, no source
 //     created" symptom on WSL.
