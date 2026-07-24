@@ -828,6 +828,17 @@ header.chat-brand {
   flex-direction: column;
   gap: 0.5rem;
 }
+/* Centred prompt shown when a DM window is opened with no acting identity
+   (see renderBlockedNotice) — the inbox contents are withheld until you pick a
+   "send as" handle. */
+.chat-empty-notice {
+  margin: auto;
+  max-width: 34ch;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
 /* One inline row per message: [time] [sender] [body], body hanging-indented
    under its own column — matches the `ppz chat` TUI. */
 .chat-msg { display: flex; gap: 0.85rem; align-items: baseline; }

@@ -133,6 +133,19 @@
     seen = new Set();
   }
 
+  // Shown in the log when a DM (agent/inbox) window is opened without an acting
+  // identity. A DM has no "you" to filter to, so the server returns nothing
+  // rather than the handle's raw inbox — we explain that and point at the
+  // identity picker instead of leaving a blank pane.
+  function renderBlockedNotice() {
+    const note = document.createElement("div");
+    note.className = "chat-empty-notice";
+    note.textContent =
+      "Pick a “send as” identity (top-left) to open this DM — there's no conversation to show until you do.";
+    logEl.appendChild(note);
+    logEl.setAttribute("data-empty", "1");
+  }
+
   function closeWS() {
     if (ws) {
       try { ws.close(); } catch (_) {}
@@ -181,6 +194,21 @@
     clearLog();
 
     titleEl.textContent = displayEntry;
+
+    // A source (agent/inbox) window is a DM: without an acting identity there's
+    // no "you" to filter the thread to, so the server surfaces nothing (it won't
+    // fall back to the handle's raw inbox). Show a prompt instead of opening a
+    // stream that returns an empty pane. Pipes are shared rooms — readable with
+    // no identity — so they fall through to the normal open.
+    if (kind !== "pipe" && !currentHandle()) {
+      composer.hidden = true;
+      setStatus("", "");
+      renderBlockedNotice();
+      setUnreadBadge(entryEl, 0);
+      shell.setAttribute("data-view", "chat");
+      return;
+    }
+
     composer.hidden = false;
     // Only composable when acting as a handle you own; otherwise the window is
     // view-only and the no-handle notice explains why.

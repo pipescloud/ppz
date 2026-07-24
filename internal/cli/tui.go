@@ -123,6 +123,11 @@ type tuiModel struct {
 
 	followed    map[string]bool               // pipe targets we already hold a follow on
 	pipeCancels map[string]context.CancelFunc // stops a pipe's follow when it's removed
+	// dismissed records pipes the user removed with `-` this session, so the
+	// auto-discovery poll (which re-lists every uncollared pipe) doesn't keep
+	// re-adding a row they just closed. Session-scoped: a fresh launch re-adds
+	// any pipe that still exists uncollared.
+	dismissed map[string]bool
 
 	// store is the durable chat store (history, added pipes, read markers).
 	// nil until wired: with it set, ingest/hydrate/mark-read persist across
@@ -135,6 +140,13 @@ type tuiModel struct {
 	addTi  textinput.Model
 	chatTi textinput.Model
 	toast  string
+
+	// mouseOn tracks whether we're capturing the mouse (click-to-select rows,
+	// wheel scroll). Capturing the mouse means the terminal routes drags to us
+	// instead of doing its native selection, so text can't be selected/copied.
+	// `m` toggles it off (and back on); starts true — the program launches
+	// WithMouseCellMotion.
+	mouseOn bool
 
 	// vp scrolls the chat body. vpKey tracks which conversation's content
 	// it currently holds so we know to jump to the bottom on a switch; it
@@ -166,7 +178,9 @@ func newTUIModel(me, session, sock string, events chan tea.Msg, ctx context.Cont
 		me: me, session: session, sock: sock, events: events, ctx: ctx,
 		sourceSet: map[string]bool{}, spin: sp,
 		followed: map[string]bool{}, pipeCancels: map[string]context.CancelFunc{},
-		chatTi: ti, addTi: add,
+		dismissed: map[string]bool{},
+		mouseOn:   true, // program launches WithMouseCellMotion
+		chatTi:    ti, addTi: add,
 		vp: viewport.New(1, 1),
 	}
 }
@@ -218,6 +232,12 @@ type pipeInMsg struct {
 	m    cliproto.ReadMessage
 }
 type sourcesMsg struct{ sources []cliproto.Source }
+
+// pipesDiscoveredMsg carries the root-namespace uncollared pipes from a list
+// poll so the TUI can auto-add a row (and follow) for each — at startup and as
+// new ones appear. Only bare (root) names: those are the pipes the follow/send
+// bare-target machinery can address (see rootUncollaredNames).
+type pipesDiscoveredMsg struct{ names []string }
 type streamErrMsg struct{ scope, err string }
 
 // sendResultMsg carries an async send's outcome back to Update. On success an
@@ -272,6 +292,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sourcesMsg:
 		m.applySources(msg.sources)
 		m.sourcesLoaded = true // stops the INBOXES loading spinner
+		m.refreshViewport()
+		return m, waitForEvent(m.events)
+	case pipesDiscoveredMsg:
+		m.autoAddPipes(msg.names)
 		m.refreshViewport()
 		return m, waitForEvent(m.events)
 	case spinner.TickMsg:
@@ -387,6 +411,12 @@ func (m tuiModel) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// button glyph so pressing it (or clicking the row) also works.
 		m.startAdd()
 		return m, textinput.Blink
+	case "m":
+		// Toggle mouse capture so the terminal's native drag-select works and
+		// chat text can be copied. Menu-focus only (in the chat input `m` is a
+		// literal character); a reader browsing conversations is in menu focus
+		// anyway, since the chat pane shows the selection regardless of focus.
+		return m.toggleMouse()
 	case "-":
 		if m.count() > 0 && m.sel >= len(m.agents)+len(m.sources) {
 			m.removePipe(m.sel)
@@ -396,6 +426,18 @@ func (m tuiModel) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.refreshViewport() // selection or pipe list changed → reload the chat body
 	return m, nil
+}
+
+// toggleMouse flips mouse capture. Off → the terminal does its native
+// drag-select, so a user can select and copy chat text (mouse capture otherwise
+// swallows the drag); on → click-to-select rows and wheel scroll come back. The
+// help bar's SELECT MODE banner reflects the off state.
+func (m tuiModel) toggleMouse() (tea.Model, tea.Cmd) {
+	m.mouseOn = !m.mouseOn
+	if m.mouseOn {
+		return m, tea.EnableMouseCellMotion
+	}
+	return m, tea.DisableMouse
 }
 
 func (m tuiModel) updateAdding(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -602,18 +644,21 @@ func (m *tuiModel) hydrate() {
 	}
 }
 
-// addPipe appends a pipe row (if new), selects it, and starts a follow so its
-// messages stream in. Idempotent per target.
-func (m *tuiModel) addPipe(name string) {
+// ensurePipeRow appends a pipe row (if new) and starts a follow so its messages
+// stream in, returning the row's flat index. It does NOT move the selection.
+// persist controls whether the pipe is written to the store as an explicit,
+// curated row: a manual add persists (so an empty pipe survives a restart);
+// auto-discovery does not (the list poll re-surfaces it next launch anyway, and
+// its history still persists via routePipe's Ingest once traffic arrives).
+// Idempotent per target — a repeat call just returns the existing row's index.
+func (m *tuiModel) ensurePipeRow(name string, persist bool) int {
 	for j := range m.pipes {
 		if m.pipes[j].key == name {
-			m.sel = len(m.agents) + len(m.sources) + j
-			return
+			return len(m.agents) + len(m.sources) + j
 		}
 	}
 	m.pipes = append(m.pipes, tItem{kind: kPipe, key: name, label: name})
-	m.sel = len(m.agents) + len(m.sources) + len(m.pipes) - 1
-	if m.store != nil {
+	if persist && m.store != nil {
 		_ = m.store.AddPipe(name, name)
 		m.persist()
 	}
@@ -624,6 +669,26 @@ func (m *tuiModel) addPipe(name string) {
 		req := buildFollowReq(name, m.session)
 		go streamRead(pctx, m.sock, req,
 			func(rm cliproto.ReadMessage) tea.Msg { return pipeInMsg{name, rm} }, m.events)
+	}
+	return len(m.agents) + len(m.sources) + len(m.pipes) - 1
+}
+
+// addPipe is the manual `a`/`+` add: ensure the row (persisted), then select it.
+func (m *tuiModel) addPipe(name string) {
+	m.sel = m.ensurePipeRow(name, true)
+}
+
+// autoAddPipes adds a row + follow for each discovered uncollared pipe that
+// isn't already present and wasn't dismissed this session. It leaves the
+// selection where it is — auto-discovery must never yank the user's cursor onto
+// a newly-appeared pipe. Appending to the PIPES section (the last section) can't
+// shift any existing row's flat index, so the selection stays put on its own.
+func (m *tuiModel) autoAddPipes(names []string) {
+	for _, n := range names {
+		if m.dismissed[n] {
+			continue
+		}
+		m.ensurePipeRow(n, false)
 	}
 }
 
@@ -641,6 +706,8 @@ func (m *tuiModel) removePipe(flatIdx int) {
 		delete(m.pipeCancels, name)
 	}
 	delete(m.followed, name)
+	// Remember the removal so auto-discovery doesn't re-add it this session.
+	m.dismissed[name] = true
 	if m.store != nil {
 		_ = m.store.RemovePipe(name)
 		m.persist()
@@ -1180,6 +1247,13 @@ func (m tuiModel) helpBar() string {
 	if m.toast != "" {
 		return lipgloss.NewStyle().Foreground(tcErr).MaxWidth(m.w).Render(" " + m.toast)
 	}
+	// Mouse capture off: the terminal owns the mouse, so native selection works.
+	// Call it out so the user knows why click/scroll went quiet — and how to
+	// restore it once they've copied.
+	if !m.mouseOn {
+		return lipgloss.NewStyle().Foreground(tcAccent).Bold(true).MaxWidth(m.w).
+			Render(" SELECT MODE — drag to select/copy · m to resume mouse")
+	}
 	var s string
 	switch {
 	case m.adding:
@@ -1187,7 +1261,7 @@ func (m tuiModel) helpBar() string {
 	case m.focus == fChat:
 		s = "type to reply · enter send · pgup/pgdn or scroll · esc/← back · ctrl+c quit"
 	default:
-		s = "↑/↓ move · enter open · a add · - remove pipe · pgup/pgdn or scroll · q quit"
+		s = "↑/↓ move · enter open · a add · - remove pipe · m copy-mode · q quit"
 	}
 	return lipgloss.NewStyle().Foreground(tcDim).MaxWidth(m.w).Render(" " + s)
 }
@@ -1307,6 +1381,14 @@ func sourcePoller(ctx context.Context, sock, session string, ch chan tea.Msg) {
 			return
 		}
 		emit(ctx, ch, sourcesMsg{lr.Sources})
+		// The same list reply already carries every uncollared pipe (the daemon
+		// enriches them alongside sources) — hand them to the model so it can
+		// auto-add a row for each. Level-triggered: re-sent every poll, so a pipe
+		// created after launch shows up within one tick; already-present rows are
+		// no-ops.
+		if names := rootUncollaredNames(lr.UncollaredPipes); len(names) > 0 {
+			emit(ctx, ch, pipesDiscoveredMsg{names})
+		}
 	}
 	poll()
 	t := time.NewTicker(15 * time.Second)
@@ -1319,6 +1401,23 @@ func sourcePoller(ctx context.Context, sock, session string, ch chan tea.Msg) {
 			return
 		}
 	}
+}
+
+// rootUncollaredNames extracts the addressable names from a list reply's
+// uncollared pipes. Only root-namespace pipes (manifold == "") are kept: the
+// TUI addresses a pipe by a bare leaf (buildFollowReq/buildSend send it as
+// BareTarget, which the daemon resolves as an uncollared pipe), and a
+// manifold-qualified "manifold.name" would instead be mis-parsed as a collared
+// handle.pipe. Manifold pipes are rare and simply aren't shown by auto-discovery.
+func rootUncollaredNames(ucs []cliproto.UncollaredPipe) []string {
+	names := make([]string, 0, len(ucs))
+	for _, u := range ucs {
+		if u.Manifold != "" {
+			continue
+		}
+		names = append(names, u.Name)
+	}
+	return names
 }
 
 // streamRead opens a Read{Follow} stream and pushes each message through mk.
@@ -1424,6 +1523,7 @@ func cmdChat(args []string) error {
 	if wantsHelp(args) {
 		fmt.Fprintln(os.Stdout, "ppz chat — live roster (streaming `ppz who`) + per-agent/-pipe chat.\n\n"+
 			"Keys:  ↑/↓ move · enter open · a add pipe · - remove pipe · esc/← back · q quit\n"+
+			"       m toggles mouse capture off/on so you can drag-select and copy chat text.\n"+
 			"Agent DMs stitch your sends to <handle>.inbox with their replies to your inbox.\n"+
 			"Give it a stable $PPZ_SESSION if you don't want it sharing a read cursor with a CLI `ppz read`.")
 		return nil

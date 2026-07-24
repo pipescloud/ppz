@@ -1,0 +1,3 @@
+on-inbox: yes
+web-no-as: 0
+exit=0
