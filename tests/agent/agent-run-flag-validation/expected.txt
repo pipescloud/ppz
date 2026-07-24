@@ -1,0 +1,13 @@
+--- 1: missing handle (names the run verb) ---
+ppz agent run: missing handle: ppz agent run <name> [<prompt>] [flags...]
+rc=2
+--- 2: --claude --codex (shared harness validation) ---
+ppz agent run: only one of --claude/--copilot/--codex/--agy/--pi may be set; got [claude codex]
+rc=2
+--- 3: --new-window rejected (run is foreground-only) ---
+ppz agent run: --new-window is not supported by `agent run`; use `ppz agent create` to open a new window
+rc=2
+--- 4: non-tty stdin rejected ---
+ppz agent run: stdin is not a tty: `agent run` launches an interactive harness in the current terminal — run it directly in your shell, not through a pipe or redirect
+rc=2
+exit=0

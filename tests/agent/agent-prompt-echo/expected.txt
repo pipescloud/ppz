@@ -1,0 +1,7 @@
+--- 1: positional prompt echoed verbatim (no launch) ---
+just do the thing
+rc=0
+--- 2: missing handle (names the prompt verb) ---
+ppz agent prompt: missing handle: ppz agent prompt <name> [<prompt>] [flags...]
+rc=2
+exit=0
