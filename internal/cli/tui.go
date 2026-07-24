@@ -141,6 +141,13 @@ type tuiModel struct {
 	chatTi textinput.Model
 	toast  string
 
+	// mouseOn tracks whether we're capturing the mouse (click-to-select rows,
+	// wheel scroll). Capturing the mouse means the terminal routes drags to us
+	// instead of doing its native selection, so text can't be selected/copied.
+	// `m` toggles it off (and back on); starts true — the program launches
+	// WithMouseCellMotion.
+	mouseOn bool
+
 	// vp scrolls the chat body. vpKey tracks which conversation's content
 	// it currently holds so we know to jump to the bottom on a switch; it
 	// otherwise sticks to the bottom only when already there (so a scrolled-
@@ -172,7 +179,8 @@ func newTUIModel(me, session, sock string, events chan tea.Msg, ctx context.Cont
 		sourceSet: map[string]bool{}, spin: sp,
 		followed: map[string]bool{}, pipeCancels: map[string]context.CancelFunc{},
 		dismissed: map[string]bool{},
-		chatTi: ti, addTi: add,
+		mouseOn:   true, // program launches WithMouseCellMotion
+		chatTi:    ti, addTi: add,
 		vp: viewport.New(1, 1),
 	}
 }
@@ -403,6 +411,12 @@ func (m tuiModel) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// button glyph so pressing it (or clicking the row) also works.
 		m.startAdd()
 		return m, textinput.Blink
+	case "m":
+		// Toggle mouse capture so the terminal's native drag-select works and
+		// chat text can be copied. Menu-focus only (in the chat input `m` is a
+		// literal character); a reader browsing conversations is in menu focus
+		// anyway, since the chat pane shows the selection regardless of focus.
+		return m.toggleMouse()
 	case "-":
 		if m.count() > 0 && m.sel >= len(m.agents)+len(m.sources) {
 			m.removePipe(m.sel)
@@ -412,6 +426,18 @@ func (m tuiModel) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.refreshViewport() // selection or pipe list changed → reload the chat body
 	return m, nil
+}
+
+// toggleMouse flips mouse capture. Off → the terminal does its native
+// drag-select, so a user can select and copy chat text (mouse capture otherwise
+// swallows the drag); on → click-to-select rows and wheel scroll come back. The
+// help bar's SELECT MODE banner reflects the off state.
+func (m tuiModel) toggleMouse() (tea.Model, tea.Cmd) {
+	m.mouseOn = !m.mouseOn
+	if m.mouseOn {
+		return m, tea.EnableMouseCellMotion
+	}
+	return m, tea.DisableMouse
 }
 
 func (m tuiModel) updateAdding(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1221,6 +1247,13 @@ func (m tuiModel) helpBar() string {
 	if m.toast != "" {
 		return lipgloss.NewStyle().Foreground(tcErr).MaxWidth(m.w).Render(" " + m.toast)
 	}
+	// Mouse capture off: the terminal owns the mouse, so native selection works.
+	// Call it out so the user knows why click/scroll went quiet — and how to
+	// restore it once they've copied.
+	if !m.mouseOn {
+		return lipgloss.NewStyle().Foreground(tcAccent).Bold(true).MaxWidth(m.w).
+			Render(" SELECT MODE — drag to select/copy · m to resume mouse")
+	}
 	var s string
 	switch {
 	case m.adding:
@@ -1228,7 +1261,7 @@ func (m tuiModel) helpBar() string {
 	case m.focus == fChat:
 		s = "type to reply · enter send · pgup/pgdn or scroll · esc/← back · ctrl+c quit"
 	default:
-		s = "↑/↓ move · enter open · a add · - remove pipe · pgup/pgdn or scroll · q quit"
+		s = "↑/↓ move · enter open · a add · - remove pipe · m copy-mode · q quit"
 	}
 	return lipgloss.NewStyle().Foreground(tcDim).MaxWidth(m.w).Render(" " + s)
 }
@@ -1490,6 +1523,7 @@ func cmdChat(args []string) error {
 	if wantsHelp(args) {
 		fmt.Fprintln(os.Stdout, "ppz chat — live roster (streaming `ppz who`) + per-agent/-pipe chat.\n\n"+
 			"Keys:  ↑/↓ move · enter open · a add pipe · - remove pipe · esc/← back · q quit\n"+
+			"       m toggles mouse capture off/on so you can drag-select and copy chat text.\n"+
 			"Agent DMs stitch your sends to <handle>.inbox with their replies to your inbox.\n"+
 			"Give it a stable $PPZ_SESSION if you don't want it sharing a read cursor with a CLI `ppz read`.")
 		return nil
