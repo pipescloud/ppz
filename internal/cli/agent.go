@@ -7,11 +7,15 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+
+	"golang.org/x/term"
 )
 
-// cmdAgentGroup dispatches `ppz agent <subverb>`. Today only `create`
-// exists; the verb is grouped so we can grow it (destroy, list, etc.)
-// without re-shaping the CLI surface.
+// cmdAgentGroup dispatches `ppz agent <subverb>`. `create` provisions a
+// fresh pty source and runs a harness in it; `run` is the cut-down
+// sibling that runs a harness in an already-set-up agent. The verb is
+// grouped so we can grow it (destroy, list, etc.) without re-shaping the
+// CLI surface.
 func cmdAgentGroup(args []string) error {
 	if groupHelp("agent", args) {
 		return nil
@@ -23,6 +27,10 @@ func cmdAgentGroup(args []string) error {
 	switch args[0] {
 	case "create":
 		return cmdAgentCreate(args[1:])
+	case "run":
+		return cmdAgentRun(args[1:])
+	case "prompt":
+		return cmdAgentPrompt(args[1:])
 	}
 	fmt.Fprintf(os.Stderr, "ppz agent: unknown subcommand %q\n", args[0])
 	os.Exit(2)
@@ -68,6 +76,91 @@ func runAgentInForeground(handle string, spec agentSpec) error {
 	setAgentEnv(spec)
 	shareArgs := append([]string{handle, "--"}, argv...)
 	return cmdTerminalShare(shareArgs)
+}
+
+// cmdAgentPrompt is the most cut-down agent verb: it resolves the same
+// spec as `agent create` / `agent run` but, instead of launching
+// anything, echoes the initial prompt those verbs would boot the harness
+// with. Useful to preview or pipe the boot prompt (e.g. `ppz agent prompt
+// ash --codex | pbcopy`). No provisioning, no tty guard, no exec.
+func cmdAgentPrompt(args []string) error {
+	prompt, err := agentPromptFor(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ppz agent prompt:", err)
+		os.Exit(2)
+	}
+	fmt.Println(prompt)
+	return nil
+}
+
+// agentPromptFor resolves the initial prompt `agent prompt` echoes. It is
+// the pure core of cmdAgentPrompt (returns the string rather than
+// printing it) so the resolution is unit-testable. Flags that don't shape
+// the prompt (--model, --new-window) are parsed but inert — only the
+// harness (which selects the default prompt) and the prompt source
+// (positional / --prompt-file / default) affect the result.
+func agentPromptFor(args []string) (string, error) {
+	spec, _, err := resolveAgentSpecVerb("prompt", args)
+	if err != nil {
+		return "", err
+	}
+	return spec.prompt, nil
+}
+
+// cmdAgentRun is the cut-down sibling of `agent create`: it runs an AI
+// harness (with the initial prompt) inside an agent whose source is
+// already set up, instead of provisioning a fresh one. It shares create's
+// flag surface (harness/model/prompt/--prompt-file) but is foreground-
+// only — no --new-window — and always requires an explicit handle.
+func cmdAgentRun(args []string) error {
+	spec, handle, err := resolveAgentSpecVerb("run", args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ppz agent run:", err)
+		os.Exit(2)
+	}
+	if err := agentRunPreflight(spec, term.IsTerminal(int(os.Stdin.Fd()))); err != nil {
+		fmt.Fprintln(os.Stderr, "ppz agent run:", err)
+		os.Exit(2)
+	}
+	return runAgentRun(handle, spec)
+}
+
+// agentRunPreflight validates a resolved `agent run` invocation before
+// any daemon call or process launch. It is a pure function (the tty
+// state is passed in) so the two guards are unit-testable without a real
+// terminal:
+//
+//   - --new-window is a create-only affordance; `agent run` is
+//     foreground-only in this cut, so reject it rather than silently
+//     ignore a flag the user clearly meant.
+//   - `agent run` runs the harness in the *current* shell. If stdin is
+//     not a tty (a pipe, a redirect, a scripted runner) the interactive
+//     harness would boot into a terminal it can't be driven through, so
+//     fail fast with a message that names the cause.
+func agentRunPreflight(spec agentSpec, stdinIsTTY bool) error {
+	if spec.newWindow {
+		return fmt.Errorf("--new-window is not supported by `agent run`; use `ppz agent create` to open a new window")
+	}
+	if !stdinIsTTY {
+		return fmt.Errorf("stdin is not a tty: `agent run` launches an interactive harness in the current terminal — run it directly in your shell, not through a pipe or redirect")
+	}
+	return nil
+}
+
+// runAgentRun mirrors runAgentInForeground but hands off to the ensure-
+// pty share path (terminalShareExisting) so the already-provisioned
+// source is upgraded in place rather than CREATEd afresh. The initial
+// prompt reaches the harness as an argv element from buildAgentArgv, and
+// setAgentEnv exports the agent identity so heartbeats stay stamped —
+// both identical to create.
+func runAgentRun(handle string, spec agentSpec) error {
+	argv, err := buildAgentArgv(spec)
+	if err != nil {
+		return err
+	}
+	setAgentEnv(spec)
+	shareArgs := append([]string{handle, "--"}, argv...)
+	return terminalShareExisting(shareArgs)
 }
 
 // agentEnvPairs returns the agent-identity env-var assignments the pty
@@ -514,7 +607,16 @@ func buildAgentArgv(spec agentSpec) ([]string, error) {
 // The handle is the first positional argument; the (optional) prompt is
 // the second.
 func resolveAgentSpec(args []string) (agentSpec, string, error) {
-	fs := flag.NewFlagSet("agent create", flag.ContinueOnError)
+	return resolveAgentSpecVerb("create", args)
+}
+
+// resolveAgentSpecVerb is the shared flag parser behind both `agent
+// create` and `agent run`. The two verbs take identical flags/positionals
+// — the only difference is the verb woven into the missing-handle usage
+// error (and the FlagSet name), so the message echoes back the command
+// the user actually typed.
+func resolveAgentSpecVerb(verb string, args []string) (agentSpec, string, error) {
+	fs := flag.NewFlagSet("agent "+verb, flag.ContinueOnError)
 	fs.SetOutput(devNull{})
 
 	var (
@@ -620,7 +722,7 @@ func resolveAgentSpec(args []string) (agentSpec, string, error) {
 
 	// Positional: <handle> [<prompt>].
 	if len(rest) == 0 {
-		return agentSpec{}, "", fmt.Errorf("missing handle: ppz agent create <name> [<prompt>] [flags...]")
+		return agentSpec{}, "", fmt.Errorf("missing handle: ppz agent %s <name> [<prompt>] [flags...]", verb)
 	}
 	handle := rest[0]
 	var positionalPrompt string

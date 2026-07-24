@@ -62,6 +62,8 @@ var topLevelGroups = []helpGroup{
 	{"IDENTITIES", []helpRow{
 		{"ppz source create H", "claim a bare message handle (auto-pipe: inbox)"},
 		{"ppz agent create H", "create a handle and run an AI harness in it"},
+		{"ppz agent run H", "run an AI harness in an already-set-up agent H"},
+		{"ppz agent prompt H", "print the boot prompt create/run would use"},
 		{"ppz source destroy PAT", "glob-destroy sources or pipes"},
 	}},
 	{"TERMINAL", []helpRow{
@@ -348,11 +350,36 @@ Acquire the advisory write-lease on handle H for DURATION (Go duration, e.g. 60s
 
 Release your write-lease on handle H. A release by anyone but the current holder is a no-op. Blocks briefly for the host's confirmation so scripts can sequence a follow-on send.`,
 
-	"agent": `usage: ppz agent create NAME [PROMPT] [flags]
+	"agent": `usage: ppz agent {create|run|prompt} NAME [PROMPT] [flags]
 
   ppz agent create NAME [PROMPT]   create a pty source NAME and run an AI harness
+  ppz agent run NAME [PROMPT]      run an AI harness in an already-set-up agent NAME
+  ppz agent prompt NAME [PROMPT]   print the boot prompt create/run would use (no launch)
 
-Run 'ppz agent create --help' for the harness/model switches.`,
+Run 'ppz agent create --help' for the harness/model switches (shared by all three).`,
+
+	"agent prompt": `usage: ppz agent prompt NAME [PROMPT] [flags]
+
+Print the initial prompt 'agent create' / 'agent run' would boot the harness
+with, then exit — no source is touched and no harness is launched. With no
+positional PROMPT it renders the per-harness default for NAME (the harness
+flag selects which default); a positional PROMPT or --prompt-file is echoed
+verbatim. Handy to preview or pipe the boot prompt (e.g. pipe it to pbcopy).
+
+  Harness:  --claude | --copilot | --codex | --agy | --pi   (selects the default prompt)
+  --prompt-file PATH    echo the prompt from PATH instead of the positional argument`,
+
+	"agent run": `usage: ppz agent run NAME [PROMPT] [flags]
+
+Run an AI harness in an already-set-up agent NAME — the cut-down sibling of
+'agent create'. It skips provisioning (the source must already exist; it is
+upgraded in place, not created) and just runs the harness with the initial
+prompt. Foreground-only: no --new-window, and stdin must be a tty.
+
+  Harness:  --claude | --copilot | --codex | --agy | --pi
+  Model:    --opus | --sonnet | --haiku   (claude only)
+            --model X                       (any harness)
+  --prompt-file PATH    read the prompt from PATH instead of the positional argument`,
 
 	"agent create": `usage: ppz agent create NAME [PROMPT] [flags]
 

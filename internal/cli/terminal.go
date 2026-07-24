@@ -172,6 +172,24 @@ func cmdTerminalRead(args []string) error {
 //
 // Foreground only — blocks until the child exits.
 func cmdTerminalShare(args []string) error {
+	return terminalShare(args, false)
+}
+
+// terminalShareExisting is the entrypoint `ppz agent run` hands off to.
+// It behaves like cmdTerminalShare but forces the idempotent ensure-pty
+// provisioning path even for an explicit handle: `agent run` targets an
+// agent whose source is already set up, so it must upgrade in place
+// rather than CREATE a fresh source (which fails with E_SOURCE_TAKEN on
+// an existing handle).
+func terminalShareExisting(args []string) error {
+	return terminalShare(args, true)
+}
+
+// terminalShare wraps a child process in a pty and publishes it as the
+// source's terminal. ensureExisting selects the provisioning path: when
+// true (or when the invocation is bare) the source is upgraded in place
+// via IPCEnsurePTY; otherwise a fresh source is CREATEd via IPCCreate.
+func terminalShare(args []string, ensureExisting bool) error {
 	// Detect bare invocation: no positional handle (either no args, or args
 	// start with "--" indicating only a child command was given).
 	bare := len(args) == 0 || args[0] == "--"
@@ -202,7 +220,7 @@ func cmdTerminalShare(args []string) error {
 		cmdArgs = []string{shell}
 	}
 
-	if bare {
+	if bare || ensureExisting {
 		// Source already exists but may be inbox-only (kind=message, e.g.
 		// created via `source create` or `connect`). Sharing a source
 		// declares it a terminal, so upgrade it in place: flip kind→pty and
