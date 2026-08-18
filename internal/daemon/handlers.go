@@ -372,7 +372,7 @@ func (d *Daemon) handleLogin(ctx context.Context, conn net.Conn, params json.Raw
 	d.Heartbeats.DropOtherAccounts(ex.AccountID)
 	if newNC != nil {
 		if aid, err := uuid.Parse(ex.AccountID); err == nil {
-			d.subscribeOrgHeartbeats(aid)
+			_, _ = d.subscribePresence(aid)
 		}
 	} else {
 		// Best-effort dial failed: with no conn there is no "closed"

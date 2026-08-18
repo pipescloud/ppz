@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased — pipe ACLs, phase 0 (identity + presence isolation)
+
+Groundwork for per-pipe ACLs (`docs/ACL.md`). No ACL is enforced yet; these
+are the two prerequisites that made enforcement impossible, both of which
+were defects in their own right.
+
+- **API keys now act as a principal.** A key carried `created_by_user_id`
+  for row attribution only — the authenticated caller itself had no
+  identity (`AuthedCaller.UserID` was `uuid.Nil` on the API-key path), so
+  every handler needing a user rejected API keys outright with "this
+  endpoint requires an OAuth token". New `api_keys.principal_user_id`
+  (migration 0006, backfilled from the creator) is the identity a key acts
+  as, and both auth surfaces now populate the caller uniformly. Invite
+  endpoints consequently work with an API key, gated on the key's principal
+  rather than refused.
+- **Heartbeats no longer ride the org firehose.** The daemon collected
+  presence by core-subscribing to `<account>.>` and filtering for a
+  `.heartbeat` suffix client-side. Live JetStream publishes are delivered
+  to core subscribers too, so that one subscription received **every**
+  message published anywhere in the org — every byte of every shared
+  terminal, every inbox message between other agents. Presence moves to its
+  own subject family, `<account>._presence.<manifold?>.<handle>`, and the
+  daemon subscribes to exactly that.
+- **Wire change:** heartbeat subjects and their backing streams are renamed
+  (`presence_<org>_<handle>`). Routed inside `natsubj.BuildSubject` /
+  `BuildStreamName`, so provisioning, publishing, reading, `ppz ls` and the
+  GUI chat roster all follow. `heartbeat` becomes a reserved pipe name.
+- `natsubj.AutoProvisionedPipes` is now the single source of truth for the
+  auto-provisioned set — it had drifted, still listing the pre-launch
+  `broadcast` and omitting `heartbeat` and `system`. `ppz pipe destroy`
+  glob expansion uses that set to skip auto-pipes, so the stale set would
+  have let a glob match `<handle>.heartbeat`.
 ## Unreleased — `ppz ls -l` shows pipe retention
 
 **Retention became readable.** `ppz pipe set` could change a pipe's caps but

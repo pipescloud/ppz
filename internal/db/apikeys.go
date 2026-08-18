@@ -19,6 +19,12 @@ type APIKey struct {
 	ID              uuid.UUID
 	AccountID  uuid.UUID
 	CreatedByUserID uuid.UUID // user that minted the key (NOT NULL)
+	// PrincipalUserID is the identity the key ACTS AS — the subject an
+	// ACL grant names. Seeded from CreatedByUserID by migration 0006,
+	// but distinct: an ACL Phase 1 service-account key is created_by a
+	// human and acts_as the service. Never collapse the two, or the
+	// service inherits the human's rights.
+	PrincipalUserID uuid.UUID
 	KeyHash         string
 	KeyPrefix       string
 	Label           string
@@ -116,17 +122,21 @@ func InsertAPIKey(ctx context.Context, p *Pool, accountID, createdBy uuid.UUID, 
 	}
 	key = APIKey{
 		ID:              uuid.New(),
-		AccountID:  accountID,
+		AccountID:       accountID,
 		CreatedByUserID: createdBy,
+		// Phase 0a: a key acts as whoever minted it. Phase 1 adds an
+		// explicit principal argument so a human can mint a key that
+		// acts as a service account instead.
+		PrincipalUserID: createdBy,
 		KeyHash:         hash,
 		KeyPrefix:       KeyPrefix(plaintext),
 		Label:           label,
 		CreatedAt:       time.Now().UTC(),
 	}
 	_, err = p.Exec(ctx,
-		`INSERT INTO api_keys (id, account_id, created_by_user_id, key_hash, key_prefix, label, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		key.ID, key.AccountID, key.CreatedByUserID, key.KeyHash, key.KeyPrefix, key.Label, key.CreatedAt)
+		`INSERT INTO api_keys (id, account_id, created_by_user_id, principal_user_id, key_hash, key_prefix, label, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		key.ID, key.AccountID, key.CreatedByUserID, key.PrincipalUserID, key.KeyHash, key.KeyPrefix, key.Label, key.CreatedAt)
 	return key, plaintext, err
 }
 
@@ -136,7 +146,7 @@ func InsertAPIKey(ctx context.Context, p *Pool, accountID, createdBy uuid.UUID, 
 func LookupAPIKey(ctx context.Context, p *Pool, plaintext string) (APIKey, error) {
 	prefix := KeyPrefix(plaintext)
 	rows, err := p.Query(ctx,
-		`SELECT id, account_id, created_by_user_id, key_hash, key_prefix, label, created_at, revoked_at
+		`SELECT id, account_id, created_by_user_id, principal_user_id, key_hash, key_prefix, label, created_at, revoked_at
 		   FROM api_keys WHERE key_prefix = $1 AND revoked_at IS NULL`, prefix)
 	if err != nil {
 		return APIKey{}, err
@@ -144,7 +154,7 @@ func LookupAPIKey(ctx context.Context, p *Pool, plaintext string) (APIKey, error
 	defer rows.Close()
 	for rows.Next() {
 		var k APIKey
-		if err := rows.Scan(&k.ID, &k.AccountID, &k.CreatedByUserID, &k.KeyHash, &k.KeyPrefix, &k.Label, &k.CreatedAt, &k.RevokedAt); err != nil {
+		if err := rows.Scan(&k.ID, &k.AccountID, &k.CreatedByUserID, &k.PrincipalUserID, &k.KeyHash, &k.KeyPrefix, &k.Label, &k.CreatedAt, &k.RevokedAt); err != nil {
 			return APIKey{}, err
 		}
 		if VerifyAPIKey(plaintext, k.KeyHash) {
@@ -163,7 +173,7 @@ func LookupAPIKey(ctx context.Context, p *Pool, plaintext string) (APIKey, error
 // revoked rows.
 func ListAPIKeysForOrg(ctx context.Context, p *Pool, accountID uuid.UUID) ([]APIKey, error) {
 	rows, err := p.Query(ctx,
-		`SELECT id, account_id, created_by_user_id, key_hash, key_prefix, label, created_at, revoked_at
+		`SELECT id, account_id, created_by_user_id, principal_user_id, key_hash, key_prefix, label, created_at, revoked_at
 		   FROM api_keys
 		  WHERE account_id = $1
 		  ORDER BY (revoked_at IS NULL) DESC, created_at ASC`, accountID)
@@ -174,7 +184,7 @@ func ListAPIKeysForOrg(ctx context.Context, p *Pool, accountID uuid.UUID) ([]API
 	var out []APIKey
 	for rows.Next() {
 		var k APIKey
-		if err := rows.Scan(&k.ID, &k.AccountID, &k.CreatedByUserID, &k.KeyHash, &k.KeyPrefix, &k.Label, &k.CreatedAt, &k.RevokedAt); err != nil {
+		if err := rows.Scan(&k.ID, &k.AccountID, &k.CreatedByUserID, &k.PrincipalUserID, &k.KeyHash, &k.KeyPrefix, &k.Label, &k.CreatedAt, &k.RevokedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, k)
