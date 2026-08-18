@@ -44,6 +44,11 @@ TRUNCATE TABLE chat_read_cursors;
 -- into every later scenario. Errors are tolerated (ON_ERROR_STOP=0)
 -- until the 0004_schedules migration lands.
 TRUNCATE TABLE schedules;
+-- Audit events accumulate per account and are read newest-first by the
+-- org audit tab; a prior scenario's pipe.create/set/destroy rows would
+-- show up at the top of the next scenario's trail. Tolerated until the
+-- 0006_audit_events migration lands (ON_ERROR_STOP=0).
+TRUNCATE TABLE audit_events;
 -- Phase 4: invites are scenario-local; clear them so a prior run's
 -- declined/revoked rows don't bleed into the next scenario's count.
 DELETE FROM invites;

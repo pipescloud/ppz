@@ -53,14 +53,67 @@ func ensurePipeStreamWithRetention(ctx context.Context, js jetstream.JetStream, 
 		Discard:   jetstream.DiscardOld,
 		Replicas:  1,
 	}
-	_, err := js.CreateStream(ctx, cfg)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrStreamNameAlreadyInUse) {
-			return nil
-		}
-		return fmt.Errorf("create stream %s: %w", cfg.Name, err)
+	// CreateOrUpdate, not Create. The previous Create-and-swallow-
+	// ErrStreamNameAlreadyInUse made retention effectively immutable:
+	// re-provisioning an existing stream with a different config was a
+	// silent no-op, so `ppz pipe set` could update the pipes row and
+	// change nothing about what the stream actually retained. It also
+	// meant bumping the defaults here never reached streams already in
+	// existence.
+	if _, err := js.CreateOrUpdateStream(ctx, cfg); err != nil {
+		return fmt.Errorf("ensure stream %s: %w", cfg.Name, err)
 	}
 	return nil
+}
+
+// retentionOverride is one layer of the retention resolution chain. A nil
+// field means "this layer expresses no opinion" — resolution falls
+// through to the next layer down.
+type retentionOverride struct {
+	TTLSeconds *int
+	MaxMsgs    *int
+	MaxBytes   *int64
+}
+
+// resolveRetention collapses the retention layers into the concrete
+// triple provisioned onto a JetStream stream. Layers are passed
+// highest-precedence first:
+//
+//	pipe row override  →  account default  →  built-in default
+//
+// Fields resolve INDEPENDENTLY: a pipe overriding only max-msgs still
+// inherits the account's TTL rather than falling all the way through to
+// the built-in. Everything funnels through here so the CLI, the HTTP API
+// and the GUI can't grow three different precedence orders — which was
+// already half-true, with two open-coded nil-check ladders in
+// handlers_api.go alongside account_pool.go's pipeRetention.
+//
+// The account layer has no storage behind it yet; call sites pass the
+// pipe layer only. Adding org-level defaults is then a new layer here,
+// not a rewrite at every call site.
+func resolveRetention(layers ...retentionOverride) (time.Duration, int, int64) {
+	age := defaultStreamMaxAge
+	msgs := defaultStreamMaxMsgs
+	bytes := int64(defaultStreamMaxBytes)
+	for _, l := range layers {
+		if l.TTLSeconds != nil {
+			age = time.Duration(*l.TTLSeconds) * time.Second
+			break
+		}
+	}
+	for _, l := range layers {
+		if l.MaxMsgs != nil {
+			msgs = *l.MaxMsgs
+			break
+		}
+	}
+	for _, l := range layers {
+		if l.MaxBytes != nil {
+			bytes = *l.MaxBytes
+			break
+		}
+	}
+	return age, msgs, bytes
 }
 
 // deletePipeStream removes the JetStream stream backing one (manifold,

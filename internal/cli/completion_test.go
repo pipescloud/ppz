@@ -71,10 +71,10 @@ func TestComplete_PrefixFilter(t *testing.T) {
 	}
 }
 
-// TestComplete_Subverb: `ppz pipe <tab>` returns all two subverbs.
+// TestComplete_Subverb: `ppz pipe <tab>` returns every subverb.
 func TestComplete_Subverb(t *testing.T) {
 	got := captureComplete(t, []string{"pipe", ""})
-	want := []string{"create", "destroy"}
+	want := []string{"create", "set", "destroy"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}

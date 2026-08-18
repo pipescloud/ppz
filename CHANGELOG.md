@@ -1,5 +1,65 @@
 # Changelog
 
+## Unreleased — configurable pipe retention (`ppz pipe set`) + audit trail
+
+**Retention is no longer fixed at create time.** `ppz pipe set [HANDLE.]NAME`
+changes an existing pipe's retention, with the same target grammar and the
+same flag names as `ppz pipe create` — one vocabulary, not two:
+
+```
+ppz pipe set chat.archive --max-msgs=500
+ppz pipe set chat.archive --ttl=168h --max-bytes=64MiB
+```
+
+- **Fields you don't name keep their value.** The server merges the request
+  onto the stored row, so `--ttl` doesn't quietly reset a previously
+  configured `--max-msgs` back to the default. Naming no flag at all is an
+  error rather than a silent no-op.
+- **Auto-provisioned pipes are now configurable.** `inbox`, and
+  `stdin`/`stdout`/`stdctrl`/`system`/`heartbeat` on terminals, have no
+  `pipes` row — which is why their caps were previously unreachable, despite
+  being the caps users hit first. `pipe set` materialises a row on first
+  override (stamped with the *source's* creator, so `ppz ls` CREATOR doesn't
+  get reassigned by a retention change).
+- **Lowering a cap discards immediately** — shrinking `--max-msgs` below the
+  retained count drops the oldest messages there and then.
+- The printed line states the pipe's complete retention afterwards, not just
+  what moved: `updated pipe=chat.archive retention=ttl=24h0m0s,msgs=500,bytes=16777216`.
+
+**Bug fix: stream config changes were silently dropped.** Stream provisioning
+called `CreateStream` and swallowed `ErrStreamNameAlreadyInUse`, so
+re-provisioning an existing stream with a different config did nothing. Any
+retention change to a live pipe was a no-op, and bumping the built-in defaults
+never reached streams already in existence. Now `CreateOrUpdateStream`.
+
+**Bug fix: `ppz pipe destroy '*'` could destroy a terminal's control plane.**
+The glob-expansion skip list was missing `system` and `heartbeat`, two names
+`Source.Pipes()` genuinely auto-provisions. Previously unreachable (nothing
+could put those names in the user-pipe list); `pipe set` made it reachable.
+
+**Retention resolution now lives in one place.** `resolveRetention` takes
+layers highest-precedence-first and resolves each field independently, so a
+pipe overriding only `max-msgs` still inherits the default TTL. This replaces
+three open-coded nil-check ladders, and makes org/account-level defaults a new
+layer rather than a rewrite at every call site.
+
+**New: audit trail, on an owner-only org tab.** `/orgs/<slug>/audit` shows a
+newest-first log of pipe lifecycle mutations — `pipe.create`, `pipe.set`,
+`pipe.destroy` — with the change rendered as a delta (`msgs 5000 → 5`) rather
+than a bare "something changed".
+
+- Backed by a generic `audit_events` table (migration `0006`): actor, action,
+  target, before/after jsonb. Pipe actions are its first writers; key revoke,
+  member removal and source destroy fit the same row shape.
+- **Actor attribution is honest about its limits.** On the API-key path the
+  server knows only the key's *creator*, not who typed the command, so a
+  shared org key attributes every change to whoever minted it. Rows record the
+  key id and render `via api-key` vs `via web` so they aren't read as stronger
+  evidence than they are.
+- **Known gaps:** audit writes are best-effort (a failed insert is logged, not
+  surfaced, because the mutation has already committed), and the table has no
+  retention policy yet.
+
 ## Unreleased — once-only `.stdin` delivery (no command replay on resume)
 
 **Bug fix (`ppz terminal share`).** A `ppz command` that a pty session

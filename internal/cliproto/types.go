@@ -23,6 +23,7 @@ const (
 	IPCConnect       = "Connect"
 	IPCDisconnect    = "Disconnect"
 	IPCPipeCreate    = "PipeCreate"
+	IPCPipeSet       = "PipeSet"
 	IPCPipeDestroy   = "PipeDestroy"
 	IPCSourceDestroy = "SourceDestroy"
 	// IPCEnsurePTY promotes the session's current source to a full terminal
@@ -670,6 +671,45 @@ type PipeCreateRequest struct {
 type PipeCreateReply struct {
 	Handle     string `json:"handle"`
 	Manifold   string `json:"manifold,omitempty"` // Phase 1.5
+	Name       string `json:"name"`
+	StreamName string `json:"stream_name"`
+	TTLSeconds int    `json:"ttl_seconds"`
+	MaxMsgs    int    `json:"max_msgs"`
+	MaxBytes   int64  `json:"max_bytes"`
+}
+
+// PipeSetRequest is the wire body of `ppz pipe set` — the retention
+// mutation for an EXISTING pipe. It mirrors PipeCreateRequest's shape
+// (same four-role addressing, same three pointer overrides) so the CLI,
+// daemon and server share one retention vocabulary rather than two.
+//
+// The pointers carry a DIFFERENT meaning here than on create. On create,
+// nil means "no override — provision at the default". On set, nil means
+// "leave this field as it is": the server merges the request onto the
+// stored row rather than writing the whole triple. Without that
+// distinction, `pipe set --ttl=1h` would silently reset a previously
+// configured max-msgs back to the default.
+type PipeSetRequest struct {
+	Handle       string  `json:"handle"`
+	Manifold     string  `json:"manifold,omitempty"`
+	SourceHandle *string `json:"source_handle,omitempty"`
+	Name         string  `json:"name"`
+	TTLSeconds   *int    `json:"ttl_seconds,omitempty"`
+	MaxMsgs      *int    `json:"max_msgs,omitempty"`
+	MaxBytes     *int64  `json:"max_bytes,omitempty"`
+
+	// Session is set by the CLI for daemon-side manifold lookup; the IPC
+	// transport drops it before forwarding to the server.
+	Session string `json:"session,omitempty"`
+}
+
+// PipeSetReply carries the pipe's RESOLVED retention after the change —
+// all three values with defaults filled in, not just the fields that
+// moved — so the printed line is a complete statement of what the pipe
+// retains now. Same shape as PipeCreateReply for that reason.
+type PipeSetReply struct {
+	Handle     string `json:"handle"`
+	Manifold   string `json:"manifold,omitempty"`
 	Name       string `json:"name"`
 	StreamName string `json:"stream_name"`
 	TTLSeconds int    `json:"ttl_seconds"`

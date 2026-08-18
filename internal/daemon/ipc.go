@@ -105,6 +105,8 @@ func (d *Daemon) handleConn(ctx context.Context, conn net.Conn) {
 		d.handleDisconnect(ctx, conn, req.Params)
 	case cliproto.IPCPipeCreate:
 		d.handlePipeCreate(ctx, conn, req.Params)
+	case cliproto.IPCPipeSet:
+		d.handlePipeSet(ctx, conn, req.Params)
 	case cliproto.IPCPipeDestroy:
 		d.handlePipeDestroy(ctx, conn, req.Params)
 	case cliproto.IPCSourceDestroy:

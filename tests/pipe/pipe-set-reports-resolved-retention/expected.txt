@@ -1,0 +1,7 @@
+--- ttl only ---
+updated pipe=chat.archive retention=ttl=168h0m0s,msgs=5000,bytes=16777216
+--- max-bytes only (suffixed size) ---
+updated pipe=chat.archive retention=ttl=168h0m0s,msgs=5000,bytes=67108864
+--- all three at once ---
+updated pipe=chat.archive retention=ttl=1h0m0s,msgs=10,bytes=1000000
+exit=0

@@ -1,0 +1,5 @@
+--- pipe.set delta ---
+msgs 5000 → 5
+--- actor is attributed via the api key, not a bare username ---
+api-key
+exit=0

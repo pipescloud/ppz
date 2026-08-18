@@ -218,23 +218,22 @@ func (p *AccountPool) ensureStreamsForOrg(ctx context.Context, oa *OrgAccount) e
 	return nil
 }
 
-// pipeRetention resolves a Pipe row's stored retention overrides into
-// concrete (maxAge, maxMsgs, maxBytes) values, falling back to the
-// stream defaults for any nil pointer.
+// pipeRetention resolves a Pipe row's stored overrides into concrete
+// (maxAge, maxMsgs, maxBytes) values. A thin wrapper over
+// resolveRetention so this path and the HTTP handlers can't disagree
+// about precedence.
 func pipeRetention(pipe db.Pipe) (time.Duration, int, int64) {
-	age := defaultStreamMaxAge
-	if pipe.TTLSeconds != nil {
-		age = time.Duration(*pipe.TTLSeconds) * time.Second
+	return resolveRetention(pipeLayer(pipe))
+}
+
+// pipeLayer lifts a stored row into the highest-precedence retention
+// layer.
+func pipeLayer(pipe db.Pipe) retentionOverride {
+	return retentionOverride{
+		TTLSeconds: pipe.TTLSeconds,
+		MaxMsgs:    pipe.MaxMsgs,
+		MaxBytes:   pipe.MaxBytes,
 	}
-	msgs := defaultStreamMaxMsgs
-	if pipe.MaxMsgs != nil {
-		msgs = *pipe.MaxMsgs
-	}
-	bytes := int64(defaultStreamMaxBytes)
-	if pipe.MaxBytes != nil {
-		bytes = *pipe.MaxBytes
-	}
-	return age, msgs, bytes
 }
 
 // provisionAccount mints + registers + persists a brand-new account

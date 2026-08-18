@@ -69,6 +69,19 @@ Stream names use the four-role builder (Phase 1.5). Dots in manifold segments be
 | Discard | Old |
 | Replicas | 1 |
 
+MaxAge / MaxMsgs / MaxBytes are per-pipe overridable at create time
+(`ppz pipe create --ttl/--max-msgs/--max-bytes`) and mutable afterwards
+(`ppz pipe set`, §5.6). Overrides are stored as nullable columns on the
+`pipes` row; NULL means "no opinion at this layer" and resolution falls
+through to the defaults above. Resolution is per-field and lives in one
+place (`resolveRetention`), so a pipe overriding only MaxMsgs still
+inherits the default MaxAge.
+
+Auto-provisioned pipes (`inbox`, and `stdin`/`stdout`/`stdctrl`/`system`/
+`heartbeat` on pty sources) have no `pipes` row until one is
+overridden; `ppz pipe set` materialises one, stamped with the SOURCE's
+creator rather than the caller.
+
 ## 3. Envelope
 
 Published payload on every `<org_id>.<handle>.<pipe>`:
@@ -303,6 +316,44 @@ connection-level NATS failures (connection closed / no servers /
 timeout), which never count: an infra outage of any length retries
 until connectivity returns rather than deleting schedules.
 
+### 5.6 Pipe retention (`ppz pipe set`)
+
+`PATCH /api/v1/sources/{handle}/pipes/{name}` — collared form.
+`PATCH /api/v1/pipes` — uncollared (sourceless) form; the pipe is
+addressed by `manifold` + `name` in the body, because a manifold is a
+dotted path that does not survive a single URL path segment (same reason
+`DELETE /api/v1/pipes` is body-addressed).
+
+Body (`cliproto.PipeSetRequest`) — every retention field is optional:
+```json
+{
+  "manifold": "",
+  "name": "archive",
+  "ttl_seconds": 3600,
+  "max_msgs": 500,
+  "max_bytes": 1048576
+}
+```
+
+An ABSENT retention field means "leave this as it is": the server merges
+the request onto the stored row rather than writing the whole triple. A
+request naming none of the three is rejected rather than treated as a
+no-op. Unlike pipe creation, reserved/auto-provisioned names ARE
+accepted — those are the pipes whose defaults bite first, and creation
+can never name them.
+
+200: `cliproto.PipeSetReply` — the pipe's fully RESOLVED retention after
+the change (all three values, defaults filled in), not just what moved.
+
+Errors: 400 `E_INVALID_PIPE` (malformed name, no fields named, or a
+collared body on the uncollared endpoint), 400 `E_INVALID_HANDLE`,
+404 `E_SOURCE_NOT_FOUND`, 404 `E_PIPE_NOT_FOUND` (the pipe must already
+exist — `pipe set` never creates).
+
+Applying the change re-provisions the JetStream stream via
+CreateOrUpdate. Lowering a cap discards immediately: shrinking MaxMsgs
+below the retained count drops the oldest messages at once.
+
 ## 6. Server GUI (HTML, session-authenticated since Auth V2)
 
 | Method | Path | Behaviour |
@@ -311,7 +362,8 @@ until connectivity returns rather than deleting schedules.
 | POST | `/orgs` | Form field `name`. Creates org. Redirects to `/orgs/{slug}`. |
 | GET | `/orgs/{slug}` | Shows api keys (label, prefix, created_at) and sources as a table: handle, pipe, last_broadcast_at, payload (truncated to 60 chars). Pipe cell links to the pipe detail page. Form posts to `/orgs/{slug}/keys`. |
 | POST | `/orgs/{slug}/keys` | Form field `label`. Creates api key. Renders the **plaintext key once** on the response page. Subsequent visits to `/orgs/{slug}` show only the prefix. |
-| GET | `/orgs/{slug}/sources/{handle}/pipes/{pipe}` | Lists every buffered message on this pipe from the JetStream stream, in chronological order. Honors stream retention (defaults: 24 h / 1000 msgs / 64 MiB, whichever first). |
+| GET | `/orgs/{slug}/sources/{handle}/pipes/{pipe}` | Lists every buffered message on this pipe from the JetStream stream, in chronological order. Honors stream retention (defaults per §2: 24 h / 5000 msgs / 16 MiB, whichever first — or the pipe's overrides). |
+| GET | `/orgs/{slug}/audit` | **Owner-only** (403 for a non-owner member, 404 for a non-member). Newest-first audit trail for the org, capped at 200 rows: when, action, target, change, actor. See §6.2. |
 
 All HTML pages are server-rendered (Go `html/template`). No JS framework.
 
@@ -329,6 +381,35 @@ contract — do not rename:
 | `GET /orgs/{slug}` | `data-source-pipe-link="/orgs/<slug>/sources/<handle>/pipes/<pipe>"` | one per pipe cell |
 | `GET /orgs/{slug}/sources/{handle}/pipes/{pipe}` | `data-message="<id>:<rfc3339>:<payload>"` | one per buffered message, chronological |
 | `POST /orgs/{slug}/keys` (response page) | `data-new-key="<plaintext>"` | exactly one |
+| `GET /orgs/{slug}/audit` | `data-audit-action="<action>"` | one per audit row, newest first |
+| `GET /orgs/{slug}/audit` | `data-audit-target="<pipe-path>"` | one per audit row |
+| `GET /orgs/{slug}/audit` | `data-audit-actor="<username>"` | one per audit row |
+| `GET /orgs/{slug}/audit` | `data-audit-via="api-key\|web"` | one per audit row |
+| `GET /orgs/{slug}/audit` | `data-audit-delta="<human change>"` | one per audit row; e.g. `msgs 5000 → 5` |
+
+### 6.2 Audit trail
+
+`audit_events` is an append-only, per-account log of mutations worth
+attributing. Rows are generic (actor / action / target / before / after),
+so the table is not pipe-specific; the first writers are the pipe
+lifecycle actions `pipe.create`, `pipe.set` and `pipe.destroy`.
+
+`before` and `after` are jsonb retention snapshots
+(`{ttl_seconds, max_msgs, max_bytes}`). Either may be NULL — a create has
+no before, a destroy has no after — and the GUI then states the full
+retention instead of a delta.
+
+**Actor fidelity.** On the API-key path the server knows only the key's
+CREATOR, not who typed the command, so a shared org key attributes every
+change to whoever minted it. The row therefore records the key id
+alongside the user, and the GUI renders `via api-key` vs `via web` so a
+row is not read as stronger evidence than it is.
+
+**Known gaps.** Audit writes are best-effort: they happen after the
+mutation has already committed (and, for `pipe set`, already been applied
+to JetStream — two steps that were never atomic with each other either),
+so a failed insert is logged rather than failing the request. The table
+also has no retention policy and grows without bound.
 
 ## 7. CLI ↔ daemon IPC
 
@@ -359,6 +440,7 @@ Go types named here are the authoritative field source. Verbs:
 | `Read` | `ReadRequest` / streaming `ReadEvent` lines | read / reread a pipe |
 | `Connect` / `Disconnect` | `ConnectRequest` / … | pty source attach / detach |
 | `PipeCreate` / `PipeDestroy` | `PipeCreateRequest` / … | custom pipe lifecycle |
+| `PipeSet` | `PipeSetRequest` / `PipeSetReply` | change an existing pipe's retention (§5.6) |
 | `SourceDestroy` | `SourceDestroyRequest` / … | glob-destroy sources/pipes |
 | `SetNamespace` / `UnsetNamespace` | `SetNamespaceRequest` / … | session manifold state |
 | `ScheduleCreate` | `ScheduleCreateRequest` / `ScheduleCreateReply` | register a scheduled send (docs/specs/schedule.md) |

@@ -1,0 +1,7 @@
+--- audit actions, newest first ---
+pipe.destroy
+pipe.set
+pipe.create
+--- targets ---
+chat.archive
+exit=0

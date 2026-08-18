@@ -774,6 +774,62 @@ func (d *Daemon) handlePipeCreate(ctx context.Context, conn net.Conn, params jso
 	writeIPC(conn, reply)
 }
 
+// handlePipeSet proxies `ppz pipe set` to the server.
+//
+// Makes the same collared/uncollared routing decision as handlePipeCreate
+// — the request SHAPE decides, not a parsed path string — and stamps the
+// session's current namespace onto an unset Manifold so `ppz set
+// namespace` applies here exactly as it does to create.
+func (d *Daemon) handlePipeSet(ctx context.Context, conn net.Conn, params json.RawMessage) {
+	var req cliproto.PipeSetRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		writeIPCErr(conn, &cliproto.Error{Code: "E_PROTOCOL", Message: err.Error()})
+		return
+	}
+	if _, ok := d.State.Credentials(); !ok {
+		writeIPCErr(conn, cliproto.New(cliproto.ENotLoggedIn))
+		return
+	}
+	// Regex-only: unlike create, `pipe set` legitimately targets reserved
+	// auto-pipes (inbox, stdout) — they are the ones whose default caps
+	// users hit first, and they can never be reached through create.
+	if err := natsubj.ValidatePipe(req.Name); err != nil {
+		writeIPCErr(conn, cliproto.NewInvalidPipeName(req.Name))
+		return
+	}
+
+	collared := req.Handle != "" || (req.SourceHandle != nil && *req.SourceHandle != "")
+
+	if req.Manifold == "" {
+		req.Manifold = d.State.CurrentNamespace(req.Session)
+	}
+	// Don't leak the session field to the server — it's daemon-side only.
+	req.Session = ""
+
+	var reply cliproto.PipeSetReply
+	if collared {
+		handle := req.Handle
+		if req.SourceHandle != nil && *req.SourceHandle != "" {
+			handle = *req.SourceHandle
+		}
+		if err := natsubj.ValidateHandle(handle); err != nil {
+			writeIPCErr(conn, cliproto.New(cliproto.EInvalidHandle))
+			return
+		}
+		req.Handle = handle
+		if e := d.callServer(ctx, "PATCH", "/api/v1/sources/"+handle+"/pipes/"+req.Name, req, &reply); e != nil {
+			writeIPCErr(conn, e)
+			return
+		}
+	} else {
+		if e := d.callServer(ctx, "PATCH", "/api/v1/pipes", req, &reply); e != nil {
+			writeIPCErr(conn, e)
+			return
+		}
+	}
+	writeIPC(conn, reply)
+}
+
 // handleSourceDestroy proxies `ppz source destroy HANDLE` to the server.
 // On success it clears every session whose current equals the destroyed
 // handle and removes it from the known-pipes cache.

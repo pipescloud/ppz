@@ -26,6 +26,8 @@ func cmdPipeGroup(args []string) error {
 	switch args[0] {
 	case "create":
 		return cmdPipeCreate(args[1:])
+	case "set":
+		return cmdPipeSet(args[1:])
 	case "destroy":
 		return cmdPipeDestroy(args[1:])
 	}
@@ -87,6 +89,69 @@ func cmdPipeCreate(args []string) error {
 		return err
 	}
 	cliproto.PrintPipeCreate(os.Stdout, reply)
+	return nil
+}
+
+// cmdPipeSet parses `ppz pipe set [<handle>.]<name> [--ttl=DUR] [--max-msgs=N] [--max-bytes=B]`.
+//
+// Changes the retention of an EXISTING pipe. Target grammar and flag
+// names are identical to `pipe create` — one retention vocabulary, not
+// two — so a bare LEAF addresses an uncollared pipe at the session's
+// current namespace (Phase 1.5.1: current handle is sender identity, not
+// destination routing) and HANDLE.LEAF is the explicit collared form.
+//
+// Only the flags the user actually typed travel on the wire; the rest
+// stay nil so the server merges onto the stored row instead of resetting
+// untouched fields to their defaults.
+//
+// Unlike create, this reaches reserved auto-pipes (inbox, stdout) — they
+// are exactly the pipes whose default caps bite first, and create can
+// never name them.
+func cmdPipeSet(args []string) error {
+	target, flagArgs := splitTargetAndFlags(args)
+	fs := flag.NewFlagSet("pipe set", flag.ExitOnError)
+	ttl := fs.Duration("ttl", 0, "stream MaxAge override (e.g. 24h, 168h)")
+	maxMsgs := fs.Int("max-msgs", 0, "stream MaxMsgs override")
+	maxBytesS := fs.String("max-bytes", "", "stream MaxBytes override (int, or 1KB/1MB/1GiB/...)")
+	if err := fs.Parse(flagArgs); err != nil {
+		return err
+	}
+	if target == "" {
+		usageExit("pipe set")
+	}
+
+	handle, name, err := splitHandleName(target)
+	if err != nil {
+		return cliproto.New(cliproto.EInvalidPipe)
+	}
+
+	req := cliproto.PipeSetRequest{Handle: handle, Name: name, Session: sessionID()}
+	if *ttl > 0 {
+		secs := int(*ttl / time.Second)
+		req.TTLSeconds = &secs
+	}
+	if *maxMsgs > 0 {
+		req.MaxMsgs = maxMsgs
+	}
+	if *maxBytesS != "" {
+		b, err := parseBytes(*maxBytesS)
+		if err != nil {
+			return cliproto.New(cliproto.EInvalidPipe)
+		}
+		req.MaxBytes = &b
+	}
+	// No flag named nothing to change. Fail here rather than round-trip
+	// to the server to be told nothing happened.
+	if req.TTLSeconds == nil && req.MaxMsgs == nil && req.MaxBytes == nil {
+		return &cliproto.Error{Code: cliproto.EInvalidPipe,
+			Message: "pipe set: name at least one of --ttl, --max-msgs, --max-bytes"}
+	}
+
+	var reply cliproto.PipeSetReply
+	if err := daemon.Call(ipcSocket(), cliproto.IPCPipeSet, req, &reply); err != nil {
+		return err
+	}
+	cliproto.PrintPipeSet(os.Stdout, reply)
 	return nil
 }
 

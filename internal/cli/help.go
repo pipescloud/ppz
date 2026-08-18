@@ -84,6 +84,7 @@ var topLevelGroups = []helpGroup{
 	}},
 	{"PIPES", []helpRow{
 		{"ppz pipe create [H.]NAME", "create a custom pipe"},
+		{"ppz pipe set [H.]NAME", "change an existing pipe's retention"},
 		{"ppz pipe destroy [H.]NAME", "destroy a pipe (--recursive for a tree)"},
 	}},
 	{"OTHER", []helpRow{
@@ -422,9 +423,10 @@ Top-level shortcut for 'ppz daemon login' (matches the gh/kubectl/az login muscl
 Print the current handle to stdout. Exits 1 with empty output when no current handle is set, so $(ppz get handle) can detect "not set" via the return code.`,
 
 	// ---- Pipes -----------------------------------------------------------
-	"pipe": `usage: ppz pipe {create|destroy} ...
+	"pipe": `usage: ppz pipe {create|set|destroy} ...
 
   ppz pipe create [HANDLE.]NAME [--ttl=DUR --max-msgs=N --max-bytes=B]
+  ppz pipe set [HANDLE.]NAME [--ttl=DUR --max-msgs=N --max-bytes=B]
   ppz pipe destroy [HANDLE.]NAME [--recursive]
 
 A bare NAME is created under the current namespace; prefix HANDLE. to collar it to a source.`,
@@ -436,6 +438,20 @@ Create a custom pipe. A bare NAME is created under the session's current namespa
   --ttl=DUR        retain messages for at most DUR (e.g. 24h, 30m).
   --max-msgs=N     cap retained messages at N.
   --max-bytes=B    cap retained bytes at B (accepts sizes like 64MiB, 1GB).`,
+
+	"pipe set": `usage: ppz pipe set [HANDLE.]NAME [--ttl=DUR --max-msgs=N --max-bytes=B]
+
+Change the retention of an existing pipe. Same target grammar and flags as 'pipe create': a bare NAME addresses an uncollared pipe under the session's current namespace; prefix HANDLE. for a pipe collared to a source.
+
+  --ttl=DUR        retain messages for at most DUR (e.g. 24h, 30m).
+  --max-msgs=N     cap retained messages at N.
+  --max-bytes=B    cap retained bytes at B (accepts sizes like 64MiB, 1GB).
+
+Name at least one flag. Fields you don't name keep their current value. The printed line states the pipe's complete retention afterwards, not just what moved.
+
+Unlike 'pipe create', this reaches auto-provisioned pipes (inbox, and stdin/stdout/stdctrl on terminals) — those are the pipes whose default caps you hit first, and create can't name them.
+
+Lowering a cap discards immediately: shrinking --max-msgs on a pipe holding more than that drops the oldest messages there and then.`,
 
 	"pipe destroy": `usage: ppz pipe destroy [HANDLE.]NAME [--recursive]
 

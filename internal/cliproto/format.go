@@ -321,6 +321,20 @@ func PrintPipeCreate(w io.Writer, r PipeCreateReply) {
 		FormatPipePath(r.Manifold, r.Handle, r.Name), dur.String(), r.MaxMsgs, r.MaxBytes)
 }
 
+// PrintPipeSet prints the pinned line:
+//
+//	updated pipe=<PATH> retention=ttl=<dur>,msgs=<n>,bytes=<b>
+//
+// Deliberately the same line as PrintPipeCreate with the verb swapped:
+// both commands answer "what does this pipe retain now?", so reading
+// either should take the same glance. The retention shown is the fully
+// resolved triple, not just the field the user changed.
+func PrintPipeSet(w io.Writer, r PipeSetReply) {
+	dur := time.Duration(r.TTLSeconds) * time.Second
+	fmt.Fprintf(w, "updated pipe=%s retention=ttl=%s,msgs=%d,bytes=%d\n",
+		FormatPipePath(r.Manifold, r.Handle, r.Name), dur.String(), r.MaxMsgs, r.MaxBytes)
+}
+
 // FormatPipePath renders the four-role pipe path for user display, with
 // empty slots omitted. Used by PrintPipeCreate, PrintPipeDestroy, and the
 // `to=` field of send output.
