@@ -1,0 +1,7 @@
+--- bar holds write-only on alice.inbox, so sees its roster ---
+alice
+bar
+foo
+--- bar holds nothing on alice.stdout, so is refused ---
+E_PIPE_FORBIDDEN: no access to alice.stdout
+exit=0

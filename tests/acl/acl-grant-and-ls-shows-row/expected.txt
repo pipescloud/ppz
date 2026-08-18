@@ -1,0 +1,10 @@
+--- before the grant ---
+[{"principal":"alice","read":true,"via":"handle owner"}]
+--- grant bar read ---
+granted read on alice.stdout to bar
+--- after the grant ---
+[{"principal":"alice","read":true,"via":"handle owner"},{"principal":"bar","read":true,"via":"grant"}]
+--- revoke is idempotent ---
+revoked read on alice.stdout from bar
+revoked read on alice.stdout from bar
+exit=0

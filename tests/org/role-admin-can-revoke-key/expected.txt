@@ -1,0 +1,7 @@
+--- foo (owner) promotes bar to admin ---
+status=303
+--- bar (now admin) revokes a key ---
+status=303
+--- key state after the revoke ---
+data-key-state="revoked"
+exit=0
