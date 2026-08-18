@@ -186,11 +186,11 @@ func TestSubmitAlertToPTY_Claude(t *testing.T) {
 //
 // The test injects a sleeper that snapshots the buffer at the
 // moment sleep is called, so we can prove three things atomically:
-//   1. The pause happens exactly once, at 100ms (matches cmdCommand).
-//   2. The CR has NOT been written yet when sleep is called — the
-//      message is on the wire alone, giving the REPL time to flush
-//      it before the submit byte arrives.
-//   3. The final buffer is message + `\r` (sequence preserved).
+//  1. The pause happens exactly once, at 100ms (matches cmdCommand).
+//  2. The CR has NOT been written yet when sleep is called — the
+//     message is on the wire alone, giving the REPL time to flush
+//     it before the submit byte arrives.
+//  3. The final buffer is message + `\r` (sequence preserved).
 //
 // Runs over every harness that takes the `\r` arm: known
 // non-claude harnesses, plus empty (non-agent share) and a bogus
@@ -500,5 +500,386 @@ func TestTerminalSubsAlertPumpForPTY_InjectsThroughProvidedWriter(t *testing.T) 
 	p.EndAlertMode(now)
 	if !strings.Contains(rec.String(), "typed-during-alert") {
 		t.Errorf("buffered user-input flush bypassed the provided writer; writer saw %q", rec.String())
+	}
+}
+
+// ---------------------------------------------------------------------
+// Backoff ladder: bound the alert flood when nagging isn't working.
+//
+// Bug (user-observed): the cooldown is a FIXED interval, so an unread
+// message the agent cannot action produces one injected+submitted turn
+// every cooldown window, forever. The reported trigger is a session
+// usage limit: the agent hits its limit with a message unread, the
+// wrapper nags every 30s for the n hours until the limit resets, and
+// the whole backlog then flushes as real turns — burning context window
+// and tokens. At the old 30s cadence a 5-hour block queues ~600 copies
+// of the same nag.
+//
+// Nothing in the pump distinguishes "first nudge" from "600th nudge":
+// ConfirmUnread correctly reports the message is still unread every
+// single time, so it green-lights all of them, and the subs-wait loop
+// re-arms pending every ~250ms regardless.
+//
+// Design rule these tests encode: a repeat alert is evidence the
+// previous one did not work, so repeats back off geometrically. The
+// ladder rung is the count of alerts INJECTED since the last proof the
+// agent consumed anything — and the only such proof is a negative
+// ConfirmUnread (the unread level actually dropped). Message arrivals
+// are not proof of anything and must never reset the ladder, or a
+// limit-blocked agent receiving traffic floods exactly as before.
+// ---------------------------------------------------------------------
+
+// TestTerminalSubsAlertPumpBacksOffWhileAlertsGoUnacknowledged walks
+// the ladder rung by rung, asserting each gap both ways: no fire one
+// second early, fire exactly on time. Gaps double from the base until
+// they hit the ceiling, then stay there.
+func TestTerminalSubsAlertPumpBacksOffWhileAlertsGoUnacknowledged(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		// Never read: every fire-time confirm says "still unread", so
+		// the ladder is the ONLY thing bounding the injection count.
+		ConfirmUnread: func() bool { return true },
+	}, &ptyStdin)
+
+	pump.ObserveSubsUnread(now)
+	if wrote := pump.Flush(now.Add(59 * time.Second)); wrote {
+		t.Fatalf("Flush before the 60s idle gate fired: %q", ptyStdin.String())
+	}
+	at := now.Add(60 * time.Second)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("first nudge did not fire at the 60s idle gate")
+	}
+
+	// Gaps after alert N: min(5m * 2^(N-1), 30m).
+	for i, gap := range []time.Duration{
+		5 * time.Minute,
+		10 * time.Minute,
+		20 * time.Minute,
+		30 * time.Minute, // ceiling reached
+		30 * time.Minute, // ceiling held
+		30 * time.Minute, // ceiling held
+	} {
+		// The subs-wait loop re-arms pending within ~250ms of every
+		// fire while the message stays unread; mirror that here so the
+		// cooldown gate is provably what defers, not a stale pending.
+		pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+
+		if wrote := pump.Flush(at.Add(gap - time.Second)); wrote {
+			t.Fatalf("rung %d: alert fired 1s early; want the gap to have grown to %v", i+1, gap)
+		}
+		at = at.Add(gap)
+		if wrote := pump.Flush(at); !wrote {
+			t.Fatalf("rung %d: no alert after the expected %v gap", i+1, gap)
+		}
+	}
+
+	if got := strings.Count(ptyStdin.String(), "Please run 'ppz subs read' and action messages"); got != 7 {
+		t.Fatalf("injected %d alerts across the ladder, want 7 (1 nudge + 6 rungs)", got)
+	}
+}
+
+// TestTerminalSubsAlertPumpLadderBoundsInjectionsAcrossUsageLimitBlock
+// is the direct regression test for the reported symptom: an agent
+// blocked for 5 hours with one unread message.
+//
+// Simulates the production loop exactly — a 1s flush tick, pending
+// re-armed every tick by the level-triggered subs wait, and a confirm
+// that truthfully reports "still unread" throughout, because the agent
+// genuinely cannot run `ppz subs read`.
+//
+// Old fixed-30s behaviour: ~600 injected turns, all of which flush into
+// the model the instant the limit lifts. With the ladder the schedule
+// is 1m, 6m, 16m, 36m, then every 30m — 12 alerts across the block.
+func TestTerminalSubsAlertPumpLadderBoundsInjectionsAcrossUsageLimitBlock(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   defaultSubsAlertIdleAfter,
+		Cooldown:    defaultSubsAlertCooldown,
+		CooldownMax: defaultSubsAlertCooldownMax,
+		Message:     terminalSubsAlertMessage,
+		// claude harness: its submit terminator needs no inter-write
+		// pause, so 18000 simulated ticks don't drag a real 100ms
+		// sleep per injection into the test's wall clock.
+		Harness:       "claude",
+		ConfirmUnread: func() bool { return true },
+	}, &ptyStdin)
+
+	const block = 5 * time.Hour
+	for elapsed := time.Duration(0); elapsed < block; elapsed += time.Second {
+		at := now.Add(elapsed)
+		pump.ObserveSubsUnread(at) // level-triggered re-arm, every tick
+		pump.Flush(at)             // production flush ticker: 1s
+	}
+
+	got := strings.Count(ptyStdin.String(), "Please run 'ppz subs read' and action messages")
+	if got != 12 {
+		t.Fatalf("injected %d alerts across a 5h block, want 12 "+
+			"(1m, 6m, 16m, 36m, then every 30m); the old fixed-30s cadence injected ~600", got)
+	}
+}
+
+// TestTerminalSubsAlertPumpLadderResetsAfterConfirmedRead pins the
+// reset condition. A negative ConfirmUnread is the one signal that
+// proves the agent consumed its messages, so it must return the pump
+// to the base cadence — otherwise a single stalled stretch permanently
+// desensitises the nag for the rest of the share session.
+func TestTerminalSubsAlertPumpLadderResetsAfterConfirmedRead(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	unread := true
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:     60 * time.Second,
+		Cooldown:      5 * time.Minute,
+		CooldownMax:   30 * time.Minute,
+		Message:       terminalSubsAlertMessage,
+		ConfirmUnread: func() bool { return unread },
+	}, &ptyStdin)
+
+	// Climb three rungs: nudge at 60s, then +5m, then +10m.
+	pump.ObserveSubsUnread(now)
+	at := now.Add(60 * time.Second)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("first nudge did not fire")
+	}
+	for _, gap := range []time.Duration{5 * time.Minute, 10 * time.Minute} {
+		pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+		at = at.Add(gap)
+		if wrote := pump.Flush(at); !wrote {
+			t.Fatalf("climb: no alert after %v gap", gap)
+		}
+	}
+	// Next rung would be 20m.
+
+	// The agent comes back and reads. The subs-wait loop's pending bit
+	// is still armed (the cursor advance publishes nothing), so the
+	// fire-time confirm is what observes the drop.
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	unread = false
+	if wrote := pump.Flush(at.Add(20 * time.Minute)); wrote {
+		t.Fatalf("alert fired for an already-read message: %q", ptyStdin.String())
+	}
+	before := strings.Count(ptyStdin.String(), "Please run 'ppz subs read' and action messages")
+
+	// A new message lands well after the read. It must be nudged on the
+	// BASE cadence — 60s idle — not on the 20m rung the pump had
+	// climbed to before the read.
+	fresh := at.Add(30 * time.Minute)
+	unread = true
+	pump.ObserveSubsUnread(fresh)
+	if wrote := pump.Flush(fresh.Add(60 * time.Second)); !wrote {
+		t.Fatal("post-read message was not nudged at the base 60s idle gate; the confirmed read must reset the ladder")
+	}
+	// And the rung after it is the base gap again, not a resumed climb.
+	pump.ObserveSubsUnread(fresh.Add(60*time.Second + 250*time.Millisecond))
+	if wrote := pump.Flush(fresh.Add(60*time.Second + 5*time.Minute)); !wrote {
+		t.Fatal("second post-read alert did not fire after the base 5m gap; the ladder resumed mid-climb instead of resetting")
+	}
+	if got := strings.Count(ptyStdin.String(), "Please run 'ppz subs read' and action messages"); got != before+2 {
+		t.Fatalf("injected %d alerts after the read, want 2", got-before)
+	}
+}
+
+// TestTerminalSubsAlertPumpLadderNotResetByNewUnreadMessages is the
+// crux of the fix. During a usage-limit block the agent keeps
+// RECEIVING messages while being unable to action any of them. If
+// arrivals reset the ladder, a busy pipe reproduces the original flood
+// in full — the ladder would never climb past its first rung.
+//
+// Only consumption resets. Arrival is not consumption.
+func TestTerminalSubsAlertPumpLadderNotResetByNewUnreadMessages(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:     60 * time.Second,
+		Cooldown:      5 * time.Minute,
+		CooldownMax:   30 * time.Minute,
+		Message:       terminalSubsAlertMessage,
+		ConfirmUnread: func() bool { return true },
+	}, &ptyStdin)
+
+	pump.ObserveSubsUnread(now)
+	at := now.Add(60 * time.Second)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("first nudge did not fire")
+	}
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	at = at.Add(5 * time.Minute)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("second alert did not fire after the base 5m gap")
+	}
+	// Two alerts delivered, unacknowledged: the next gap is 10m.
+
+	// A burst of genuinely new messages arrives mid-block — each one a
+	// fresh unread observation from the subs-wait loop.
+	for i := 1; i <= 20; i++ {
+		pump.ObserveSubsUnread(at.Add(time.Duration(i) * 10 * time.Second))
+	}
+
+	if wrote := pump.Flush(at.Add(5 * time.Minute)); wrote {
+		t.Fatalf("new arrivals reset the ladder to the base 5m gap: %q; "+
+			"arrivals are not proof the agent consumed anything, and resetting on them "+
+			"reproduces the original flood on any busy pipe", ptyStdin.String())
+	}
+	if wrote := pump.Flush(at.Add(10*time.Minute - time.Second)); wrote {
+		t.Fatal("alert fired 1s before the 10m rung")
+	}
+	if wrote := pump.Flush(at.Add(10 * time.Minute)); !wrote {
+		t.Fatal("no alert at the 10m rung; the ladder must keep climbing across arrivals")
+	}
+	if got := strings.Count(ptyStdin.String(), "Please run 'ppz subs read' and action messages"); got != 3 {
+		t.Fatalf("injected %d alerts, want 3 despite 20 message arrivals", got)
+	}
+}
+
+// TestTerminalSubsAlertPumpDeferredFireDoesNotAdvanceLadder pins the
+// accounting boundary: the rung counts alerts actually INJECTED, not
+// fire attempts. A deferral (user typed while the confirm was in
+// flight) injects nothing, so it must not consume a rung — otherwise
+// a user typing at the wrong moment silently doubles the delay before
+// the agent is ever nudged.
+func TestTerminalSubsAlertPumpDeferredFireDoesNotAdvanceLadder(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	var pump *terminalSubsAlertPump
+	deferOnce := true
+	pump = newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		ConfirmUnread: func() bool {
+			if deferOnce {
+				deferOnce = false
+				// Keystrokes land after the gates were checked, closing
+				// the idle gate before the injection happens.
+				pump.ObserveUserInput(now.Add(60*time.Second), []byte("typed mid-confirm"))
+			}
+			return true
+		},
+	}, &ptyStdin)
+
+	pump.ObserveSubsUnread(now)
+	if wrote := pump.Flush(now.Add(60 * time.Second)); wrote {
+		t.Fatalf("deferral injected anyway: %q", ptyStdin.String())
+	}
+
+	// User goes idle; the deferred alert lands. This is rung 1.
+	at := now.Add(3 * time.Minute)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("deferred alert never fired once the user went idle")
+	}
+
+	// The gap after it must be the BASE 5m, not the 10m rung a
+	// rung-consuming deferral would have left behind.
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	if wrote := pump.Flush(at.Add(5 * time.Minute)); !wrote {
+		t.Fatal("next alert did not fire after the base 5m gap; the deferral consumed a ladder rung despite injecting nothing")
+	}
+}
+
+// TestTerminalSubsAlertCooldownMaxDefaultsAboveBase guards the
+// degenerate configs. An unset ceiling must not clamp the ladder to
+// zero growth (that silently restores the flood), and a ceiling below
+// the base must not shrink the first gap below the configured base.
+func TestTerminalSubsAlertCooldownMaxDefaultsAboveBase(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+
+	// IdleAfter is deliberately shorter than every gap here: a re-armed
+	// pending restamps pendingSince, so the idle gate is re-applied to
+	// each repeat and would mask the cooldown gate under test if it
+	// were the larger of the two. Production never hits this (60s idle
+	// vs a 5m base gap).
+	t.Run("unset ceiling still backs off", func(t *testing.T) {
+		var ptyStdin bytes.Buffer
+		pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+			IdleAfter:     10 * time.Second,
+			Cooldown:      30 * time.Second,
+			Message:       terminalSubsAlertMessage,
+			ConfirmUnread: func() bool { return true },
+		}, &ptyStdin)
+
+		pump.ObserveSubsUnread(now)
+		at := now.Add(10 * time.Second)
+		if wrote := pump.Flush(at); !wrote {
+			t.Fatal("first nudge did not fire")
+		}
+		pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+		at = at.Add(30 * time.Second)
+		if wrote := pump.Flush(at); !wrote {
+			t.Fatal("second alert did not fire after the base 30s gap")
+		}
+		pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+		if wrote := pump.Flush(at.Add(30 * time.Second)); wrote {
+			t.Fatal("third alert fired after another flat 30s; an unset ceiling must still let the ladder climb")
+		}
+		if wrote := pump.Flush(at.Add(60 * time.Second)); !wrote {
+			t.Fatal("third alert did not fire after the doubled 60s gap")
+		}
+	})
+
+	t.Run("ceiling below base does not shrink the base gap", func(t *testing.T) {
+		var ptyStdin bytes.Buffer
+		pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+			IdleAfter:     60 * time.Second,
+			Cooldown:      5 * time.Minute,
+			CooldownMax:   time.Minute, // misconfiguration: below base
+			Message:       terminalSubsAlertMessage,
+			ConfirmUnread: func() bool { return true },
+		}, &ptyStdin)
+
+		pump.ObserveSubsUnread(now)
+		at := now.Add(60 * time.Second)
+		if wrote := pump.Flush(at); !wrote {
+			t.Fatal("first nudge did not fire")
+		}
+		pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+		if wrote := pump.Flush(at.Add(time.Minute)); wrote {
+			t.Fatalf("a ceiling below the base shrank the gap to %v; the base is a floor: %q", time.Minute, ptyStdin.String())
+		}
+		if wrote := pump.Flush(at.Add(5 * time.Minute)); !wrote {
+			t.Fatal("no alert after the configured 5m base gap")
+		}
+	})
+}
+
+// TestTerminalSubsAlertDefaults pins the production cadence decision
+// itself, so changing it is a deliberate edit to a named constant with
+// a failing test attached rather than an inline tweak at the call site.
+//
+// 60s first nudge: wide enough that an agent's own subs watch usually
+// reads the message first (the fire-time confirm then suppresses the
+// nudge entirely and nothing reaches the PTY), prompt enough that a
+// genuinely parked agent isn't sitting on an unread message for
+// minutes. 5m base / 30m ceiling: see the 5h-block bound above.
+func TestTerminalSubsAlertDefaults(t *testing.T) {
+	if defaultSubsAlertIdleAfter != 60*time.Second {
+		t.Errorf("defaultSubsAlertIdleAfter = %v, want 60s", defaultSubsAlertIdleAfter)
+	}
+	if defaultSubsAlertCooldown != 5*time.Minute {
+		t.Errorf("defaultSubsAlertCooldown = %v, want 5m", defaultSubsAlertCooldown)
+	}
+	if defaultSubsAlertCooldownMax != 30*time.Minute {
+		t.Errorf("defaultSubsAlertCooldownMax = %v, want 30m", defaultSubsAlertCooldownMax)
+	}
+
+	// A zero-value config must land on the production cadence: the
+	// state machine is the single source of the defaults, so a caller
+	// that forgets a field cannot silently get the old 15s/no-backoff
+	// behaviour back.
+	sm := newTerminalSubsAlertStateMachine(terminalSubsAlertConfig{})
+	if sm.cfg.IdleAfter != defaultSubsAlertIdleAfter {
+		t.Errorf("zero-config IdleAfter = %v, want %v", sm.cfg.IdleAfter, defaultSubsAlertIdleAfter)
+	}
+	if sm.cfg.Cooldown != defaultSubsAlertCooldown {
+		t.Errorf("zero-config Cooldown = %v, want %v", sm.cfg.Cooldown, defaultSubsAlertCooldown)
+	}
+	if sm.cfg.CooldownMax != defaultSubsAlertCooldownMax {
+		t.Errorf("zero-config CooldownMax = %v, want %v", sm.cfg.CooldownMax, defaultSubsAlertCooldownMax)
 	}
 }

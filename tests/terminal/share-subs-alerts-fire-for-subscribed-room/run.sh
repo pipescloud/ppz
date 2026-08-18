@@ -27,6 +27,13 @@ SOCK_S=$HOME_S/daemon.sock
 # 15s/30s production defaults.
 export PPZ_TERMINAL_INBOX_IDLE_MS=200
 export PPZ_TERMINAL_INBOX_COOLDOWN_MS=200
+# Ceiling pinned to the base so repeat alerts keep a FLAT 200ms cadence.
+# Repeats normally back off geometrically (see CooldownMax in
+# terminal_subs_alert.go); this fixture asserts that a subscribed-room
+# message reaches the pump at all, so a fixed cadence keeps it immune to
+# any later change in the ladder. The ladder itself is covered by
+# share-subs-alert-backs-off-when-unread-persists.
+export PPZ_TERMINAL_INBOX_COOLDOWN_MAX_MS=200
 
 ppz_s() { PPZ_HOME=$HOME_S PPZ_IPC_SOCKET=$SOCK_S ppz "$@"; }
 

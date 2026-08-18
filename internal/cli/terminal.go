@@ -363,21 +363,30 @@ func cmdTerminalShare(args []string) error {
 		runHarnessDetection(ctx, det, time.Now(), hbWake, detTicker.C)
 	}()
 
-	// IdleAfter / Cooldown are tunable via env so e2e tests can drive
-	// the alert pump within the harness 30s ceiling. Production
-	// defaults (15s idle, 30s cooldown) stand unless explicitly
-	// overridden; the env names are intentionally test-flavored.
+	// IdleAfter / Cooldown / CooldownMax are tunable via env so e2e
+	// tests can drive the alert pump within the harness 30s ceiling.
+	// The production cadence (defaultSubsAlert* in
+	// terminal_subs_alert.go) stands unless explicitly overridden; the
+	// env names are intentionally test-flavored.
 	// TODO(naming): legacy "INBOX" name preserved across the rename to
 	// SubsAlert; the operator-facing names are undocumented and only
 	// referenced by the two share-inbox-alerts-survives-* e2e
 	// fixtures, so renaming would force a coupled fixture change
 	// without benefit. Worth a back-compat-friendly rename pass later.
-	idleAfter := envDurationMS("PPZ_TERMINAL_INBOX_IDLE_MS", 15*time.Second)
-	cooldown := envDurationMS("PPZ_TERMINAL_INBOX_COOLDOWN_MS", 30*time.Second)
+	idleAfter := envDurationMS("PPZ_TERMINAL_INBOX_IDLE_MS", defaultSubsAlertIdleAfter)
+	cooldown := envDurationMS("PPZ_TERMINAL_INBOX_COOLDOWN_MS", defaultSubsAlertCooldown)
+	cooldownMax := envDurationMS("PPZ_TERMINAL_INBOX_COOLDOWN_MAX_MS", defaultSubsAlertCooldownMax)
 	subsAlerts := newTerminalSubsAlertPumpForPTY(terminalSubsAlertConfig{
 		IdleAfter: idleAfter,
-		Cooldown:  cooldown,
-		Message:   terminalSubsAlertMessage,
+		// Repeat alerts back off geometrically from Cooldown up to
+		// CooldownMax. A repeat is evidence the previous nag did not
+		// land, and an agent that cannot action its messages (session
+		// usage limit, wedged REPL) would otherwise be fed one
+		// injected+submitted turn per flat cooldown window for hours —
+		// a backlog that flushes into the model the moment it unblocks.
+		Cooldown:    cooldown,
+		CooldownMax: cooldownMax,
+		Message:     terminalSubsAlertMessage,
 		// PPZ_AGENT_HARNESS is exported into this process's env by
 		// setAgentEnv (agent.go) when the share is launched via
 		// `ppz agent create --<harness>`; standalone `ppz terminal

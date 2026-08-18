@@ -22,6 +22,15 @@ SOCK_S=$HOME_S/daemon.sock
 
 export PPZ_TERMINAL_INBOX_IDLE_MS=200
 export PPZ_TERMINAL_INBOX_COOLDOWN_MS=200
+# Ceiling pinned to the base so repeat alerts keep a FLAT 200ms cadence
+# here. Repeats normally back off geometrically (see CooldownMax in
+# terminal_subs_alert.go), and msg-1 below is deliberately never read,
+# so the ladder would otherwise climb past this scenario's wait budget
+# while it is busy recycling the daemon. This fixture is about the
+# forwarder redialling after a daemon swap, not about cadence — the
+# ladder itself is covered by
+# share-subs-alert-backs-off-when-unread-persists.
+export PPZ_TERMINAL_INBOX_COOLDOWN_MAX_MS=200
 
 ppz_s() { PPZ_HOME=$HOME_S PPZ_IPC_SOCKET=$SOCK_S ppz "$@"; }
 
