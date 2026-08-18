@@ -154,11 +154,16 @@ type auditRow struct {
 	Action string // "pipe.set"
 	Target string // "chat.archive"
 	Actor  string // username the action is attributed to
-	// Via is "api-key" or "web". The distinction matters: on the API
-	// path Actor is the KEY'S CREATOR, not necessarily who typed the
-	// command, so a shared key attributes every change to whoever minted
-	// it. Surfacing "via api-key" stops the row reading as stronger
-	// evidence than it is.
+	// Via is "api-key" or "web", derived from whether the event carries
+	// an actor key. The distinction matters: on the API path Actor is the
+	// KEY'S CREATOR, not necessarily who typed the command, so a shared
+	// key attributes every change to whoever minted it. Surfacing "via
+	// api-key" stops the row reading as stronger evidence than it is.
+	//
+	// Every writer today is an API-key handler, so "web" is not yet
+	// reachable — retention is only mutable through the CLI. It is here
+	// because the GUI editor is the next step, and the honest reading of
+	// a nil actor key is "not a key", not "assume a key".
 	Via     string
 	KeyHint string // key prefix when Via is "api-key", else ""
 	Delta   string // "msgs 5000 → 5"
@@ -167,7 +172,7 @@ type auditRow struct {
 
 // buildAuditRows renders events for display, resolving actor usernames
 // and key prefixes in one batch each.
-func buildAuditRows(events []db.AuditEvent, pool *db.Pool, ctx context.Context) []auditRow {
+func buildAuditRows(ctx context.Context, pool *db.Pool, events []db.AuditEvent) []auditRow {
 	if len(events) == 0 {
 		return nil
 	}

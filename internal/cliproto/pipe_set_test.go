@@ -17,32 +17,51 @@ import (
 // override on the request means "leave this field as it is", NOT "reset
 // to default"; the server merges onto the stored row.
 
+// Compared against PipeCreateRequest field-by-field rather than against a
+// hardcoded table. The point of the test is that the two stay the same
+// shape, so create's shape has to be the thing it reads — a pinned copy
+// of today's fields would keep passing after create moved, and "mirrors
+// create" would quietly stop being true.
 func TestPipeSetRequest_MirrorsCreateShape(t *testing.T) {
-	rt := reflect.TypeOf(PipeSetRequest{})
-	for _, tc := range []struct {
-		field string
-		want  reflect.Type
-		json  string
-	}{
-		{"Handle", reflect.TypeOf(""), "handle"},
-		{"Manifold", reflect.TypeOf(""), "manifold,omitempty"},
-		{"SourceHandle", reflect.TypeOf((*string)(nil)), "source_handle,omitempty"},
-		{"Name", reflect.TypeOf(""), "name"},
-		{"TTLSeconds", reflect.TypeOf((*int)(nil)), "ttl_seconds,omitempty"},
-		{"MaxMsgs", reflect.TypeOf((*int)(nil)), "max_msgs,omitempty"},
-		{"MaxBytes", reflect.TypeOf((*int64)(nil)), "max_bytes,omitempty"},
-		{"Session", reflect.TypeOf(""), "session,omitempty"},
-	} {
-		f, ok := rt.FieldByName(tc.field)
+	set := reflect.TypeOf(PipeSetRequest{})
+	create := reflect.TypeOf(PipeCreateRequest{})
+
+	if set.NumField() != create.NumField() {
+		t.Fatalf("field count: PipeSetRequest has %d, PipeCreateRequest has %d — the two addressing shapes have diverged",
+			set.NumField(), create.NumField())
+	}
+	for i := range create.NumField() {
+		want := create.Field(i)
+		got, ok := set.FieldByName(want.Name)
 		if !ok {
-			t.Errorf("PipeSetRequest.%s missing", tc.field)
+			t.Errorf("PipeSetRequest is missing %s, which PipeCreateRequest has", want.Name)
 			continue
 		}
-		if f.Type != tc.want {
-			t.Errorf("PipeSetRequest.%s type = %v, want %v", tc.field, f.Type, tc.want)
+		if got.Type != want.Type {
+			t.Errorf("PipeSetRequest.%s type = %v, want %v (as on PipeCreateRequest)", want.Name, got.Type, want.Type)
 		}
-		if got := f.Tag.Get("json"); got != tc.json {
-			t.Errorf("PipeSetRequest.%s json tag = %q, want %q", tc.field, got, tc.json)
+		if got.Tag.Get("json") != want.Tag.Get("json") {
+			t.Errorf("PipeSetRequest.%s json tag = %q, want %q (as on PipeCreateRequest)",
+				want.Name, got.Tag.Get("json"), want.Tag.Get("json"))
+		}
+	}
+
+	// Anchor the shared shape to concrete wire names, so a change made to
+	// BOTH structs at once still has to be deliberate.
+	for name, tag := range map[string]string{
+		"Handle":     "handle",
+		"Name":       "name",
+		"TTLSeconds": "ttl_seconds,omitempty",
+		"MaxMsgs":    "max_msgs,omitempty",
+		"MaxBytes":   "max_bytes,omitempty",
+	} {
+		f, ok := set.FieldByName(name)
+		if !ok {
+			t.Errorf("PipeSetRequest.%s missing", name)
+			continue
+		}
+		if got := f.Tag.Get("json"); got != tag {
+			t.Errorf("PipeSetRequest.%s json tag = %q, want %q", name, got, tag)
 		}
 	}
 }

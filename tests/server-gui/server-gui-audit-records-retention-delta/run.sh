@@ -16,10 +16,13 @@ auth_as_foo
 ORG_ID=$(cat /seed/org-alpha.txt)
 
 echo "--- pipe.set delta ---"
-# The <tr> spreads its data-* attributes over five lines; data-audit-delta
-# is the last of them, so the window has to reach 4 lines past the action.
+# Matched on the attribute alone rather than a line window around the
+# action. A window couples the assertion to how many lines the <tr>
+# happens to span in org.html, so reformatting the template would break
+# it for no behavioural reason. `pipe set` was the last action, and the
+# tab renders newest-first (pinned by the lifecycle scenario), so the
+# first delta on the page is its one.
 curl_server "/orgs/$ORG_ID/audit" -s \
-  | grep -A 4 'data-audit-action="pipe.set"' \
   | grep -oE 'data-audit-delta="[^"]+"' \
   | sed -E 's/data-audit-delta="([^"]+)"/\1/' | head -1
 

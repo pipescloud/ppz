@@ -375,7 +375,7 @@ func (s *Server) handleGUIOrgTab(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), 500)
 			return
 		}
-		auditRows = buildAuditRows(events, s.Pool, ctx)
+		auditRows = buildAuditRows(ctx, s.Pool, events)
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

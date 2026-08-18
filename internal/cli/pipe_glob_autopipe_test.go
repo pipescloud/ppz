@@ -21,6 +21,12 @@ import (
 // whose default caps bite first — and that row then surfaces in the
 // user-pipe list the glob walks. So a user who retunes a terminal's
 // system pipe and later runs `pipe destroy '*'` would destroy it.
+//
+// This test pins the GLOB's behaviour given a set of auto-pipe names; it
+// necessarily restates them, which means it cannot notice the two lists
+// drifting apart again. That comparison lives in
+// db.TestSourcePipes_AreAllKnownAsAutoProvisioned, which reads both
+// sources of truth instead of copying either.
 func TestResolvePipeGlob_SkipsEveryAutoProvisionedPipe(t *testing.T) {
 	// The full pty auto-pipe set, as Source.Pipes() defines it.
 	autoPipes := []string{"stdin", "stdout", "stdctrl", "system", "inbox", "heartbeat"}

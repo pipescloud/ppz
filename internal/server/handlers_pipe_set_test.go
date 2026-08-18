@@ -151,6 +151,50 @@ func TestMergeRetention_NilRequestFieldsPreserveStored(t *testing.T) {
 	}
 }
 
+// The TTL arm of the same contract, which the two cases above leave
+// open: one sets TTL on the request, the other has no stored TTL to
+// preserve. Neither would notice `outTTL := ttl` — a silent request
+// clobbering a configured TTL — so a `pipe set --max-bytes=1M` could
+// quietly reset a pipe's 1h TTL back to the 24h default.
+func TestMergeRetention_SilentRequestPreservesStoredTTL(t *testing.T) {
+	storedTTL := 3600
+	stored := db.Pipe{TTLSeconds: &storedTTL}
+
+	newBytes := int64(1 << 20)
+	ttl, msgs, byts := mergeRetention(stored, nil, nil, &newBytes)
+
+	if ttl == nil || *ttl != 3600 {
+		t.Errorf("ttl = %v, want 3600 (stored preserved — request was silent on ttl)", deref(ttl))
+	}
+	if msgs != nil {
+		t.Errorf("maxMsgs = %v, want nil (never set)", deref(msgs))
+	}
+	if byts == nil || *byts != 1<<20 {
+		t.Errorf("maxBytes = %v, want 1048576 (request wins)", deref64(byts))
+	}
+}
+
+// The capability that distinguishes `pipe set` from `pipe create`: it
+// must accept reserved and auto-provisioned names. inbox / stdout are
+// precisely the pipes whose default caps users hit first, and being
+// auto-provisioned they can never be reached through create — so a
+// create-time gate here would make the headline use case impossible
+// while every negative-path test above still passed.
+func TestValidateSettablePipeName_AcceptsReservedAndAutoNames(t *testing.T) {
+	accept := []string{"inbox", "stdout", "stdin", "stdctrl", "system", "heartbeat", "broadcast", "archive"}
+	for _, name := range accept {
+		if !validateSettablePipeName(name) {
+			t.Errorf("validateSettablePipeName(%q) = false, want true — pipe set must be able to retune reserved / auto-provisioned pipes", name)
+		}
+	}
+	reject := []string{"", "NOT VALID", "has.dot", "no/slash", "*"}
+	for _, name := range reject {
+		if validateSettablePipeName(name) {
+			t.Errorf("validateSettablePipeName(%q) = true, want false — name shape is still enforced", name)
+		}
+	}
+}
+
 func TestMergeRetention_UnsetStoredStaysUnset(t *testing.T) {
 	msgs := 5
 	gotTTL, gotMsgs, gotBytes := mergeRetention(db.Pipe{}, nil, &msgs, nil)

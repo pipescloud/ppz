@@ -27,8 +27,15 @@ func TestAuditTab_AnonymousIsNotServed(t *testing.T) {
 	req := httptest.NewRequest("GET", "/orgs/alpha/audit", nil)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
-	if rec.Code == http.StatusOK {
-		t.Errorf("anonymous GET /orgs/{id}/audit returned 200 — the tab must sit behind requireSession")
+	// Asserted as the exact redirect, not merely "not 200": this Server has
+	// a nil pool, so a handler reached without the gate would panic into a
+	// 500 — which a != 200 check would happily accept as proof of a gate
+	// that isn't there.
+	if rec.Code != http.StatusFound {
+		t.Fatalf("anonymous GET /orgs/{id}/audit status = %d, want 302 — the tab must sit behind requireSession", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); !strings.HasPrefix(loc, "/login?next=") {
+		t.Errorf("redirect Location = %q, want the /login?next=… bounce requireSession issues", loc)
 	}
 }
 

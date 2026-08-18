@@ -32,6 +32,15 @@ re-provisioning an existing stream with a different config did nothing. Any
 retention change to a live pipe was a no-op, and bumping the built-in defaults
 never reached streams already in existence. Now `CreateOrUpdateStream`.
 
+**Bug fix: re-provisioning silently reverted a `pipe set`.** The switch to
+`CreateOrUpdateStream` cuts both ways: any path that re-provisions at the
+*built-in defaults* now overwrites a tuned stream instead of no-opping on it.
+Bare `ppz terminal share` re-provisions the whole pty pipe set on every
+invocation, so a configured `chat.inbox` went back to 5000 messages while
+postgres went on reporting 3. Source creation, the pty promotion and account
+(re)open now share one override-aware provisioning helper, and the
+defaults-only one is gone rather than left around as a footgun.
+
 **Bug fix: `ppz pipe destroy '*'` could destroy a terminal's control plane.**
 The glob-expansion skip list was missing `system` and `heartbeat`, two names
 `Source.Pipes()` genuinely auto-provisions. Previously unreachable (nothing
@@ -56,9 +65,12 @@ than a bare "something changed".
   shared org key attributes every change to whoever minted it. Rows record the
   key id and render `via api-key` vs `via web` so they aren't read as stronger
   evidence than they are.
+- Covers both the collared (`/sources/{handle}/pipes/...`) and the uncollared
+  (`/pipes`) endpoints, so an uncollared `pipe destroy` leaves a trail too.
 - **Known gaps:** audit writes are best-effort (a failed insert is logged, not
-  surfaced, because the mutation has already committed), and the table has no
-  retention policy yet.
+  surfaced, because the mutation has already committed); the table has no
+  retention policy yet; and `via web` is not yet reachable, since retention is
+  currently only mutable from the CLI.
 
 ## Unreleased — once-only `.stdin` delivery (no command replay on resume)
 

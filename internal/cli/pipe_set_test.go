@@ -1,13 +1,7 @@
 package cli
 
 import (
-	"encoding/json"
-	"net"
-	"os"
-	"path/filepath"
 	"testing"
-
-	"github.com/pipescloud/ppz/internal/cliproto"
 )
 
 // `ppz pipe set [HANDLE.]NAME [--ttl --max-msgs --max-bytes]` changes the
@@ -18,11 +12,19 @@ import (
 // flag names are identical to `pipe create` so there is one retention
 // vocabulary rather than two.
 
+// FORWARD GUARD, and deliberately so: the path under test today is
+// splitHandleName, a pure string split that consults neither
+// PPZ_CURRENT_HANDLE nor the daemon's reported current source. Both are
+// set here anyway — and the fake daemon reports a DIFFERENT current
+// handle — so that any future attempt to "helpfully" collar a bare LEAF
+// onto the current source fails here instead of silently changing which
+// pipe `ppz pipe set alerts` addresses. Phase 1.5.1 rule: a bare LEAF is
+// an uncollared pipe at the session's namespace, full stop.
 func TestCmdPipeSet_BareNameSkipsCurrentHandle(t *testing.T) {
 	t.Setenv("PPZ_SESSION", "pipe-set-test")
 	t.Setenv("PPZ_CURRENT_HANDLE", "env-current")
-	sock := pipeSetTestSocket(t)
-	requests := servePipeSetDaemon(t, sock, "daemon-current")
+	sock := pipeVerbTestSocket(t)
+	requests := servePipeVerbDaemon(t, sock, "daemon-current")
 
 	if err := cmdPipeSet([]string{"alerts", "--max-msgs=50"}); err != nil {
 		t.Fatalf("cmdPipeSet: %v", err)
@@ -39,8 +41,8 @@ func TestCmdPipeSet_BareNameSkipsCurrentHandle(t *testing.T) {
 
 func TestCmdPipeSet_DottedTargetIsCollared(t *testing.T) {
 	t.Setenv("PPZ_SESSION", "pipe-set-test")
-	sock := pipeSetTestSocket(t)
-	requests := servePipeSetDaemon(t, sock, "daemon-current")
+	sock := pipeVerbTestSocket(t)
+	requests := servePipeVerbDaemon(t, sock, "daemon-current")
 
 	if err := cmdPipeSet([]string{"chat.archive", "--ttl=168h"}); err != nil {
 		t.Fatalf("cmdPipeSet: %v", err)
@@ -57,8 +59,8 @@ func TestCmdPipeSet_DottedTargetIsCollared(t *testing.T) {
 // the merge contract.
 func TestCmdPipeSet_OnlyTypedFlagsAreSent(t *testing.T) {
 	t.Setenv("PPZ_SESSION", "pipe-set-test")
-	sock := pipeSetTestSocket(t)
-	requests := servePipeSetDaemon(t, sock, "daemon-current")
+	sock := pipeVerbTestSocket(t)
+	requests := servePipeVerbDaemon(t, sock, "daemon-current")
 
 	if err := cmdPipeSet([]string{"chat.archive", "--max-msgs=50"}); err != nil {
 		t.Fatalf("cmdPipeSet: %v", err)
@@ -80,8 +82,8 @@ func TestCmdPipeSet_OnlyTypedFlagsAreSent(t *testing.T) {
 // Go duration strings, and int-or-suffixed sizes.
 func TestCmdPipeSet_ParsesDurationAndSizeFlags(t *testing.T) {
 	t.Setenv("PPZ_SESSION", "pipe-set-test")
-	sock := pipeSetTestSocket(t)
-	requests := servePipeSetDaemon(t, sock, "daemon-current")
+	sock := pipeVerbTestSocket(t)
+	requests := servePipeVerbDaemon(t, sock, "daemon-current")
 
 	if err := cmdPipeSet([]string{"chat.archive", "--ttl=168h", "--max-bytes=64MiB"}); err != nil {
 		t.Fatalf("cmdPipeSet: %v", err)
@@ -100,8 +102,8 @@ func TestCmdPipeSet_ParsesDurationAndSizeFlags(t *testing.T) {
 // handles the interleaving).
 func TestCmdPipeSet_FlagsBeforeTarget(t *testing.T) {
 	t.Setenv("PPZ_SESSION", "pipe-set-test")
-	sock := pipeSetTestSocket(t)
-	requests := servePipeSetDaemon(t, sock, "daemon-current")
+	sock := pipeVerbTestSocket(t)
+	requests := servePipeVerbDaemon(t, sock, "daemon-current")
 
 	if err := cmdPipeSet([]string{"--max-msgs=50", "chat.archive"}); err != nil {
 		t.Fatalf("cmdPipeSet: %v", err)
@@ -115,8 +117,8 @@ func TestCmdPipeSet_FlagsBeforeTarget(t *testing.T) {
 // round-tripping to the server to be told nothing happened.
 func TestCmdPipeSet_NoFlagsIsAnError(t *testing.T) {
 	t.Setenv("PPZ_SESSION", "pipe-set-test")
-	sock := pipeSetTestSocket(t)
-	requests := servePipeSetDaemon(t, sock, "daemon-current")
+	sock := pipeVerbTestSocket(t)
+	requests := servePipeVerbDaemon(t, sock, "daemon-current")
 
 	err := cmdPipeSet([]string{"chat.archive"})
 	if err == nil {
@@ -131,8 +133,8 @@ func TestCmdPipeSet_NoFlagsIsAnError(t *testing.T) {
 // `set`, or the verb is invisible to users and shells.
 func TestPipeGroup_DispatchesSet(t *testing.T) {
 	t.Setenv("PPZ_SESSION", "pipe-set-test")
-	sock := pipeSetTestSocket(t)
-	requests := servePipeSetDaemon(t, sock, "daemon-current")
+	sock := pipeVerbTestSocket(t)
+	requests := servePipeVerbDaemon(t, sock, "daemon-current")
 
 	if err := cmdPipeGroup([]string{"set", "chat.archive", "--max-msgs=50"}); err != nil {
 		t.Fatalf("cmdPipeGroup set: %v", err)
@@ -140,70 +142,4 @@ func TestPipeGroup_DispatchesSet(t *testing.T) {
 	if requests.sets.count() != 1 {
 		t.Errorf("`ppz pipe set` did not dispatch to cmdPipeSet (got %d requests)", requests.sets.count())
 	}
-}
-
-func pipeSetTestSocket(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "ppz-pipe-set-")
-	if err != nil {
-		t.Fatalf("tempdir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	sock := filepath.Join(dir, "daemon.sock")
-	t.Setenv("PPZ_IPC_SOCKET", sock)
-	return sock
-}
-
-type pipeSetRequests struct {
-	sets recorder[cliproto.PipeSetRequest]
-}
-
-func servePipeSetDaemon(t *testing.T, sock, current string) *pipeSetRequests {
-	t.Helper()
-	_ = os.Remove(sock)
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatalf("listen fake daemon: %v", err)
-	}
-	requests := &pipeSetRequests{}
-	done := make(chan struct{})
-	t.Cleanup(func() { <-done })
-	t.Cleanup(func() {
-		_ = ln.Close()
-		_ = os.Remove(sock)
-	})
-
-	go func() {
-		defer close(done)
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			var req struct {
-				Method string          `json:"method"`
-				Params json.RawMessage `json:"params"`
-			}
-			if err := json.NewDecoder(conn).Decode(&req); err != nil {
-				_ = conn.Close()
-				continue
-			}
-			switch req.Method {
-			case cliproto.IPCStatus:
-				_ = json.NewEncoder(conn).Encode(map[string]any{
-					"result": cliproto.StatusReply{DaemonPID: 1234, LoggedIn: true, Current: current},
-				})
-			case cliproto.IPCPipeSet:
-				var ps cliproto.PipeSetRequest
-				_ = json.Unmarshal(req.Params, &ps)
-				requests.sets.add(ps)
-				_ = json.NewEncoder(conn).Encode(map[string]any{
-					"result": cliproto.PipeSetReply{Handle: ps.Handle, Name: ps.Name},
-				})
-			}
-			_ = conn.Close()
-		}
-	}()
-
-	return requests
 }

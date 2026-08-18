@@ -347,12 +347,21 @@ the change (all three values, defaults filled in), not just what moved.
 
 Errors: 400 `E_INVALID_PIPE` (malformed name, no fields named, or a
 collared body on the uncollared endpoint), 400 `E_INVALID_HANDLE`,
+400 `E_INVALID_MANIFOLD` (uncollared form, malformed manifold segment),
 404 `E_SOURCE_NOT_FOUND`, 404 `E_PIPE_NOT_FOUND` (the pipe must already
 exist — `pipe set` never creates).
 
 Applying the change re-provisions the JetStream stream via
 CreateOrUpdate. Lowering a cap discards immediately: shrinking MaxMsgs
 below the retained count drops the oldest messages at once.
+
+Because provisioning is now CreateOrUpdate rather than
+create-if-absent, EVERY provisioning path has to resolve stored
+retention first — re-provisioning at the built-in defaults overwrites a
+configured stream instead of no-opping on it. Source creation, the
+pty promotion behind `ppz terminal share`, and account (re)open all go
+through one override-aware helper for that reason. There is deliberately
+no defaults-only provisioning helper left in the server.
 
 ## 6. Server GUI (HTML, session-authenticated since Auth V2)
 
@@ -384,7 +393,7 @@ contract — do not rename:
 | `GET /orgs/{slug}/audit` | `data-audit-action="<action>"` | one per audit row, newest first |
 | `GET /orgs/{slug}/audit` | `data-audit-target="<pipe-path>"` | one per audit row |
 | `GET /orgs/{slug}/audit` | `data-audit-actor="<username>"` | one per audit row |
-| `GET /orgs/{slug}/audit` | `data-audit-via="api-key\|web"` | one per audit row |
+| `GET /orgs/{slug}/audit` | `data-audit-via="api-key\|web"` | one per audit row; every writer today is an API-key handler, so `web` is not yet emitted |
 | `GET /orgs/{slug}/audit` | `data-audit-delta="<human change>"` | one per audit row; e.g. `msgs 5000 → 5` |
 
 ### 6.2 Audit trail
@@ -392,7 +401,9 @@ contract — do not rename:
 `audit_events` is an append-only, per-account log of mutations worth
 attributing. Rows are generic (actor / action / target / before / after),
 so the table is not pipe-specific; the first writers are the pipe
-lifecycle actions `pipe.create`, `pipe.set` and `pipe.destroy`.
+lifecycle actions `pipe.create`, `pipe.set` and `pipe.destroy` — each
+recorded on BOTH the collared (`/sources/{handle}/pipes/...`) and
+uncollared (`/pipes`) endpoints.
 
 `before` and `after` are jsonb retention snapshots
 (`{ttl_seconds, max_msgs, max_bytes}`). Either may be NULL — a create has
@@ -403,7 +414,9 @@ retention instead of a delta.
 CREATOR, not who typed the command, so a shared org key attributes every
 change to whoever minted it. The row therefore records the key id
 alongside the user, and the GUI renders `via api-key` vs `via web` so a
-row is not read as stronger evidence than it is.
+row is not read as stronger evidence than it is. Retention is currently
+only mutable through the CLI, so every stored row is `via api-key`; the
+`web` rendering exists for the GUI editor and is not yet reachable.
 
 **Known gaps.** Audit writes are best-effort: they happen after the
 mutation has already committed (and, for `pipe set`, already been applied

@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # The audit tab records all three pipe lifecycle mutations — create,
-# set, destroy — regardless of whether they arrived via the CLI (API
-# key) or the web GUI. Newest first.
+# set, destroy — newest first. This covers the collared endpoints; the
+# uncollared ones have their own scenario.
+#
+# Every writer today is an API-key handler (retention is only mutable
+# from the CLI), so `via api-key` is the only attribution the trail can
+# currently produce. The `web` rendering is there for the GUI editor and
+# is deliberately NOT asserted here as though it were reachable.
 #
 # Setup (provided by the seed): foo owns alpha.
 . /tests/lib/common.sh

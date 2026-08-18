@@ -20,8 +20,8 @@ import (
 func TestCmdPipeCreate_BareNameSkipsCurrentHandle(t *testing.T) {
 	t.Setenv("PPZ_SESSION", "pipe-current-test")
 	t.Setenv("PPZ_CURRENT_HANDLE", "env-current")
-	sock := pipeCurrentTestSocket(t)
-	requests := servePipeCurrentDaemon(t, sock, "daemon-current")
+	sock := pipeVerbTestSocket(t)
+	requests := servePipeVerbDaemon(t, sock, "daemon-current")
 
 	if err := cmdPipeCreate([]string{"alerts"}); err != nil {
 		t.Fatalf("cmdPipeCreate: %v", err)
@@ -39,8 +39,8 @@ func TestCmdPipeCreate_BareNameSkipsCurrentHandle(t *testing.T) {
 func TestCmdPipeDestroy_BareNameSkipsCurrentHandle(t *testing.T) {
 	t.Setenv("PPZ_SESSION", "pipe-current-test")
 	t.Setenv("PPZ_CURRENT_HANDLE", "env-current")
-	sock := pipeCurrentTestSocket(t)
-	requests := servePipeCurrentDaemon(t, sock, "daemon-current")
+	sock := pipeVerbTestSocket(t)
+	requests := servePipeVerbDaemon(t, sock, "daemon-current")
 
 	if err := cmdPipeDestroy([]string{"alerts"}); err != nil {
 		t.Fatalf("cmdPipeDestroy: %v", err)
@@ -55,9 +55,9 @@ func TestCmdPipeDestroy_BareNameSkipsCurrentHandle(t *testing.T) {
 	}
 }
 
-func pipeCurrentTestSocket(t *testing.T) string {
+func pipeVerbTestSocket(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "ppz-pipe-current-")
+	dir, err := os.MkdirTemp("/tmp", "ppz-pipe-verb-")
 	if err != nil {
 		t.Fatalf("tempdir: %v", err)
 	}
@@ -67,19 +67,24 @@ func pipeCurrentTestSocket(t *testing.T) string {
 	return sock
 }
 
-type pipeCurrentRequests struct {
+// pipeVerbRequests / servePipeVerbDaemon back every `ppz pipe <verb>` CLI
+// test in this package: one fake daemon that records whichever verb the
+// test under exercise dispatches. Adding a verb means adding a recorder
+// and a case here, not a second near-identical fake.
+type pipeVerbRequests struct {
 	creates  recorder[cliproto.PipeCreateRequest]
 	destroys recorder[cliproto.PipeDestroyRequest]
+	sets     recorder[cliproto.PipeSetRequest]
 }
 
-func servePipeCurrentDaemon(t *testing.T, sock, current string) *pipeCurrentRequests {
+func servePipeVerbDaemon(t *testing.T, sock, current string) *pipeVerbRequests {
 	t.Helper()
 	_ = os.Remove(sock)
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen fake daemon: %v", err)
 	}
-	requests := &pipeCurrentRequests{}
+	requests := &pipeVerbRequests{}
 	done := make(chan struct{})
 	t.Cleanup(func() { <-done })
 	t.Cleanup(func() {
@@ -113,6 +118,13 @@ func servePipeCurrentDaemon(t *testing.T, sock, current string) *pipeCurrentRequ
 				requests.creates.add(pc)
 				_ = json.NewEncoder(conn).Encode(map[string]any{
 					"result": cliproto.PipeCreateReply{Handle: pc.Handle, Name: pc.Name},
+				})
+			case cliproto.IPCPipeSet:
+				var ps cliproto.PipeSetRequest
+				_ = json.Unmarshal(req.Params, &ps)
+				requests.sets.add(ps)
+				_ = json.NewEncoder(conn).Encode(map[string]any{
+					"result": cliproto.PipeSetReply{Handle: ps.Handle, Name: ps.Name},
 				})
 			case cliproto.IPCPipeDestroy:
 				var pd cliproto.PipeDestroyRequest

@@ -46,12 +46,44 @@ func cmdPipeGroup(args []string) error {
 //
 // `--ttl` accepts a Go duration string (24h, 168h, 30m, …).
 // `--max-bytes` accepts plain ints, or sizes like "64MiB" / "1GB".
+// retentionFlags registers the three retention knobs on fs. `pipe create`
+// and `pipe set` share them deliberately: one retention vocabulary, not
+// two, so a cap the user learned to set at create time is spelled the
+// same way when they later change it.
+func retentionFlags(fs *flag.FlagSet) (ttl *time.Duration, maxMsgs *int, maxBytes *string) {
+	return fs.Duration("ttl", 0, "stream MaxAge override (e.g. 24h, 168h)"),
+		fs.Int("max-msgs", 0, "stream MaxMsgs override"),
+		fs.String("max-bytes", "", "stream MaxBytes override (int, or 1KB/1MB/1GiB/...)")
+}
+
+// resolveRetentionFlags lifts the parsed flags into the three wire
+// pointers. A nil means "the user didn't name this one" — which `pipe
+// set` relies on to leave stored fields alone, so the zero-value checks
+// here are load-bearing rather than tidiness.
+func resolveRetentionFlags(ttl *time.Duration, maxMsgs *int, maxBytes *string) (*int, *int, *int64, error) {
+	var outTTL, outMsgs *int
+	var outBytes *int64
+	if *ttl > 0 {
+		secs := int(*ttl / time.Second)
+		outTTL = &secs
+	}
+	if *maxMsgs > 0 {
+		outMsgs = maxMsgs
+	}
+	if *maxBytes != "" {
+		b, err := parseBytes(*maxBytes)
+		if err != nil {
+			return nil, nil, nil, cliproto.New(cliproto.EInvalidPipe)
+		}
+		outBytes = &b
+	}
+	return outTTL, outMsgs, outBytes, nil
+}
+
 func cmdPipeCreate(args []string) error {
 	target, flagArgs := splitTargetAndFlags(args)
 	fs := flag.NewFlagSet("pipe create", flag.ExitOnError)
-	ttl := fs.Duration("ttl", 0, "stream MaxAge override (e.g. 24h, 168h)")
-	maxMsgs := fs.Int("max-msgs", 0, "stream MaxMsgs override")
-	maxBytesS := fs.String("max-bytes", "", "stream MaxBytes override (int, or 1KB/1MB/1GiB/...)")
+	ttl, maxMsgs, maxBytesS := retentionFlags(fs)
 	if err := fs.Parse(flagArgs); err != nil {
 		return err
 	}
@@ -69,19 +101,8 @@ func cmdPipeCreate(args []string) error {
 	// a collared pipe, user types the explicit dotted form HANDLE.LEAF.
 
 	req := cliproto.PipeCreateRequest{Handle: handle, Name: name, Session: sessionID()}
-	if *ttl > 0 {
-		secs := int(*ttl / time.Second)
-		req.TTLSeconds = &secs
-	}
-	if *maxMsgs > 0 {
-		req.MaxMsgs = maxMsgs
-	}
-	if *maxBytesS != "" {
-		b, err := parseBytes(*maxBytesS)
-		if err != nil {
-			return cliproto.New(cliproto.EInvalidPipe)
-		}
-		req.MaxBytes = &b
+	if req.TTLSeconds, req.MaxMsgs, req.MaxBytes, err = resolveRetentionFlags(ttl, maxMsgs, maxBytesS); err != nil {
+		return err
 	}
 
 	var reply cliproto.PipeCreateReply
@@ -110,9 +131,7 @@ func cmdPipeCreate(args []string) error {
 func cmdPipeSet(args []string) error {
 	target, flagArgs := splitTargetAndFlags(args)
 	fs := flag.NewFlagSet("pipe set", flag.ExitOnError)
-	ttl := fs.Duration("ttl", 0, "stream MaxAge override (e.g. 24h, 168h)")
-	maxMsgs := fs.Int("max-msgs", 0, "stream MaxMsgs override")
-	maxBytesS := fs.String("max-bytes", "", "stream MaxBytes override (int, or 1KB/1MB/1GiB/...)")
+	ttl, maxMsgs, maxBytesS := retentionFlags(fs)
 	if err := fs.Parse(flagArgs); err != nil {
 		return err
 	}
@@ -126,19 +145,8 @@ func cmdPipeSet(args []string) error {
 	}
 
 	req := cliproto.PipeSetRequest{Handle: handle, Name: name, Session: sessionID()}
-	if *ttl > 0 {
-		secs := int(*ttl / time.Second)
-		req.TTLSeconds = &secs
-	}
-	if *maxMsgs > 0 {
-		req.MaxMsgs = maxMsgs
-	}
-	if *maxBytesS != "" {
-		b, err := parseBytes(*maxBytesS)
-		if err != nil {
-			return cliproto.New(cliproto.EInvalidPipe)
-		}
-		req.MaxBytes = &b
+	if req.TTLSeconds, req.MaxMsgs, req.MaxBytes, err = resolveRetentionFlags(ttl, maxMsgs, maxBytesS); err != nil {
+		return err
 	}
 	// No flag named nothing to change. Fail here rather than round-trip
 	// to the server to be told nothing happened.

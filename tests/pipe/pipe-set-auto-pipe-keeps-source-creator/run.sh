@@ -21,4 +21,6 @@ ppz_b daemon login "$PPZ_SERVER_URL" -apikey "$(key_alpha2)" >/dev/null  # bar
 ppz_a source create chat >/dev/null          # source created by foo
 ppz_b pipe set chat.inbox --max-msgs=3 >/dev/null   # retuned by bar
 
-ppz_a ls --json | jq -c '{handle, pipe, creator}'
+# Scoped to chat: `ppz ls` lists every source in the org, so an unscoped
+# select turns leftover state from another scenario into a failure here.
+ppz_a ls --json | jq -c 'select(.handle == "chat") | {handle, pipe, creator}'
