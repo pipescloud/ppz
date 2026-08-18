@@ -1,29 +1,26 @@
 #!/usr/bin/env bash
 # ACL Phase 2: grant, then see the row — with its provenance.
 #
-# alice.stdout is owner-only by default. foo grants bar read, and the
-# roster must show BOTH the derived default (alice, as handle owner)
-# and the stored grant (bar, by whom and when). A view that rendered
-# only acl_grants would show one row and imply nobody else can reach
-# it.
+# alice.stdout is owner-only by default. The roster must show BOTH the
+# derived access (foo, who owns the handle and the org) and the stored
+# grant (bar, and by whom). A view built on acl_grants alone would show
+# one row and imply nobody else can reach it.
 #
-# RED until Phase 2 lands.
+# Note foo owns the handle: `alice` is a HANDLE, not a principal. The
+# key's principal created it, so the handle owner is foo.
 . /tests/lib/common.sh
 
 ppz_a daemon login "$PPZ_SERVER_URL" -apikey "$(key_alpha)" >/dev/null
-ppz_a terminal share alice -- sleep 5 </dev/null &
-PID=$!
-trap 'kill $PID 2>/dev/null; wait $PID 2>/dev/null' EXIT
-wait_for 50 "ppz_a ls | grep -q alice" || { echo "timeout: alice never appeared"; exit 1; }
+ppz_a source create alice >/dev/null
 
 echo "--- before the grant ---"
-ppz_a pipe acl ls alice.stdout --json | jq -c '[.[] | {principal, read, via}] | sort_by(.principal)'
+ppz_a pipe acl ls alice.stdout --json | jq -c 'sort_by(.principal) | [.[] | {principal, read, via}]'
 
 echo "--- grant bar read ---"
 ppz_a pipe acl grant alice.stdout bar read
 
 echo "--- after the grant ---"
-ppz_a pipe acl ls alice.stdout --json | jq -c '[.[] | {principal, read, via}] | sort_by(.principal)'
+ppz_a pipe acl ls alice.stdout --json | jq -c 'sort_by(.principal) | [.[] | {principal, read, via}]'
 
 echo "--- revoke is idempotent ---"
 ppz_a pipe acl revoke alice.stdout bar read

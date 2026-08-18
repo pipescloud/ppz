@@ -87,6 +87,7 @@ var topLevelVerbs = []string{
 	"login",
 	"ls",
 	"pipe",
+	"acl",
 	"read",
 	"reread",
 	"schedule",
@@ -111,7 +112,8 @@ var topLevelVerbs = []string{
 var subverbs = map[string][]string{
 	"agent":    {"create"},
 	"daemon":   {"start", "stop", "restart", "login", "logout"},
-	"pipe":     {"create", "set", "destroy"},
+	"pipe":     {"create", "set", "destroy", "acl"},
+	"acl":      {"ls", "whoami"},
 	"source":   {"create", "destroy"},
 	"schedule": {"ls", "rm"},
 	"subs":     {"ls", "add", "rm", "wait", "read"},

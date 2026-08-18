@@ -5,6 +5,5 @@ no grant; default for <handle>.stdout is owner-only
 --- and how to fix it ---
 ppz pipe acl grant alice.stdout bar read
 --- and who can run it ---
-alice (handle owner)
-foo (org owner)
+foo (handle owner)
 exit=0

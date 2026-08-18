@@ -3,10 +3,14 @@ package db
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/pipescloud/ppz/internal/natsubj"
 )
 
 // UserMode = "github" (real OAuth identity) or "internal" (placeholder /
@@ -16,7 +20,17 @@ type UserMode string
 const (
 	UserModeGithub   UserMode = "github"
 	UserModeInternal UserMode = "internal"
+	// UserModeService is a service account — an agent's own identity,
+	// distinct from the human who spawned it (ACL Phase 1). Key-only
+	// auth, scoped to exactly one account.
+	UserModeService UserMode = "service"
 )
+
+// ServiceNameSeparator scopes a service account's stored username as
+// "<org>/<name>". users.username is globally unique, so two orgs could
+// not otherwise both hold a "builder-bot". Every surface displays the
+// bare name; only storage and lookup see the scoped form.
+const ServiceNameSeparator = "/"
 
 type User struct {
 	ID        uuid.UUID
@@ -26,11 +40,47 @@ type User struct {
 	GitHubID  *int64 // nil for mode=internal users
 	AvatarURL string
 	CreatedAt time.Time
+	// ServiceAccountID is the account a service account belongs to,
+	// and nil for humans. The DB CHECK enforces the pairing; the
+	// pointer is what makes "human with no owning org" representable.
+	ServiceAccountID *uuid.UUID
+}
+
+// IsService reports whether this principal is a service account.
+func (u User) IsService() bool { return u.Mode == UserModeService }
+
+// ServiceUsername builds the stored, org-scoped username.
+func ServiceUsername(orgName, name string) string {
+	return orgName + ServiceNameSeparator + name
+}
+
+// ParseServiceUsername splits a stored service username back into its
+// org and bare name. Human usernames must never parse — otherwise the
+// GUI would render "alice" as a service account of some phantom org.
+func ParseServiceUsername(username string) (org, name string, ok bool) {
+	org, name, found := strings.Cut(username, ServiceNameSeparator)
+	if !found || org == "" || name == "" {
+		return "", "", false
+	}
+	if strings.Contains(name, ServiceNameSeparator) {
+		return "", "", false
+	}
+	return org, name, true
+}
+
+// ValidateServiceName checks a bare service-account name. It follows
+// the handle rules, which forbid the scope separator — a name carrying
+// one could otherwise be stored as another org's scoped username.
+func ValidateServiceName(name string) (string, error) {
+	if err := natsubj.ValidateHandle(name); err != nil {
+		return "", fmt.Errorf("service name %q: %w", name, err)
+	}
+	return name, nil
 }
 
 // ErrInvalidUserMode is returned when a caller passes a Mode value
 // outside the {github, internal} CHECK constraint.
-var ErrInvalidUserMode = errors.New("user mode must be 'github' or 'internal'")
+var ErrInvalidUserMode = errors.New("user mode must be 'github', 'internal' or 'service'")
 
 func InsertUser(ctx context.Context, p *Pool, username, email string, mode UserMode) (User, error) {
 	if mode != UserModeGithub && mode != UserModeInternal {
@@ -102,19 +152,25 @@ func UsernamesByIDs(ctx context.Context, p *Pool, ids []uuid.UUID) (map[uuid.UUI
 	if len(ids) == 0 {
 		return out, nil
 	}
+	// mode is selected so service accounts resolve to their DISPLAY
+	// name. Their stored username is org-scoped ("<org>/<name>") because
+	// users.username is globally unique; leaking that into `ppz ls`
+	// HUMAN / creator columns would show "alpha/builder-bot" where the
+	// user typed "builder-bot".
 	rows, err := p.Query(ctx,
-		`SELECT id, username FROM users WHERE id = ANY($1::uuid[])`, ids)
+		`SELECT id, username, mode FROM users WHERE id = ANY($1::uuid[])`, ids)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id uuid.UUID
-		var name string
-		if err := rows.Scan(&id, &name); err != nil {
+		var u User
+		var mode string
+		if err := rows.Scan(&u.ID, &u.Username, &mode); err != nil {
 			return nil, err
 		}
-		out[id] = name
+		u.Mode = UserMode(mode)
+		out[u.ID] = u.DisplayName()
 	}
 	return out, rows.Err()
 }

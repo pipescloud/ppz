@@ -44,6 +44,18 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/v1/invites/{id}/accept", s.requireBearer(s.handleAPIAcceptInvite))
 	mux.HandleFunc("POST /api/v1/invites/{id}/decline", s.requireBearer(s.handleAPIDeclineInvite))
 
+	// ACL Phase 2 — grants + the three visibility surfaces.
+	mux.HandleFunc("GET /api/v1/acl", s.requireBearer(s.handleAPIACL))
+	mux.HandleFunc("GET /api/v1/acl/whoami", s.requireBearer(s.handleAPIACLWhoami))
+	mux.HandleFunc("POST /api/v1/acl/grant", s.requireBearer(s.handleAPIACLGrant))
+	mux.HandleFunc("POST /api/v1/acl/revoke", s.requireBearer(s.handleAPIACLRevoke))
+
+	// ACL Phase 1 — service accounts (agent principals) + org roles.
+	mux.HandleFunc("POST /api/v1/svc", s.requireBearer(s.handleAPICreateService))
+	mux.HandleFunc("GET /api/v1/svc", s.requireBearer(s.handleAPIListServices))
+	mux.HandleFunc("DELETE /api/v1/svc/{name}", s.requireBearer(s.handleAPIDeleteService))
+	mux.HandleFunc("POST /api/v1/svc/{name}/keys", s.requireBearer(s.handleAPIMintServiceKey))
+
 	mux.HandleFunc("POST /api/v1/sources", s.requireAPIKey(s.handleCreateSource))
 	mux.HandleFunc("GET /api/v1/sources", s.requireAPIKey(s.handleListSources))
 	mux.HandleFunc("GET /api/v1/sources/{handle}", s.requireAPIKey(s.handleGetSource))
@@ -99,6 +111,7 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /users", s.requireSession(s.handleCreateUser))
 	mux.HandleFunc("POST /orgs/{id}/members", s.requireSession(s.handleAddMember))
 	mux.HandleFunc("POST /orgs/{id}/members/{uid}/remove", s.requireSession(s.handleRemoveMember))
+	mux.HandleFunc("POST /orgs/{id}/members/{uid}/role", s.requireSession(s.handleGUISetMemberRole))
 	mux.HandleFunc("POST /orgs/{id}/invites", s.requireSession(s.handleGUICreateInvite))
 	mux.HandleFunc("POST /orgs/{id}/invites/{iid}/revoke", s.requireSession(s.handleGUIRevokeInvite))
 	mux.HandleFunc("POST /invites/{id}/accept", s.requireSession(s.handleGUIAcceptInvite))

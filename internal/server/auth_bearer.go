@@ -168,7 +168,7 @@ func (s *Server) requireAPIKey(h authedHandler) http.HandlerFunc {
 				writeJSON(w, http.StatusForbidden, map[string]string{"error": "not a member of org"})
 				return
 			}
-			h(w, r, db.APIKey{AccountID: accountID, CreatedByUserID: caller.UserID})
+			h(w, r, db.APIKey{AccountID: accountID, CreatedByUserID: caller.UserID, PrincipalUserID: caller.UserID})
 			return
 		}
 		// Fallback: caller's default org (owned, else member). Used by
@@ -181,6 +181,6 @@ func (s *Server) requireAPIKey(h authedHandler) http.HandlerFunc {
 			})
 			return
 		}
-		h(w, r, db.APIKey{AccountID: org.ID, CreatedByUserID: caller.UserID})
+		h(w, r, db.APIKey{AccountID: org.ID, CreatedByUserID: caller.UserID, PrincipalUserID: caller.UserID})
 	})
 }

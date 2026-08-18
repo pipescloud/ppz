@@ -1,5 +1,57 @@
 # Changelog
 
+## Unreleased — pipe ACLs, phases 1-2 (principals, grants, visibility)
+
+Builds on phase 0. Grants are stored and every surface can show them, but
+**nothing is enforced yet** — the credential compiler is phase 3. Until then
+an ACL is advisory: it describes intent and the GUI/CLI honour it, while a
+hand-rolled NATS client still is not stopped.
+
+### Principals
+
+- **Org roles gain an `admin` tier** (`account_members.role`). Admin can do
+  what an owner can except transfer ownership and change roles — deliberately
+  below owner, so widening the org gates cannot let an admin promote
+  themselves. Unknown role values fail closed.
+- **Service accounts** (`users.mode='service'`) give an agent its own
+  identity, distinct from the human who spawned it: a real principal that
+  holds grants, owns handles and is attributed on `ppz who` and on every
+  message it publishes. `POST /api/v1/svc`, `GET /api/v1/svc`,
+  `DELETE /api/v1/svc/{name}`, `POST /api/v1/svc/{name}/keys`.
+- **A key can act as someone other than its minter.** A service key is
+  created_by a human and acts_as the bot; rows it creates now attribute to
+  the principal (`db.APIKey.Actor()`), not the human. Crediting the minter
+  would misattribute the agent's work and, once enforcement lands, evaluate
+  the wrong subject.
+
+### ACLs
+
+- `read` and `write` are **independent** — neither implies the other. `admin`
+  implies both plus managing the pipe. Write-without-read is the shape
+  `<handle>.inbox` needs, and it is enforceable rather than merely
+  declarable because NATS keeps publish and the JetStream API in disjoint
+  permission sets.
+- **Defaults are derived, never stored.** The collar is the ownership
+  boundary: everything under a handle is that handle's principal's.
+  `<handle>.inbox` takes writes from anyone; `<handle>.heartbeat` is its dual
+  (readable by everyone, written only by its owner); stdio and user-created
+  collared pipes are owner-only; uncollared pipes are shared org space.
+  Because there is no stored blanket grant to subtract from, there are no
+  deny rules and no precedence tiers — every stored row is an allow.
+- **Every view reports provenance**, not the raw grant table. Most access has
+  no row behind it, so a view built on `acl_grants` renders almost nothing
+  and implies that nobody can reach `<handle>.inbox`.
+- **New verbs:**
+  `ppz pipe acl ls PIPE`, `ppz pipe acl grant PIPE PRINCIPAL PERM`,
+  `ppz pipe acl revoke PIPE PRINCIPAL [PERM|all]`, `ppz acl whoami PIPE`,
+  `ppz acl ls --principal NAME`. All take `--json`.
+- **A denial says how to fix itself.** `ppz acl whoami` on a pipe you cannot
+  reach prints the exact grant command and the principals able to run it, so
+  an agent can ask over that principal's inbox instead of failing opaquely.
+- **Roster visibility:** anyone holding any access on a pipe can see who else
+  can — including write-only. An inbox sender holds no read, and a
+  "can you read it" gate would hide the roster from every sender in the org.
+
 ## Unreleased — pipe ACLs, phase 0 (identity + presence isolation)
 
 Groundwork for per-pipe ACLs (`docs/ACL.md`). No ACL is enforced yet; these

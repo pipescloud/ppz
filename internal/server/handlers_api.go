@@ -224,7 +224,7 @@ func (s *Server) handleCreateSource(w http.ResponseWriter, r *http.Request, key 
 		return
 	}
 
-	src, err := db.InsertSource(ctx, s.Pool, key.AccountID, key.CreatedByUserID, req.Manifold, req.Handle, kind)
+	src, err := db.InsertSource(ctx, s.Pool, key.AccountID, key.Actor(), req.Manifold, req.Handle, kind)
 	if err != nil {
 		if errors.Is(err, db.ErrHandleTaken) {
 			writeErr(w, cliproto.NewSourceTaken(req.Handle))
@@ -436,7 +436,7 @@ func (s *Server) handleCreatePipe(w http.ResponseWriter, r *http.Request, key db
 	// /api/v1/sources/{handle}/pipes), so source_id is always set. The
 	// pipe inherits the source's manifold (root '' until Cycle B adds
 	// explicit manifold support).
-	pipe, err := db.InsertPipe(ctx, s.Pool, key.AccountID, src.Manifold, &src.ID, key.CreatedByUserID, req.Name,
+	pipe, err := db.InsertPipe(ctx, s.Pool, key.AccountID, src.Manifold, &src.ID, key.Actor(), req.Name,
 		req.TTLSeconds, req.MaxMsgs, req.MaxBytes)
 	if err != nil {
 		if errors.Is(err, db.ErrPipeNameTaken) {
@@ -546,7 +546,7 @@ func (s *Server) handleCreatePipeFullPath(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	pipe, err := db.InsertPipe(ctx, s.Pool, key.AccountID, req.Manifold, nil, key.CreatedByUserID, req.Name,
+	pipe, err := db.InsertPipe(ctx, s.Pool, key.AccountID, req.Manifold, nil, key.Actor(), req.Name,
 		req.TTLSeconds, req.MaxMsgs, req.MaxBytes)
 	if err != nil {
 		if errors.Is(err, db.ErrPipeNameTaken) {

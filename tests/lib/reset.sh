@@ -49,6 +49,12 @@ TRUNCATE TABLE schedules;
 -- show up at the top of the next scenario's trail. Tolerated until the
 -- 0006_audit_events migration lands (ON_ERROR_STOP=0).
 TRUNCATE TABLE audit_events;
+-- ACL Phase 2: grants are scenario-local. Without this a scenario that
+-- grants access leaves the row behind and the next scenario's "before the
+-- grant" assertions see it. Same failure mode as the invites bleed below.
+DELETE FROM acl_grants;
+-- Reset the invalidation counter with them so assertions on it are stable.
+UPDATE accounts SET acl_generation = 0;
 -- Phase 4: invites are scenario-local; clear them so a prior run's
 -- declined/revoked rows don't bleed into the next scenario's count.
 DELETE FROM invites;
@@ -61,7 +67,10 @@ DELETE FROM accounts WHERE name NOT IN ('alpha','beta');
 -- retain a valid owner_user_id FK target. foo + bar are seeded
 -- test fixtures (see internal/seed/seed.go) — keep them so member-
 -- management tests can rely on stable user ids.
-DELETE FROM users WHERE username NOT IN ('unauthenticated', 'foo', 'bar');
+-- 'everyone' is the ACL pseudo-principal seeded by migration 0007 with a
+-- fixed UUID. acl_grants rows reference it, and the migration only runs at
+-- boot — deleting it here would break the FK for the rest of the run.
+DELETE FROM users WHERE username NOT IN ('unauthenticated', 'foo', 'bar', 'everyone');
 -- Clear the per-user "last selected org" preference. It's scenario-local
 -- (set when a user authorizes a CLI session into a specific org via the
 -- device flow); without this reset a prior scenario's choice bleeds into
@@ -70,13 +79,18 @@ UPDATE users SET last_selected_account_id = NULL;
 -- Reset memberships to the seeded baseline. Auth V2 widened this so
 -- bar is also a member of alpha (used by owner-only-gate tests).
 DELETE FROM account_members;
-INSERT INTO account_members (account_id, user_id)
-  SELECT o.id, u.id
+-- ACL Phase 1 added account_members.role; seed it explicitly so a
+-- scenario that promotes someone to admin doesn't bleed into the next.
+-- foo owns alpha (accounts.owner_user_id is the authority) but still
+-- needs a row, since RoleInOrg reads this table for the admin tier.
+INSERT INTO account_members (account_id, user_id, role)
+  SELECT o.id, u.id,
+         CASE WHEN o.name = 'alpha' AND u.username = 'foo' THEN 'owner' ELSE 'member' END
     FROM accounts o, users u
    WHERE (o.name = 'alpha' AND u.username = 'foo')
       OR (o.name = 'alpha' AND u.username = 'bar')
       OR (o.name = 'beta'  AND u.username = 'bar')
-ON CONFLICT DO NOTHING;
+ON CONFLICT (account_id, user_id) DO UPDATE SET role = EXCLUDED.role;
 -- Reset alpha's owner to foo so owner-only-gate tests have a stable
 -- owner across scenarios (without this, a previous test could
 -- transfer ownership and leave us in an inconsistent state).

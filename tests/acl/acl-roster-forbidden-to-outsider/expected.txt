@@ -1,7 +1,8 @@
---- bar holds write-only on alice.inbox, so sees its roster ---
-alice
+--- bar holds write-only on alice.inbox ---
+{"read":false,"write":true}
+--- and so can see its roster ---
 bar
 foo
 --- bar holds nothing on alice.stdout, so is refused ---
-E_PIPE_FORBIDDEN: no access to alice.stdout
+refused
 exit=0

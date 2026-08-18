@@ -1,5 +1,5 @@
 --- foo (owner) promotes bar to admin ---
-status=303
+status=200
 --- bar (admin) tries to promote themselves to owner ---
 status=403
 --- bar (admin) tries to demote foo ---

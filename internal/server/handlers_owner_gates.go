@@ -16,6 +16,7 @@ import (
 // /api/v1/keys/{id}/revoke. Only the org owner can revoke keys.
 //
 //	owner   → revoke + 303 back to org page (or 200 if no Referer)
+//	admin   → same as owner (ACL Phase 1)
 //	member  → 403, key untouched
 //	non-mem → 404 (don't leak that the org exists)
 func (s *Server) handleGUIRevokeKey(w http.ResponseWriter, r *http.Request) {
@@ -30,15 +31,16 @@ func (s *Server) handleGUIRevokeKey(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "role check: "+err.Error(), 500)
 		return
 	}
-	switch role {
-	case OrgRoleNone:
+	// Explicit rather than relying on unmatched cases falling out of the
+	// switch: OrgRoleAdmin was silently permitted that way, which is the
+	// right answer for the wrong reason.
+	switch {
+	case role == OrgRoleNone:
 		http.NotFound(w, r)
 		return
-	case OrgRoleMember:
-		http.Error(w, "owner only", http.StatusForbidden)
+	case !role.CanAdministerOrg():
+		http.Error(w, "org admin only", http.StatusForbidden)
 		return
-	case OrgRoleOwner:
-		// fall through
 	}
 
 	keyID, err := uuid.Parse(r.PathValue("kid"))

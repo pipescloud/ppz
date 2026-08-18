@@ -1,6 +1,19 @@
 # Pipe ACLs — identities, permissions, enforcement
 
-Status: **planning** (2026-08-18). Plan locked before any code lands.
+Status: **phases 0-2 landed** (2026-08-18); phases 3-4 planned.
+
+| Phase | What | Status |
+|---|---|---|
+| 0 | Prerequisites — key principals, presence isolation | landed |
+| 1 | Principals — org roles, service accounts | landed |
+| 2 | ACL store, evaluator, CLI + HTTP surface | landed |
+| 3 | Enforcement — HTTP + NATS credentials | planned |
+| 4 | Key attenuation | planned |
+
+**Nothing is enforced yet.** Through phase 2 an ACL describes intent and the
+CLI/HTTP surfaces honour it, but the minted NATS credential is still
+`pub: >, sub: >` — a hand-rolled NATS client is not stopped. Phase 3 is
+what makes it real.
 
 Picks up the thread `docs/AUTH-V2.md` deferred as "Phase 3.6 — per-user
 role-scoped JWTs + HTTP RBAC middleware". That entry assumed roles were
@@ -360,6 +373,23 @@ stays owner-only.
 
 ### Phase 1 effort: ~2 days.
 
+### Phase 1 implementation notes (landed)
+
+- `RoleInOrg` reads `account_members.role` for the admin tier but keeps
+  `accounts.owner_user_id` as the authority for ownership, so a bad row
+  can never leave an org without an owner. A stale `role='owner'` on
+  someone who is not the account owner is treated as admin.
+- Ordering lives in `internal/acl` and `server.OrgRole` delegates to it,
+  so the HTTP gates and the ACL evaluator cannot disagree.
+- `handleGUIRevokeKey` previously permitted admin by *falling out of a
+  switch* with no matching case — the right answer for the wrong reason.
+  Now explicit.
+- `db.UsernamesByIDs` resolves through `DisplayName()`. Without it the
+  org-scoped storage form leaked into `ppz ls`, showing
+  `alpha/builder-bot` where the user typed `builder-bot`.
+- Attribution now flows through `db.APIKey.Actor()` (principal, not
+  minter) at every create site — the follow-up phase 0 flagged.
+
 ---
 
 ## Phase 2 — ACL store, evaluator, and surface
@@ -593,6 +623,22 @@ hard as `Decision.Perm`.
 - `tests/acl/ls-marks-unreadable-pipes`
 
 ### Phase 2 effort: ~3 days.
+
+### Phase 2 implementation notes (landed)
+
+- `internal/acl` is pure — no DB, no NATS, no HTTP. The storage layer
+  hands it grants, the surfaces consume its provenance.
+- The daemon is a **pure passthrough** for ACL verbs: one IPC verb
+  (`IPCACL`) with an Action field rather than five, because evaluation
+  happens server-side and keeping the model in one place is what stops
+  the CLI and GUI drifting into two answers.
+- Remediation runners are deduped by principal. The handle owner is very
+  often also the org owner, and listing the same person twice under two
+  labels is noise in exactly the place an agent is trying to work out
+  who to ask.
+- Still open from the phase 2 plan: the GUI `access` tab and the pipe-page
+  ACL panel. The evaluator and renderers they need are in place and
+  tested; only the templates and handlers are outstanding.
 
 ---
 

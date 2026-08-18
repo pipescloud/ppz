@@ -64,6 +64,11 @@ var topLevelGroups = []helpGroup{
 		{"ppz agent create H", "create a handle and run an AI harness in it"},
 		{"ppz source destroy PAT", "glob-destroy sources or pipes"},
 	}},
+	{"ACCESS", []helpRow{
+		{"ppz pipe acl ls PIPE", "who can read/write/administer a pipe, and why"},
+		{"ppz pipe acl grant ...", "widen access for a principal"},
+		{"ppz acl whoami PIPE", "what you can do here — and how to get what you can't"},
+	}},
 	{"TERMINAL", []helpRow{
 		{"ppz terminal share H", "run a shell/CMD in a pty bound to H"},
 		{"ppz terminal watch H", "follow H.stdout live in a TUI"},
@@ -424,13 +429,43 @@ Top-level shortcut for 'ppz daemon login' (matches the gh/kubectl/az login muscl
 Print the current handle to stdout. Exits 1 with empty output when no current handle is set, so $(ppz get handle) can detect "not set" via the return code.`,
 
 	// ---- Pipes -----------------------------------------------------------
-	"pipe": `usage: ppz pipe {create|set|destroy} ...
+	"pipe": `usage: ppz pipe {create|set|destroy|acl} ...
 
   ppz pipe create [HANDLE.]NAME [--ttl=DUR --max-msgs=N --max-bytes=B]
   ppz pipe set [HANDLE.]NAME [--ttl=DUR --max-msgs=N --max-bytes=B]
   ppz pipe destroy [HANDLE.]NAME [--recursive]
+  ppz pipe acl {ls|grant|revoke} ...
 
 A bare NAME is created under the current namespace; prefix HANDLE. to collar it to a source.`,
+
+	"pipe acl": `usage: ppz pipe acl {ls|grant|revoke} ...
+
+  ppz pipe acl ls     PIPE [--json]
+  ppz pipe acl grant  PIPE PRINCIPAL {read|write|admin}
+  ppz pipe acl revoke PIPE PRINCIPAL [read|write|admin|all]
+
+read and write are independent — neither implies the other, so a pipe can take writes from everyone while only its owner reads them (that is what <HANDLE>.inbox is). admin implies both, plus the right to change this pipe's ACL, retention and existence.
+
+Most access has no stored grant behind it: defaults come from the pipe's collar and name. Everything under <HANDLE>. belongs to that handle's principal; <HANDLE>.inbox takes writes from anyone; <HANDLE>.heartbeat is readable by everyone; uncollared pipes are shared org space. 'ls' shows effective access with its provenance, so a row with no grant still explains itself.
+
+PRINCIPAL is a username, a service-account name, or @everyone. The roster is visible to anyone holding any access on the pipe — including write-only, so an inbox sender can see who to ask.`,
+
+	"acl": `usage: ppz acl {whoami|ls} ...
+
+  ppz acl whoami PIPE [--json]        what you can do here, and why not
+  ppz acl ls --principal NAME [--json] what that principal can reach
+
+'whoami' on a pipe you cannot reach prints the exact command that would grant you access and the principals able to run it — so an agent can ask over that principal's inbox instead of failing opaquely.
+
+'ls --principal' is the auditing view: it mixes derived defaults with stored grants, because a list of grants alone would read as "this agent can reach nothing". Pass @everyone to see what is exposed org-wide.`,
+
+	"acl whoami": `usage: ppz acl whoami PIPE [--json]
+
+Report your own read/write/admin standing on PIPE, with the reason for each — held or not. When something is missing, prints the grant command that would fix it and who can run it.`,
+
+	"acl ls": `usage: ppz acl ls --principal NAME [--json]
+
+List every pipe NAME can reach, with provenance. Derived defaults appear alongside stored grants.`,
 
 	"pipe create": `usage: ppz pipe create [HANDLE.]NAME [--ttl=DUR --max-msgs=N --max-bytes=B]
 

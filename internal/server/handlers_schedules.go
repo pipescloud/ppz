@@ -74,7 +74,7 @@ func resolveScheduleRow(req cliproto.ScheduleServerCreateRequest, key db.APIKey,
 		Sender:          req.Sender,
 		Kind:            req.Kind,
 		TZ:              req.TZ,
-		CreatedByUserID: key.CreatedByUserID,
+		CreatedByUserID: key.Actor(),
 		CreatedAt:       now,
 	}
 	switch schedule.Kind(req.Kind) {
