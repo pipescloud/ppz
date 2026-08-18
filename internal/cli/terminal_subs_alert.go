@@ -57,6 +57,16 @@ type terminalSubsAlertConfig struct {
 	// ARRIVALS are not proof and must not reset the ladder, or a busy
 	// pipe reproduces the flood in full. Suppressed and deferred fires
 	// inject nothing and so consume no rung.
+	//
+	// Known limitation: a read that lands DURING a long backoff window
+	// is not observed until that window opens, because ConfirmUnread
+	// only runs at fire time. If a new message arrives first, the
+	// confirm sees unread and the ladder keeps climbing — so an agent
+	// that recovered mid-window can wait up to CooldownMax for the
+	// nudge on its next message. Bounded and self-healing (the first
+	// gate-open with a clear level resets it), and CooldownMax is the
+	// designed worst case anyway, so this is accepted rather than
+	// fixed with an extra off-schedule poll.
 	CooldownMax time.Duration
 	Message     string
 	// Harness identifies which agent harness the wrapped PTY is

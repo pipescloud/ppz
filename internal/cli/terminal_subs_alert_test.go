@@ -673,7 +673,12 @@ func TestTerminalSubsAlertPumpLadderResetsAfterConfirmedRead(t *testing.T) {
 	unread = true
 	pump.ObserveSubsUnread(fresh)
 	if wrote := pump.Flush(fresh.Add(60 * time.Second)); !wrote {
-		t.Fatal("post-read message was not nudged at the base 60s idle gate; the confirmed read must reset the ladder")
+		// Deliberately does NOT claim to prove the reset: this fire is
+		// 31m past lastAlert, which clears the un-reset 20m rung too,
+		// so it cannot fail for that reason. The reset can only be
+		// observed at a gate-open moment, which is by definition >= the
+		// un-reset rung — the assertion below is what carries the claim.
+		t.Fatal("post-read message was not nudged at the base 60s idle gate")
 	}
 	// And the rung after it is the base gap again, not a resumed climb.
 	pump.ObserveSubsUnread(fresh.Add(60*time.Second + 250*time.Millisecond))
@@ -839,11 +844,24 @@ func TestTerminalSubsAlertCooldownMaxDefaultsAboveBase(t *testing.T) {
 			t.Fatal("first nudge did not fire")
 		}
 		pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
-		if wrote := pump.Flush(at.Add(time.Minute)); wrote {
-			t.Fatalf("a ceiling below the base shrank the gap to %v; the base is a floor: %q", time.Minute, ptyStdin.String())
-		}
 		if wrote := pump.Flush(at.Add(5 * time.Minute)); !wrote {
 			t.Fatal("no alert after the configured 5m base gap")
+		}
+		at = at.Add(5 * time.Minute)
+
+		// Rung 2 is where the ceiling is actually consulted: rung 1
+		// short-circuits on `unacked <= 1` and returns the base gap
+		// without ever reading CooldownMax, so probing the
+		// misconfiguration at rung 1 proves nothing. 70s, not 60s: the
+		// re-arm restamps pendingSince 250ms late, so a 60s probe is
+		// still inside the idle gate and would mask the cooldown gate
+		// under test.
+		pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+		if wrote := pump.Flush(at.Add(70 * time.Second)); wrote {
+			t.Fatalf("rung 2 collapsed onto the sub-base 1m ceiling: %q; the base gap is a floor", ptyStdin.String())
+		}
+		if wrote := pump.Flush(at.Add(5 * time.Minute)); !wrote {
+			t.Fatal("rung 2 did not fire after the 5m base gap")
 		}
 	})
 }
