@@ -12,6 +12,24 @@ import (
 	"github.com/pipescloud/ppz/internal/cliproto"
 )
 
+// subsUnreadReply builds the minimal fire-time snapshot the ConfirmUnread
+// fakes return: one inbox pipe with the given unread level and total
+// (retained) count. Total-Unread is the consumption watermark the
+// backoff-reset logic derives, so tests that model "never reads" hold
+// both constant and tests that model reads advance Total-Unread.
+func subsUnreadReply(unread, total uint64) cliproto.ListReply {
+	return cliproto.ListReply{Sources: []cliproto.Source{{
+		Handle:    "zif",
+		PipeInfos: []cliproto.PipeInfo{{Pipe: "inbox", Unread: unread, Total: total}},
+	}}}
+}
+
+// confirmAlwaysUnread is the "agent never reads, no traffic" fake: a
+// constant one-unread snapshot whose watermark never moves.
+func confirmAlwaysUnread() (cliproto.ListReply, error) {
+	return subsUnreadReply(1, 1), nil
+}
+
 func TestTerminalSubsAlertStateMachineDefersWhileUserActive(t *testing.T) {
 	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
 	sm := newTerminalSubsAlertStateMachine(terminalSubsAlertConfig{
@@ -265,7 +283,7 @@ func TestTerminalSubsAlertPumpCooldownSuppressesImmediateRepeatedAlerts(t *testi
 		IdleAfter:     15 * time.Second,
 		Cooldown:      30 * time.Second,
 		Message:       terminalSubsAlertMessage,
-		ConfirmUnread: func() bool { return true },
+		ConfirmUnread: confirmAlwaysUnread,
 	}, &ptyStdin)
 
 	pump.ObserveSubsUnread(now)
@@ -306,10 +324,15 @@ func TestTerminalSubsAlertPumpSuppressesAlertWhenUnreadGoneAtFireTime(t *testing
 	var ptyStdin bytes.Buffer
 	unreadNow := true
 	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
-		IdleAfter:     15 * time.Second,
-		Cooldown:      30 * time.Second,
-		Message:       terminalSubsAlertMessage,
-		ConfirmUnread: func() bool { return unreadNow },
+		IdleAfter: 15 * time.Second,
+		Cooldown:  30 * time.Second,
+		Message:   terminalSubsAlertMessage,
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			if !unreadNow {
+				return cliproto.ListReply{}, nil
+			}
+			return subsUnreadReply(1, 1), nil
+		},
 	}, &ptyStdin)
 
 	// Message lands; subs wait loop arms pending. Before the idle gate
@@ -353,7 +376,7 @@ func TestTerminalSubsAlertPumpFiresWhenUnreadConfirmedAtFireTime(t *testing.T) {
 		IdleAfter:     15 * time.Second,
 		Cooldown:      30 * time.Second,
 		Message:       terminalSubsAlertMessage,
-		ConfirmUnread: func() bool { return true },
+		ConfirmUnread: confirmAlwaysUnread,
 	}, &ptyStdin)
 
 	pump.ObserveSubsUnread(now)
@@ -373,7 +396,7 @@ func TestTerminalSubsAlertPumpConsultsConfirmOnlyWhenOtherwiseReady(t *testing.T
 		IdleAfter:     15 * time.Second,
 		Cooldown:      30 * time.Second,
 		Message:       terminalSubsAlertMessage,
-		ConfirmUnread: func() bool { calls++; return true },
+		ConfirmUnread: func() (cliproto.ListReply, error) { calls++; return subsUnreadReply(1, 1), nil },
 	}, &ptyStdin)
 
 	// Not pending: the confirm IPC must not run on every 1s flush tick
@@ -421,10 +444,10 @@ func TestTerminalSubsAlertPumpDefersWhenUserTypesDuringConfirm(t *testing.T) {
 		IdleAfter: 15 * time.Second,
 		Cooldown:  30 * time.Second,
 		Message:   terminalSubsAlertMessage,
-		ConfirmUnread: func() bool {
+		ConfirmUnread: func() (cliproto.ListReply, error) {
 			// Keystrokes land mid-confirm, after the gates were checked.
 			pump.ObserveUserInput(now.Add(16*time.Second), []byte("typed during confirm"))
-			return true
+			return subsUnreadReply(1, 1), nil
 		},
 	}, &ptyStdin)
 
@@ -543,7 +566,7 @@ func TestTerminalSubsAlertPumpBacksOffWhileAlertsGoUnacknowledged(t *testing.T) 
 		Message:     terminalSubsAlertMessage,
 		// Never read: every fire-time confirm says "still unread", so
 		// the ladder is the ONLY thing bounding the injection count.
-		ConfirmUnread: func() bool { return true },
+		ConfirmUnread: confirmAlwaysUnread,
 	}, &ptyStdin)
 
 	pump.ObserveSubsUnread(now)
@@ -607,7 +630,7 @@ func TestTerminalSubsAlertPumpLadderBoundsInjectionsAcrossUsageLimitBlock(t *tes
 		// pause, so 18000 simulated ticks don't drag a real 100ms
 		// sleep per injection into the test's wall clock.
 		Harness:       "claude",
-		ConfirmUnread: func() bool { return true },
+		ConfirmUnread: confirmAlwaysUnread,
 	}, &ptyStdin)
 
 	const block = 5 * time.Hour
@@ -634,11 +657,16 @@ func TestTerminalSubsAlertPumpLadderResetsAfterConfirmedRead(t *testing.T) {
 	var ptyStdin bytes.Buffer
 	unread := true
 	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
-		IdleAfter:     60 * time.Second,
-		Cooldown:      5 * time.Minute,
-		CooldownMax:   30 * time.Minute,
-		Message:       terminalSubsAlertMessage,
-		ConfirmUnread: func() bool { return unread },
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			if !unread {
+				return cliproto.ListReply{}, nil
+			}
+			return subsUnreadReply(1, 1), nil
+		},
 	}, &ptyStdin)
 
 	// Climb three rungs: nudge at 60s, then +5m, then +10m.
@@ -705,7 +733,7 @@ func TestTerminalSubsAlertPumpLadderNotResetByNewUnreadMessages(t *testing.T) {
 		Cooldown:      5 * time.Minute,
 		CooldownMax:   30 * time.Minute,
 		Message:       terminalSubsAlertMessage,
-		ConfirmUnread: func() bool { return true },
+		ConfirmUnread: confirmAlwaysUnread,
 	}, &ptyStdin)
 
 	pump.ObserveSubsUnread(now)
@@ -758,14 +786,14 @@ func TestTerminalSubsAlertPumpDeferredFireDoesNotAdvanceLadder(t *testing.T) {
 		Cooldown:    5 * time.Minute,
 		CooldownMax: 30 * time.Minute,
 		Message:     terminalSubsAlertMessage,
-		ConfirmUnread: func() bool {
+		ConfirmUnread: func() (cliproto.ListReply, error) {
 			if deferOnce {
 				deferOnce = false
 				// Keystrokes land after the gates were checked, closing
 				// the idle gate before the injection happens.
 				pump.ObserveUserInput(now.Add(60*time.Second), []byte("typed mid-confirm"))
 			}
-			return true
+			return subsUnreadReply(1, 1), nil
 		},
 	}, &ptyStdin)
 
@@ -806,7 +834,7 @@ func TestTerminalSubsAlertCooldownMaxDefaultsAboveBase(t *testing.T) {
 			IdleAfter:     10 * time.Second,
 			Cooldown:      30 * time.Second,
 			Message:       terminalSubsAlertMessage,
-			ConfirmUnread: func() bool { return true },
+			ConfirmUnread: confirmAlwaysUnread,
 		}, &ptyStdin)
 
 		pump.ObserveSubsUnread(now)
@@ -835,7 +863,7 @@ func TestTerminalSubsAlertCooldownMaxDefaultsAboveBase(t *testing.T) {
 			Cooldown:      5 * time.Minute,
 			CooldownMax:   time.Minute, // misconfiguration: below base
 			Message:       terminalSubsAlertMessage,
-			ConfirmUnread: func() bool { return true },
+			ConfirmUnread: confirmAlwaysUnread,
 		}, &ptyStdin)
 
 		pump.ObserveSubsUnread(now)
@@ -899,5 +927,406 @@ func TestTerminalSubsAlertDefaults(t *testing.T) {
 	}
 	if sm.cfg.CooldownMax != defaultSubsAlertCooldownMax {
 		t.Errorf("zero-config CooldownMax = %v, want %v", sm.cfg.CooldownMax, defaultSubsAlertCooldownMax)
+	}
+}
+
+// ---------------------------------------------------------------------
+// Consumption-watermark ladder reset: the fix for the field-observed
+// bug where the backoff climbed monotonically for a fully responsive
+// agent.
+//
+// Observed live on 2026-08-19 (host with the zif share): alerts at
+// 11:08:01, 11:13:01, 11:23:02, 11:43:03 — gaps 5m, 10m, 20m — while
+// the agent read and replied to every message BETWEEN alerts. The
+// ladder never saw a single read.
+//
+// Root cause: the reset lives only in the negative-ConfirmUnread
+// branch, which triggers when a fire attempt catches the unread level
+// at exactly zero. Fire attempts only happen at gate-open moments,
+// minutes apart. A read is therefore invisible unless NO new message
+// arrives before the next gate opens — under conversation-style
+// traffic there always is one, the confirm sees "unread", and unacked
+// increments. The design rule "a repeat alert is evidence the previous
+// one did not work" inverts: the repeat fires for a message that
+// arrived seconds ago while the previous alert's episode was fully
+// consumed.
+//
+// Fix these tests encode: consumption is observed via a per-pipe
+// WATERMARK — Total-Unread — computed from the snapshot ConfirmUnread
+// already returns. At each injection the state machine records the
+// watermarks; at the next fire attempt, if any pipe's watermark
+// advanced, the agent consumed since the last alert, so the ladder
+// resets and the fire counts as a fresh episode's first alert.
+//
+//   - arrival:            Total+1, Unread+1 → watermark unchanged
+//   - read (full/partial): Unread drops     → watermark ADVANCES
+//   - unread msg expires:  both drop        → watermark unchanged
+//   - read msg expires:    Total drops      → watermark DECREASES
+//
+// Only an advance resets. Arrivals-never-reset (pinned above) is
+// preserved for free.
+// ---------------------------------------------------------------------
+
+// TestTerminalSubsAlertPumpLadderResetsWhenReadOccludedByNewArrival is
+// the direct regression test for the live sequence. Each cycle: alert
+// fires → agent reads everything → a NEW message lands before the next
+// gate-open. The fire-time confirm always sees "unread", so the old
+// level-only reset never triggers — but the watermark advanced every
+// cycle, so every alert must fire on the BASE gap. On the buggy build
+// alert #3 waits 10m and #4 waits 20m.
+func TestTerminalSubsAlertPumpLadderResetsWhenReadOccludedByNewArrival(t *testing.T) {
+	now := time.Date(2026, 8, 19, 11, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	// Scripted fire-time snapshots. One confirm per injection:
+	//   alert #1: msg A unread              (1 unread / 1 total, wm 0)
+	//   alert #2: A read, B arrived         (1/2, wm 1 — ADVANCED)
+	//   alert #3: B read, C arrived         (1/3, wm 2 — ADVANCED)
+	//   alert #4: C read, D arrived         (1/4, wm 3 — ADVANCED)
+	replies := []cliproto.ListReply{
+		subsUnreadReply(1, 1),
+		subsUnreadReply(1, 2),
+		subsUnreadReply(1, 3),
+		subsUnreadReply(1, 4),
+	}
+	confirms := 0
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			r := replies[min(confirms, len(replies)-1)]
+			confirms++
+			return r, nil
+		},
+	}, &ptyStdin)
+
+	// msg A lands; first nudge at the 60s idle gate.
+	pump.ObserveSubsUnread(now)
+	at := now.Add(60 * time.Second)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #1 did not fire at the 60s idle gate")
+	}
+
+	for cycle := 2; cycle <= 4; cycle++ {
+		// The subs-wait loop re-arms pending ~250ms after the fire
+		// (previous message still unread), the agent then reads it, and
+		// the next message arrives — all before the gate reopens. The
+		// read itself produces no observation (the down-edge is
+		// invisible); it is encoded solely in the next confirm's
+		// watermark.
+		pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+
+		if wrote := pump.Flush(at.Add(5*time.Minute - time.Second)); wrote {
+			t.Fatalf("alert #%d fired 1s before the base gap", cycle)
+		}
+		at = at.Add(5 * time.Minute)
+		if wrote := pump.Flush(at); !wrote {
+			t.Fatalf("alert #%d did not fire on the BASE 5m gap; the ladder climbed despite the agent consuming every prior message (unacked never reset)", cycle)
+		}
+	}
+
+	if got := strings.Count(ptyStdin.String(), "Please run 'ppz subs read' and action messages"); got != 4 {
+		t.Fatalf("injected %d alerts, want 4", got)
+	}
+	if confirms != 4 {
+		t.Fatalf("confirm consulted %d times, want 4 (once per injection)", confirms)
+	}
+}
+
+// TestTerminalSubsAlertPumpPartialReadCountsAsConsumption pins the
+// interaction with the read flood cap: `subs read` delivers at most 10
+// unread per invocation, so an agent draining a spammed pipe pages
+// through it — Unread drops without reaching zero. That IS consumption
+// and must reset the ladder, even though the level never goes clear.
+// It also pins the converse: once the watermark stops advancing, the
+// climb resumes.
+func TestTerminalSubsAlertPumpPartialReadCountsAsConsumption(t *testing.T) {
+	now := time.Date(2026, 8, 19, 11, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	replies := []cliproto.ListReply{
+		subsUnreadReply(15, 15), // alert #1: 15 unread, nothing consumed
+		subsUnreadReply(5, 15),  // alert #2: one head-10 page read — wm 0→10
+		subsUnreadReply(5, 15),  // alert #3: no further reads — wm still 10
+		subsUnreadReply(5, 15),  // alert #4: no further reads
+	}
+	confirms := 0
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			r := replies[min(confirms, len(replies)-1)]
+			confirms++
+			return r, nil
+		},
+	}, &ptyStdin)
+
+	pump.ObserveSubsUnread(now)
+	at := now.Add(60 * time.Second)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #1 did not fire")
+	}
+
+	// Agent pages 10 of 15 between alerts; alert #2 on the base gap.
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	at = at.Add(5 * time.Minute)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #2 did not fire after the base gap")
+	}
+
+	// The partial read advanced the watermark, so #2 was a fresh
+	// episode's first alert: #3 must come on the BASE gap again.
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	at = at.Add(5 * time.Minute)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #3 did not fire on the base gap; a paged (partial) read must count as consumption and reset the ladder")
+	}
+
+	// No reads since #2's snapshot: the climb resumes — #4 waits the
+	// doubled gap.
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	if wrote := pump.Flush(at.Add(5 * time.Minute)); wrote {
+		t.Fatal("alert #4 fired on the base gap; with no watermark advance since #3 the ladder must resume climbing")
+	}
+	if wrote := pump.Flush(at.Add(10 * time.Minute)); !wrote {
+		t.Fatal("alert #4 did not fire after the doubled 10m gap")
+	}
+}
+
+// TestTerminalSubsAlertPumpUncollaredPipeReadResetsLadder keeps the
+// watermark walk honest across BOTH row families in a ListReply:
+// subsReplyHasUnread walks Sources[].PipeInfos and UncollaredPipes[]
+// — consumption on an uncollared room the agent subscribed via
+// `ppz subs add` must reset exactly like an inbox read.
+func TestTerminalSubsAlertPumpUncollaredPipeReadResetsLadder(t *testing.T) {
+	now := time.Date(2026, 8, 19, 11, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	uncollared := func(unread, total uint64) cliproto.ListReply {
+		return cliproto.ListReply{UncollaredPipes: []cliproto.UncollaredPipe{{
+			Name: "warroom",
+			Info: cliproto.PipeInfo{Pipe: "warroom", Unread: unread, Total: total},
+		}}}
+	}
+	replies := []cliproto.ListReply{
+		uncollared(1, 1), // alert #1
+		uncollared(1, 2), // alert #2: read + new arrival — wm 0→1
+		uncollared(1, 3), // alert #3: read + new arrival — wm 1→2
+	}
+	confirms := 0
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			r := replies[min(confirms, len(replies)-1)]
+			confirms++
+			return r, nil
+		},
+	}, &ptyStdin)
+
+	pump.ObserveSubsUnread(now)
+	at := now.Add(60 * time.Second)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #1 did not fire")
+	}
+	for cycle := 2; cycle <= 3; cycle++ {
+		pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+		at = at.Add(5 * time.Minute)
+		if wrote := pump.Flush(at); !wrote {
+			t.Fatalf("alert #%d did not fire on the base gap; uncollared-pipe consumption must reset the ladder like an inbox read", cycle)
+		}
+	}
+}
+
+// The three guards below pass on the CURRENT (buggy) build too — they
+// are not reproductions, they pin the boundaries of the fix so the
+// watermark comparison cannot overshoot into resetting on the wrong
+// signals. Flagged here so a reviewer doesn't count them as RED.
+
+// TestTerminalSubsAlertPumpArrivalsMoveTotalsButNotWatermark: arrivals
+// grow Total and Unread in lockstep, watermark stays put — the ladder
+// must keep climbing. This is the arrivals-never-reset property
+// re-pinned against the watermark implementation specifically: a naive
+// "totals changed → activity → reset" heuristic dies here.
+func TestTerminalSubsAlertPumpArrivalsMoveTotalsButNotWatermark(t *testing.T) {
+	now := time.Date(2026, 8, 19, 11, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	replies := []cliproto.ListReply{
+		subsUnreadReply(1, 1), // alert #1
+		subsUnreadReply(2, 2), // alert #2: one more arrived, none read — wm 0
+		subsUnreadReply(3, 3), // alert #3: same — wm 0
+	}
+	confirms := 0
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			r := replies[min(confirms, len(replies)-1)]
+			confirms++
+			return r, nil
+		},
+	}, &ptyStdin)
+
+	pump.ObserveSubsUnread(now)
+	at := now.Add(60 * time.Second)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #1 did not fire")
+	}
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	at = at.Add(5 * time.Minute)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #2 did not fire after the base gap")
+	}
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	if wrote := pump.Flush(at.Add(5 * time.Minute)); wrote {
+		t.Fatal("alert #3 fired on the base gap; arrivals moved the totals but consumed nothing — the ladder must keep climbing")
+	}
+	if wrote := pump.Flush(at.Add(10 * time.Minute)); !wrote {
+		t.Fatal("alert #3 did not fire after the doubled 10m gap")
+	}
+}
+
+// TestTerminalSubsAlertPumpWatermarkDecreaseDoesNotReset: retention
+// expiry of already-read messages shrinks Total without touching
+// Unread, so the watermark DROPS. A drop is not consumption; the
+// ladder must keep climbing. (An implementation comparing |wm_now -
+// wm_then| != 0, or signed wrongly, dies here.)
+func TestTerminalSubsAlertPumpWatermarkDecreaseDoesNotReset(t *testing.T) {
+	now := time.Date(2026, 8, 19, 11, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	replies := []cliproto.ListReply{
+		subsUnreadReply(1, 5), // alert #1: wm 4
+		subsUnreadReply(1, 3), // alert #2: two read msgs expired — wm 2 (DOWN)
+	}
+	confirms := 0
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			r := replies[min(confirms, len(replies)-1)]
+			confirms++
+			return r, nil
+		},
+	}, &ptyStdin)
+
+	pump.ObserveSubsUnread(now)
+	at := now.Add(60 * time.Second)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #1 did not fire")
+	}
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	at = at.Add(5 * time.Minute)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #2 did not fire after the base gap")
+	}
+	// wm went 4→2: not an advance. Ladder at unacked=2 → 10m gap.
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	if wrote := pump.Flush(at.Add(5 * time.Minute)); wrote {
+		t.Fatal("alert #3 fired on the base gap; a watermark DECREASE (expiry of read messages) is not consumption and must not reset the ladder")
+	}
+}
+
+// TestTerminalSubsAlertPumpNewPipeDoesNotResetLadder: a pipe absent
+// from the last snapshot (the agent ran `ppz subs add` mid-flight)
+// arrives carrying a nonzero watermark of its own. That history
+// predates the subscription; it proves nothing about consumption since
+// the last alert. Only pipes present in BOTH snapshots participate.
+func TestTerminalSubsAlertPumpNewPipeDoesNotResetLadder(t *testing.T) {
+	now := time.Date(2026, 8, 19, 11, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	withNewPipe := cliproto.ListReply{Sources: []cliproto.Source{{
+		Handle: "zif",
+		PipeInfos: []cliproto.PipeInfo{
+			{Pipe: "inbox", Unread: 1, Total: 1},   // unchanged, wm 0
+			{Pipe: "warroom", Unread: 1, Total: 9}, // NEW pipe, wm 8 of pre-subscription history
+		},
+	}}}
+	replies := []cliproto.ListReply{
+		subsUnreadReply(1, 1), // alert #1: inbox only
+		withNewPipe,           // alert #2: inbox unchanged + freshly subscribed room
+	}
+	confirms := 0
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			r := replies[min(confirms, len(replies)-1)]
+			confirms++
+			return r, nil
+		},
+	}, &ptyStdin)
+
+	pump.ObserveSubsUnread(now)
+	at := now.Add(60 * time.Second)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #1 did not fire")
+	}
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	at = at.Add(5 * time.Minute)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #2 did not fire after the base gap")
+	}
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	if wrote := pump.Flush(at.Add(5 * time.Minute)); wrote {
+		t.Fatal("alert #3 fired on the base gap; a freshly subscribed pipe's pre-existing watermark is not consumption since the last alert")
+	}
+}
+
+// TestTerminalSubsAlertPumpConfirmErrorNeitherSuppressesNorResets: the
+// at-least-once rule survives the watermark change. An IPC failure at
+// fire time still fires (cannot disprove unread), and — with no
+// snapshot to compare — must not reset the ladder either: a daemon
+// flapping for an hour must not hold the nag at base cadence.
+func TestTerminalSubsAlertPumpConfirmErrorNeitherSuppressesNorResets(t *testing.T) {
+	now := time.Date(2026, 8, 19, 11, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	failing := true
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			if failing {
+				return cliproto.ListReply{}, errors.New("ipc: connection refused")
+			}
+			return subsUnreadReply(1, 1), nil
+		},
+	}, &ptyStdin)
+
+	pump.ObserveSubsUnread(now)
+	at := now.Add(60 * time.Second)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #1 did not fire on confirm error; the nag is at-least-once")
+	}
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	at = at.Add(5 * time.Minute)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #2 did not fire after the base gap")
+	}
+	// Two error-fires, no evidence of consumption: the ladder must be
+	// at unacked=2 → 10m gap.
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	if wrote := pump.Flush(at.Add(5 * time.Minute)); wrote {
+		t.Fatal("alert #3 fired on the base gap; error-fires carry no consumption evidence and must not reset the ladder")
+	}
+	if wrote := pump.Flush(at.Add(10 * time.Minute)); !wrote {
+		t.Fatal("alert #3 did not fire after the doubled 10m gap")
 	}
 }

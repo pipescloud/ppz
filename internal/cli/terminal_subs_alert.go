@@ -79,20 +79,22 @@ type terminalSubsAlertConfig struct {
 	Harness string
 	// ConfirmUnread is consulted at fire time — after the pending /
 	// idle / cooldown gates have all passed, immediately before the
-	// alert is injected. It must re-sample the live unread level
-	// (production wires a fresh subs snapshot over IPC) and return
-	// whether anything subscribed is still unread. A false return
-	// suppresses the injection AND clears pending: the level is the
-	// source of truth, and a pending bit that disagrees with it is
-	// stale by definition. nil → always fire (tests of unrelated
-	// behaviour skip the wiring).
+	// alert is injected. It must re-sample the live subs snapshot
+	// (production wires `ppz subs ls` over IPC) and return it raw;
+	// the state machine derives the fire/suppress decision via
+	// confirmSubsUnreadDecision. Nothing unread suppresses the
+	// injection AND clears pending: the level is the source of
+	// truth, and a pending bit that disagrees with it is stale by
+	// definition. An IPC error maps to fire-anyway (see
+	// confirmSubsUnreadDecision). nil → always fire (tests of
+	// unrelated behaviour skip the wiring).
 	//
 	// This gate exists because `subs wait` only signals the up-edge
 	// (something became unread). The down-edge — the agent ran
 	// `ppz subs read`, cursor advanced, nothing published — produces
 	// no wakeup, so a pending bit armed up to 250ms before the read
 	// survives it and would otherwise fire one final redundant nag.
-	ConfirmUnread func() bool
+	ConfirmUnread func() (cliproto.ListReply, error)
 }
 
 type terminalSubsAlertStateMachine struct {
@@ -162,24 +164,27 @@ func (s *terminalSubsAlertStateMachine) ReadyAlert(now time.Time) string {
 	// trip in production, and ObserveUserInput (called from the stdin
 	// forwarding path) takes the same mutex — holding it here would
 	// stall the user's keystrokes for the duration of the confirm.
-	if confirm != nil && !confirm() {
-		// The level says nothing is unread; the pending bit is stale by
-		// definition — clear it so the next tick doesn't re-confirm
-		// forever. lastAlert is deliberately NOT stamped: nothing was
-		// injected, so a suppressed fire must not push the cooldown out
-		// and delay the next real alert. If a new message arrived
-		// during the confirm, the subs-wait loop's level-triggered
-		// re-arm (≤250ms) re-raises pending.
-		s.mu.Lock()
-		s.pending = false
-		// The level dropped: the agent read its messages. That is the
-		// only evidence the nag is landing, so it returns the repeat
-		// cadence to the base gap. Without the reset a single stalled
-		// stretch would leave the pump permanently desensitised for
-		// the rest of the share session.
-		s.unacked = 0
-		s.mu.Unlock()
-		return ""
+	if confirm != nil {
+		reply, err := confirm()
+		if !confirmSubsUnreadDecision(reply, err) {
+			// The level says nothing is unread; the pending bit is stale
+			// by definition — clear it so the next tick doesn't
+			// re-confirm forever. lastAlert is deliberately NOT stamped:
+			// nothing was injected, so a suppressed fire must not push
+			// the cooldown out and delay the next real alert. If a new
+			// message arrived during the confirm, the subs-wait loop's
+			// level-triggered re-arm (≤250ms) re-raises pending.
+			s.mu.Lock()
+			s.pending = false
+			// The level dropped: the agent read its messages. That is
+			// the only evidence the nag is landing, so it returns the
+			// repeat cadence to the base gap. Without the reset a single
+			// stalled stretch would leave the pump permanently
+			// desensitised for the rest of the share session.
+			s.unacked = 0
+			s.mu.Unlock()
+			return ""
+		}
 	}
 
 	s.mu.Lock()

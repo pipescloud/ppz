@@ -403,11 +403,11 @@ func cmdTerminalShare(args []string) error {
 		// already-read message. daemon.Call (deadline-bounded), not
 		// CallWait: a wedged daemon must fail the confirm, not hang
 		// the flush loop.
-		ConfirmUnread: func() bool {
+		ConfirmUnread: func() (cliproto.ListReply, error) {
 			var reply cliproto.ListReply
 			err := daemon.Call(ipcSocket(), cliproto.IPCSubsList,
 				cliproto.SubsListRequest{Session: handle}, &reply)
-			return confirmSubsUnreadDecision(reply, err)
+			return reply, err
 		},
 		// The input tee makes injected bytes (alert submissions,
 		// buffered user-input flushes) taint output causality like
