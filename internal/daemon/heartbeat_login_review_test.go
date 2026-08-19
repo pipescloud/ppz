@@ -28,8 +28,19 @@ func TestHandleLogin_ClearSurvivesLateOldOrgBeat(t *testing.T) {
 	srv := okExchangeServer(t, loginTestAcctNew)
 	d := newLoginTestDaemon(t)
 	loginAsPriorAccount(t, d, loginTestAcctOld)
+	// Park the post-login recovery loop (kicked because the dial fails)
+	// after its first retry: its re-dials model nothing here and must
+	// not interleave with the assertion below.
+	d.reconnectBackoff = time.Hour
+	// Only the FIRST dial is the login window with the old subscription
+	// still live — later dials (the background recovery loop) happen
+	// after swapNC closed the old connection, when no old-org beat can
+	// arrive, so they must not stamp (that re-stamp was a CI flake).
+	var dials atomic.Int32
 	d.dial = func(string, *RefreshLoop, func(NATSEvent)) (*nats.Conn, error) {
-		d.Heartbeats.Stamp("ghost", `{"harness":"claude"}`, time.Now())
+		if dials.Add(1) == 1 {
+			d.Heartbeats.Stamp("ghost", `{"harness":"claude"}`, time.Now())
+		}
 		return nil, errors.New("dial window: connect refused")
 	}
 
