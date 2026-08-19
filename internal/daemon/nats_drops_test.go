@@ -30,8 +30,11 @@ func TestDropsLastHour_ExcludesSwapAttributedDisconnects(t *testing.T) {
 	for _, ev := range []NATSEvent{
 		// Routine JWT-refresh rotation: swap retires 0xA, then nats.go
 		// reports the close of 0xA that swapNCLocked itself caused.
-		// Same shape and reason format as production (see swapNCLocked).
-		{Type: "swap", At: now.Add(-10 * time.Minute), Caller: "OnRefreshed-callback", NCID: "0xB", Reason: "old=0xA new=0xB"},
+		// Reason built by the production formatter — the attribution
+		// contract is format+matcher together, so a reworded format
+		// that breaks matching must fail HERE, not silently re-inflate
+		// the counter in production.
+		{Type: "swap", At: now.Add(-10 * time.Minute), Caller: "OnRefreshed-callback", NCID: "0xB", Reason: swapReason("0xA", "0xB")},
 		{Type: "disconnect", At: now.Add(-10*time.Minute + 50*time.Millisecond), Caller: "nats.go", NCID: "0xA", Reason: ""},
 		{Type: "closed", At: now.Add(-10*time.Minute + 50*time.Millisecond), Caller: "nats.go", NCID: "0xA", Reason: ""},
 

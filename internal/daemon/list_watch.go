@@ -120,6 +120,14 @@ func (d *Daemon) handleListWatch(ctx context.Context, conn net.Conn, params json
 	}
 }
 
+// jsAPITimeout bounds JetStream API requests made with a deadline-less
+// context (stream checks, consumer setup — the daemon's request ctx
+// carries no deadline). 5s mirrors jetstream's own defaultAPITimeout, so
+// production behaviour is unchanged; it exists as a var so tests can
+// shrink it and exercise the timeout paths in milliseconds. Calls that
+// pass their own deadline ctx (e.g. publishWithAck) are unaffected.
+var jsAPITimeout = 5 * time.Second
+
 // jetStream returns a JetStream context bound to the daemon's current
 // NATS connection, reading d.NC under ncMu so a concurrent swapNC (logout
 // via the watchState watcher, or a JWT-rotation reconnect) can't leave the
@@ -132,14 +140,6 @@ func (d *Daemon) handleListWatch(ctx context.Context, conn net.Conn, params json
 // Returns ENATSUnreachable when no connection is currently installed — the
 // same fail-soft error every existing call site already mapped a
 // jetstream.New failure to.
-// jsAPITimeout bounds JetStream API requests made with a deadline-less
-// context (stream checks, consumer setup — the daemon's request ctx
-// carries no deadline). 5s mirrors jetstream's own defaultAPITimeout, so
-// production behaviour is unchanged; it exists as a var so tests can
-// shrink it and exercise the timeout paths in milliseconds. Calls that
-// pass their own deadline ctx (e.g. publishWithAck) are unaffected.
-var jsAPITimeout = 5 * time.Second
-
 func (d *Daemon) jetStream() (jetstream.JetStream, *cliproto.Error) {
 	d.ncMu.Lock()
 	nc := d.NC

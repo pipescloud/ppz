@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -213,4 +214,81 @@ func renderNATSEvents(events []NATSEvent) string {
 		b.WriteString(" " + ev.Type + " caller=" + ev.Caller + " nc=" + ev.NCID + " reason=" + ev.Reason)
 	}
 	return b.String()
+}
+
+// TestReportNATSFailure_SingleFlight pins the stampede behaviour (PR
+// #195 review, finding 4): N concurrent commands tripping the same
+// JetStream blip must coalesce onto ONE probe and ONE ring event — not
+// serially queue behind each other's probes (multiplying worst-case
+// latency by N) and not each record their own warn/force_close (ring
+// clutter for a single incident). A caller that finds a report already
+// in flight returns immediately and lets that report decide the
+// connection's fate — mirroring kickReconnect's single-flight CAS.
+func TestReportNATSFailure_SingleFlight(t *testing.T) {
+	url := startEmbeddedJSURL(t)
+	d, first := newReportFailureDaemon(t, url)
+
+	// Swap the probe for a controllable stub so the first caller can be
+	// held mid-probe while the second arrives. release is Once-guarded so
+	// the deliberate release and the safety-net Cleanup can both call it
+	// without reassigning block (a reassignment would race the stub's
+	// captured read of the variable).
+	block := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(block) }) }
+	t.Cleanup(release)
+	entered := make(chan struct{}, 4)
+	prevProbe := probeJetStream
+	probeJetStream = func(*nats.Conn) error {
+		entered <- struct{}{}
+		<-block
+		return nil // probe passes: connection kept
+	}
+	t.Cleanup(func() { probeJetStream = prevProbe })
+
+	mark := len(d.NATSEvents.Snapshot())
+	firstDone := make(chan struct{})
+	go func() {
+		d.reportNATSFailure(errors.New("blip 1"))
+		close(firstDone)
+	}()
+	<-entered // first caller is now held inside its probe
+
+	secondDone := make(chan struct{})
+	go func() {
+		d.reportNATSFailure(errors.New("blip 2"))
+		close(secondDone)
+	}()
+	select {
+	case <-secondDone:
+		// coalesced: returned without probing or blocking
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("second reportNATSFailure did not coalesce with the in-flight one — it ran or queued behind its own probe")
+	}
+	select {
+	case <-entered:
+		t.Fatal("second reportNATSFailure ran its own probe despite one already in flight")
+	default:
+	}
+	if n := len(d.NATSEvents.Snapshot()) - mark; n != 0 {
+		t.Fatalf("coalesced caller recorded %d event(s); only the in-flight report may record", n)
+	}
+
+	// Release the held probe; the one in-flight report completes and
+	// records exactly one event for the whole stampede.
+	release()
+	<-firstDone
+	if !first.IsConnected() {
+		t.Fatal("probe passed — connection must be kept")
+	}
+	events := d.NATSEvents.Snapshot()[mark:]
+	n := 0
+	for _, ev := range events {
+		if ev.Caller == "reportNATSFailure" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("stampede recorded %d reportNATSFailure events, want exactly 1:%s", n, renderNATSEvents(events))
+	}
 }

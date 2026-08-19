@@ -186,6 +186,25 @@ func (d *Daemon) natsStatusSnapshot() (state string, dropsLastHour int, lastEven
 // (e.g. the rearm flush) without reaching back to unrelated swaps.
 const swapDropAttributionWindow = 5 * time.Second
 
+// swapReason renders the Reason string stamped on every "swap" event,
+// and swapReasonRetired is its matching parser. They live side by side
+// because they are two halves of ONE string contract: drops_last_hour's
+// swap-attribution (below) depends on recognising the retired conn's id
+// in the reason a swap wrote, possibly hours earlier and reloaded from
+// disk. Reword the format ONLY by changing both together — a drift here
+// silently re-inflates drops_last_hour (the pre-2026-08-19 behaviour).
+func swapReason(oldID, newID string) string {
+	return "old=" + oldID + " new=" + newID
+}
+
+// swapReasonRetired reports whether a swap event's Reason names ncid as
+// the connection the swap retired. The retired id is always followed by
+// " new=" (see swapReason), so matching with the trailing space can't
+// confuse 0xA with 0xAB.
+func swapReasonRetired(reason, ncid string) bool {
+	return strings.Contains(reason, "old="+ncid+" ")
+}
+
 // swapAttributedDisconnect reports whether events[i] (a "disconnect") is
 // the teardown of a connection the daemon retired ON PURPOSE: a "swap"
 // event just before it names the disconnect's NCID as the replaced conn
@@ -199,14 +218,11 @@ func swapAttributedDisconnect(events []NATSEvent, i int) bool {
 	if ev.NCID == "" {
 		return false
 	}
-	// The retired id is always followed by " new=" in swap reasons, so
-	// matching with the trailing space can't confuse 0xA with 0xAB.
-	needle := "old=" + ev.NCID + " "
 	for j := i - 1; j >= 0; j-- {
 		if ev.At.Sub(events[j].At) > swapDropAttributionWindow {
 			return false
 		}
-		if events[j].Type == "swap" && strings.Contains(events[j].Reason, needle) {
+		if events[j].Type == "swap" && swapReasonRetired(events[j].Reason, ev.NCID) {
 			return true
 		}
 	}

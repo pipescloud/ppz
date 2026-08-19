@@ -96,6 +96,15 @@ type Daemon struct {
 	// by many concurrent operations, but only one recovery loop runs.
 	reconnecting atomic.Bool
 
+	// reportingFailure single-flights reportNATSFailure's verification
+	// probe: N concurrent commands tripping the same JetStream blip
+	// coalesce onto ONE probe and ONE ring event. Later callers return
+	// immediately and let the in-flight report decide the connection's
+	// fate — without this they would serially queue behind each other's
+	// probes (N × jsAPITimeout worst case) and each stamp their own
+	// warn/force_close for a single incident.
+	reportingFailure atomic.Bool
+
 	// reconnectBackoff overrides the initial backoff of the background
 	// connect/recovery loop (kickConnect). Zero means the production
 	// default (reconnectInitialBackoff); tests set milliseconds.
@@ -252,7 +261,9 @@ func (d *Daemon) swapNCLocked(caller string, newNC *nats.Conn) {
 			Caller: caller,
 			NCID:   newID,
 			JWTExp: d.Refresh.JWTExp(),
-			Reason: "old=" + oldID + " new=" + newID,
+			// swapReason, not an inline string: drops_last_hour's
+			// swap-attribution parses this back (see swapReasonRetired).
+			Reason: swapReason(oldID, newID),
 		})
 	}
 	if d.Follows != nil {
@@ -369,11 +380,18 @@ func (d *Daemon) reportNATSFailure(cause error) {
 	if nc == nil || !nc.IsConnected() {
 		return
 	}
+	// Single-flight: a stampede of commands failing on the same blip
+	// coalesces onto the report already in flight (see reportingFailure).
+	if !d.reportingFailure.CompareAndSwap(false, true) {
+		return
+	}
+	defer d.reportingFailure.Store(false)
 	reason := "unknown"
 	if cause != nil {
 		reason = cause.Error()
 	}
-	if probeErr := probeJetStream(nc); probeErr == nil {
+	probeErr := probeJetStream(nc)
+	if probeErr == nil {
 		d.recordNATSEvent(NATSEvent{
 			Type:   "warn",
 			At:     time.Now(),
@@ -383,16 +401,15 @@ func (d *Daemon) reportNATSFailure(cause error) {
 			Reason: "kept connection: probe passed after " + reason,
 		})
 		return
-	} else {
-		d.recordNATSEvent(NATSEvent{
-			Type:   "force_close",
-			At:     time.Now(),
-			Caller: "reportNATSFailure",
-			NCID:   ncID(nc),
-			JWTExp: d.Refresh.JWTExp(),
-			Reason: reason + "; probe: " + probeErr.Error(),
-		})
 	}
+	d.recordNATSEvent(NATSEvent{
+		Type:   "force_close",
+		At:     time.Now(),
+		Caller: "reportNATSFailure",
+		NCID:   ncID(nc),
+		JWTExp: d.Refresh.JWTExp(),
+		Reason: reason + "; probe: " + probeErr.Error(),
+	})
 	// The probe ran lock-free; a concurrent swap may have retired nc
 	// already. If so, the daemon is healthy on a newer conn — closing
 	// the retired one again would only fire a second orphan close.
@@ -412,7 +429,8 @@ func (d *Daemon) reportNATSFailure(cause error) {
 // zombie. AccountInfo is the cheapest $JS.API request there is, and its
 // failure modes cover both zombie shapes: a wedged transport times out,
 // a dead/disabled JetStream tier errors immediately (no responders).
-func probeJetStream(nc *nats.Conn) error {
+// A var so tests can hold a probe mid-flight (single-flight coverage).
+var probeJetStream = func(nc *nats.Conn) error {
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return err
