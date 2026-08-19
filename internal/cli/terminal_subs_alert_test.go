@@ -1875,3 +1875,110 @@ func TestTerminalSubsAlertPumpSuppressionRebaselinesConsumption(t *testing.T) {
 		t.Fatal("second deferral granted with no further reads; the suppression must adopt the confirm's watermarks as the new baseline — one read buys one deferral")
 	}
 }
+
+// TestTerminalSubsAlertPumpDeferralHoldsInAttendedShares pins the
+// deferral against the idle gate's OTHER branch. ready() measures
+// idleness from lastUserInput once a human has typed even once, so a
+// deferral implemented as a pendingSince restamp gates nothing there:
+// the suppression works, and the very next 1s tick fires anyway —
+// msg-2 gets one extra second instead of sixty (review on #196,
+// confirmed by this test failing on the restamp implementation). The
+// deferral must hold for its full window regardless of which idle
+// branch applies.
+func TestTerminalSubsAlertPumpDeferralHoldsInAttendedShares(t *testing.T) {
+	now := time.Date(2026, 8, 20, 9, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	confirms := 0
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			confirms++
+			// Every confirm: msg-1 read, msg-2 unread and young.
+			return subsUnreadReplyAt(1, 2, now.Add(57*time.Second)), nil
+		},
+	}, &ptyStdin)
+
+	// A human typed ten minutes ago — long idle, but the gate now
+	// measures from lastUserInput, not pendingSince.
+	pump.ObserveUserInput(now.Add(-10*time.Minute), []byte("ls -la"))
+
+	pump.ObserveSubsUnreadSnapshot(now, subsUnreadReplyAt(1, 1, now))
+	if wrote := pump.Flush(now.Add(60 * time.Second)); wrote {
+		t.Fatalf("stale-gate fire was not suppressed: %q", ptyStdin.String())
+	}
+	// The next ticks: the restamp implementation fires here (the
+	// lastUserInput branch is long open and nothing re-closes it).
+	if wrote := pump.Flush(now.Add(61 * time.Second)); wrote {
+		t.Fatalf("deferral collapsed to one flush tick in an attended share: %q", ptyStdin.String())
+	}
+	if wrote := pump.Flush(now.Add(90 * time.Second)); wrote {
+		t.Fatalf("deferral did not hold mid-window in an attended share: %q", ptyStdin.String())
+	}
+	if wrote := pump.Flush(now.Add(120 * time.Second)); !wrote {
+		t.Fatal("deferred alert never fired after its full window in an attended share")
+	}
+}
+
+// TestTerminalSubsAlertPumpSnapshotRearmsDoNotEraseConsumption is the
+// #194 occluded-read scenario wired the way production actually wires
+// it: streamForwardSubsAlertsOnce calls ObserveSubsUnreadSnapshot on
+// EVERY level-triggered wakeup (~250ms while unread), not the plain
+// ObserveSubsUnread the older tests use. The seed-only-when-nil guard
+// in the snapshot method is what keeps those re-arms from tracking
+// the live watermark — an unconditional seed would erase every read
+// between injections and destroy #194's ladder reset outright, while
+// leaving every plain-ObserveSubsUnread test green (review on #196
+// found exactly that surviving mutant).
+func TestTerminalSubsAlertPumpSnapshotRearmsDoNotEraseConsumption(t *testing.T) {
+	now := time.Date(2026, 8, 20, 9, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	confirms := 0
+	var confirmReply cliproto.ListReply
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			confirms++
+			return confirmReply, nil
+		},
+	}, &ptyStdin)
+
+	// Each cycle: alert fires for msg N; the agent reads it; msg N+1
+	// arrives OLD enough at the next gate not to engage the deferral
+	// (this test is about the ladder, not the fresh-window logic).
+	// Crucially, the subs-wait loop keeps re-arming with the CURRENT
+	// row state — post-read, post-arrival — every ~250ms, exactly as
+	// production does. Under an unconditional seed those re-arms
+	// re-baseline to the live watermark and the fire-time compare
+	// never sees the advance.
+	old := now.Add(-10 * time.Minute)
+	confirmReply = subsUnreadReplyAt(1, 1, old)
+	pump.ObserveSubsUnreadSnapshot(now, subsUnreadReplyAt(1, 1, old))
+	at := now.Add(60 * time.Second)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #1 did not fire")
+	}
+
+	for cycle := 2; cycle <= 4; cycle++ {
+		// msg N read, msg N+1 arrived: the level-triggered wakeups all
+		// see the post-read state and re-arm with it repeatedly.
+		total := uint64(cycle)
+		live := subsUnreadReplyAt(1, total, old)
+		for i := 1; i <= 4; i++ {
+			pump.ObserveSubsUnreadSnapshot(at.Add(time.Duration(i)*250*time.Millisecond), live)
+		}
+		confirmReply = live
+
+		at = at.Add(5 * time.Minute)
+		if wrote := pump.Flush(at); !wrote {
+			t.Fatalf("alert #%d did not fire on the BASE 5m gap; the snapshot re-arms erased the consumption the fire-time compare needed (seed-only-when-nil is load-bearing)", cycle)
+		}
+	}
+}

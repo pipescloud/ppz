@@ -109,9 +109,13 @@ if (( SECONDS - T0 > 7 )); then
   exit 1
 fi
 
-# Sample A: 12s past msg-1 — the stale gate (~+8s) has opened and any
-# injection has had time to echo back through the wrapped cat.
-while (( SECONDS - T0 < 12 )); do sleep 0.2; done
+# Sample A: 11s past msg-1 — the stale gate (~+8s) has opened and any
+# injection has had ~2s to echo back through the wrapped cat, while
+# the fixed build's fresh gate (~+16s) is still far off. Budget note:
+# the samples are trimmed against the harness 30s ceiling — sample B
+# dominates the runtime and leaves ~10s for daemon start, logins and
+# share-up.
+while (( SECONDS - T0 < 11 )); do sleep 0.2; done
 A=$(alert_count)
 if [[ "$A" -eq 0 ]]; then
   echo "suppressed_at_stale_gate: yes"
@@ -119,10 +123,10 @@ else
   echo "suppressed_at_stale_gate: no (the stale window fired for a seconds-old msg-2)"
 fi
 
-# Sample B: 22s past msg-1 — the fresh window (suppression ~+8.5s,
-# +8s idle) has matured. Exactly one alert total: deferred, not
-# dropped, not doubled.
-while (( SECONDS - T0 < 22 )); do sleep 0.2; done
+# Sample B: 20s past msg-1 — the fresh window (suppression ~+8.5s,
+# +8s idle → fire ~+17s, echo ~+18s) has matured. Exactly one alert
+# total: deferred, not dropped, not doubled.
+while (( SECONDS - T0 < 20 )); do sleep 0.2; done
 B=$(alert_count)
 if [[ "$B" -eq 1 ]]; then
   echo "deferred_alert_fired_once: yes"
