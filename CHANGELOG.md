@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased — subs alert ladder resets on consumption
+
+**Bug fix (`ppz terminal share`).** The repeat-alert backoff ladder
+(previous entry) climbed monotonically for a fully RESPONSIVE agent.
+Field-observed on v0.56.5: alert gaps grew 5m → 10m → 20m while the
+wrapped agent read and replied to every message between alerts, leaving
+each new message waiting up to 20 minutes for its nudge.
+
+The old reset needed a fire-time confirm to catch the unread level at
+exactly zero — but fire attempts happen only minutes apart, and under
+conversation-style traffic a fresh message is always unread by then, so
+consumption was never observed.
+
+- **Consumption is now derived from a per-pipe watermark** —
+  `Total - Unread` in the snapshot the fire-time confirm already
+  fetches (no new IPC, no wire change). Any watermark advance since the
+  last injected alert proves the agent read something; the ladder
+  resets and that alert counts as a fresh episode's first.
+- **Arrivals still never reset**: a new message moves Total and Unread
+  in lockstep, leaving the watermark unchanged. Partial reads (the
+  head-10 flood-cap page) advance it and count. Watermark decreases
+  (retention expiry of read messages) and freshly subscribed pipes'
+  pre-existing history do not.
+- **Baseline moves only at injection, from a successful confirm**: a
+  deferred fire (user typing) cannot destroy the advance its confirm
+  observed, and an IPC error retains the last good baseline so a read
+  around a daemon hiccup is still credited.
+- The in-flight backoff window itself is never shortened — the fix
+  stops wrongful climbing, so a responsive agent simply never inherits
+  a long window.
+
 ## Unreleased — subs alert backoff (bounded nagging)
 
 **Behaviour change (`ppz terminal share`).** The unread-subs alert the PTY
