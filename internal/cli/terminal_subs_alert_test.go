@@ -1574,3 +1574,262 @@ func TestTerminalSubsAlertPumpManifoldNamespacedHandlesDoNotCollide(t *testing.T
 		}
 	}
 }
+
+// ---------------------------------------------------------------------
+// Fresh idle window for consumed episodes: the fix for the second
+// field-observed bug (rex share, v0.56.6, 2026-08-19).
+//
+// Timeline as observed: msg-1 17:32:59 armed pending; rex's monitor
+// read it at 17:33:12; msg-2 landed 17:33:56; the idle gate — stamped
+// at msg-1's arrival and never restamped, because a read produces no
+// down-edge — opened at 17:33:59 and the wrapper injected at
+// 17:34:01. msg-2 received FIVE SECONDS of idle grace instead of 60.
+//
+// Same root as the ladder bug, other gate: consumption is invisible
+// between fire attempts, so pendingSince goes stale exactly the way
+// unacked did. The fix has the same shape too — at a fire attempt
+// whose confirm shows the watermark advanced during this pending
+// window (the agent consumed) AND whose surviving unread is YOUNG
+// (newest unread LastAt within IdleAfter of now), the injection is
+// suppressed and pendingSince restamped: the young message earns a
+// full idle window of its own. Every deferral costs the agent a real
+// read, so a non-reading agent still fires at the original 60s no
+// matter how fast messages arrive — no starvation. An OLD surviving
+// unread (the post-cooldown shape) still fires immediately: deferring
+// a message that already waited minutes would add pure latency.
+//
+// The arm-time baseline comes from the subs-wait wakeup's own row
+// state (ObserveSubsUnreadSnapshot) — the loop already holds the
+// reply; no new IPC anywhere.
+// ---------------------------------------------------------------------
+
+// subsUnreadReplyAt is subsUnreadReply with the pipe's last-message
+// time stamped, so tests can steer the young/old arbitration.
+func subsUnreadReplyAt(unread, total uint64, lastAt time.Time) cliproto.ListReply {
+	r := subsUnreadReply(unread, total)
+	r.Sources[0].PipeInfos[0].LastAt = &lastAt
+	return r
+}
+
+// TestTerminalSubsAlertPumpFreshMessageAfterMidWindowReadGetsFreshIdleWindow
+// is the direct rex reproduction.
+func TestTerminalSubsAlertPumpFreshMessageAfterMidWindowReadGetsFreshIdleWindow(t *testing.T) {
+	now := time.Date(2026, 8, 19, 17, 32, 59, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	// Fire-time confirms: msg-1 was read and msg-2 (57s after msg-1,
+	// so 3s old at the first gate) is unread — watermark advanced
+	// 0→1, surviving unread young.
+	confirmReply := subsUnreadReplyAt(1, 2, now.Add(57*time.Second))
+	confirms := 0
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			confirms++
+			return confirmReply, nil
+		},
+	}, &ptyStdin)
+
+	// msg-1 arrives and arms the episode; the arm-time snapshot seeds
+	// the consumption baseline (1 unread / 1 total → wm 0).
+	pump.ObserveSubsUnreadSnapshot(now, subsUnreadReplyAt(1, 1, now))
+
+	// rex reads msg-1 (invisible — no down-edge), msg-2 lands at +57s.
+	// The stale gate opens at +60s: the confirm shows the advance and
+	// a 3s-old survivor — this fire must be SUPPRESSED, not injected.
+	if wrote := pump.Flush(now.Add(60 * time.Second)); wrote {
+		t.Fatalf("alert injected at the stale gate, 3s after msg-2 arrived: %q; a consumed episode's young survivor must earn a fresh idle window", ptyStdin.String())
+	}
+	if confirms != 1 {
+		t.Fatalf("confirm consulted %d time(s) at the stale gate, want 1 (the suppression is confirm-driven)", confirms)
+	}
+
+	// Mid-window: still nothing (restamped gate is closed).
+	if wrote := pump.Flush(now.Add(90 * time.Second)); wrote {
+		t.Fatalf("alert injected mid fresh window: %q", ptyStdin.String())
+	}
+
+	// One idle window after the suppression, msg-2 is 63s old and
+	// still unread: now it fires.
+	if wrote := pump.Flush(now.Add(120 * time.Second)); !wrote {
+		t.Fatal("alert did not fire one idle window after the consumed-suppression; the deferral must not become a drop")
+	}
+	if got := strings.Count(ptyStdin.String(), "Please run 'ppz subs read' and action messages"); got != 1 {
+		t.Fatalf("injected %d alerts, want exactly 1", got)
+	}
+}
+
+// TestTerminalSubsAlertPumpConsumedSuppressionThenReadStaysSilent pins
+// the ideal path the deferral creates: rex reads msg-2 inside its
+// fresh window, so nothing is ever injected at all.
+func TestTerminalSubsAlertPumpConsumedSuppressionThenReadStaysSilent(t *testing.T) {
+	now := time.Date(2026, 8, 19, 17, 32, 59, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	confirms := 0
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			confirms++
+			if confirms == 1 {
+				// First gate: msg-1 read, msg-2 young and unread.
+				return subsUnreadReplyAt(1, 2, now.Add(57*time.Second)), nil
+			}
+			// Later gates: msg-2 was read too — nothing unread.
+			return cliproto.ListReply{}, nil
+		},
+	}, &ptyStdin)
+
+	pump.ObserveSubsUnreadSnapshot(now, subsUnreadReplyAt(1, 1, now))
+	if wrote := pump.Flush(now.Add(60 * time.Second)); wrote {
+		t.Fatalf("stale-gate fire was not suppressed: %q", ptyStdin.String())
+	}
+	if wrote := pump.Flush(now.Add(120 * time.Second)); wrote {
+		t.Fatalf("alert injected for a message the agent read during its fresh window: %q", ptyStdin.String())
+	}
+	if ptyStdin.Len() != 0 {
+		t.Fatalf("PTY received %q, want complete silence", ptyStdin.String())
+	}
+}
+
+// TestTerminalSubsAlertPumpOldSurvivorFiresAtTheGate guards the
+// deferral's boundary: consumption advanced, but the surviving unread
+// is OLD (it has already waited past IdleAfter — the post-cooldown
+// shape). Deferring it would add pure latency for a message the agent
+// has demonstrably had time to see; it must fire at the gate.
+func TestTerminalSubsAlertPumpOldSurvivorFiresAtTheGate(t *testing.T) {
+	now := time.Date(2026, 8, 19, 17, 32, 59, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			// Advance (0→1) but the survivor arrived with the episode
+			// itself — 60s old at the gate, not young.
+			return subsUnreadReplyAt(1, 2, now), nil
+		},
+	}, &ptyStdin)
+
+	pump.ObserveSubsUnreadSnapshot(now, subsUnreadReplyAt(2, 2, now))
+	if wrote := pump.Flush(now.Add(60 * time.Second)); !wrote {
+		t.Fatal("old surviving unread was deferred; consumed-suppression must only defer YOUNG survivors")
+	}
+}
+
+// TestTerminalSubsAlertPumpNonReadingAgentUnaffectedByYoungMessages
+// guards against starvation: youth alone must never defer. No
+// consumption means the stale window fires exactly as today, no
+// matter how fresh the newest message is.
+func TestTerminalSubsAlertPumpNonReadingAgentUnaffectedByYoungMessages(t *testing.T) {
+	now := time.Date(2026, 8, 19, 17, 32, 59, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			// msg-2 arrived 57s in and NOTHING was read: 2 unread of 2,
+			// watermark still 0 — no advance, newest young.
+			return subsUnreadReplyAt(2, 2, now.Add(57*time.Second)), nil
+		},
+	}, &ptyStdin)
+
+	pump.ObserveSubsUnreadSnapshot(now, subsUnreadReplyAt(1, 1, now))
+	if wrote := pump.Flush(now.Add(60 * time.Second)); !wrote {
+		t.Fatal("non-reading agent was not nagged at the 60s gate; a young message must not defer when nothing was consumed")
+	}
+}
+
+// TestTerminalSubsAlertPumpMissingLastAtFiresAtTheGate pins the
+// conservative fallback: a snapshot whose unread rows carry no LastAt
+// cannot prove the survivor is young, so the fire proceeds — the nag
+// is at-least-once, and a daemon that stops stamping LastAt must not
+// silently widen every alert by one idle window.
+func TestTerminalSubsAlertPumpMissingLastAtFiresAtTheGate(t *testing.T) {
+	now := time.Date(2026, 8, 19, 17, 32, 59, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			return subsUnreadReply(1, 2), nil // advance, but no LastAt anywhere
+		},
+	}, &ptyStdin)
+
+	pump.ObserveSubsUnreadSnapshot(now, subsUnreadReply(1, 1))
+	if wrote := pump.Flush(now.Add(60 * time.Second)); !wrote {
+		t.Fatal("fire was deferred on a snapshot with no LastAt; unprovable youth must fall back to firing")
+	}
+}
+
+// TestTerminalSubsAlertPumpConsumedSuppressionResetsLadder pins the
+// interaction with #194's ladder: the suppression's advance is the
+// same consumption proof, so a climbed ladder returns to base — the
+// eventual injection for the young survivor is a fresh episode's
+// first alert, and the repeat after it comes on the base gap.
+func TestTerminalSubsAlertPumpConsumedSuppressionResetsLadder(t *testing.T) {
+	now := time.Date(2026, 8, 19, 17, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	confirms := 0
+	var confirmReply cliproto.ListReply
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			confirms++
+			return confirmReply, nil
+		},
+	}, &ptyStdin)
+
+	// Climb two rungs the honest way: nothing consumed.
+	confirmReply = subsUnreadReplyAt(1, 1, now)
+	pump.ObserveSubsUnreadSnapshot(now, subsUnreadReplyAt(1, 1, now))
+	at := now.Add(60 * time.Second)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #1 did not fire")
+	}
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	at = at.Add(5 * time.Minute)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #2 did not fire after the base gap")
+	}
+	// unacked=2 → next gate at +10m.
+
+	// The agent reads everything; a fresh message lands 3s before the
+	// 10m gate opens. Advance + young → suppressed, ladder reset.
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	gate := at.Add(10 * time.Minute)
+	confirmReply = subsUnreadReplyAt(1, 3, gate.Add(-3*time.Second))
+	if wrote := pump.Flush(gate); wrote {
+		t.Fatalf("young survivor injected at the 10m gate instead of deferred: %q", ptyStdin.String())
+	}
+
+	// Its fresh window matures: the injection lands, as a FRESH
+	// episode (the repeat after it must come on the base 5m gap, not
+	// the 20m rung an unreset ladder would demand).
+	if wrote := pump.Flush(gate.Add(60 * time.Second)); !wrote {
+		t.Fatal("deferred young survivor never fired after its fresh window")
+	}
+	pump.ObserveSubsUnread(gate.Add(60*time.Second + 250*time.Millisecond))
+	confirmReply = subsUnreadReplyAt(1, 3, gate.Add(-3*time.Second))
+	if wrote := pump.Flush(gate.Add(60*time.Second + 5*time.Minute)); !wrote {
+		t.Fatal("repeat after the deferred injection did not come on the base gap; the consumed-suppression must reset the ladder")
+	}
+}

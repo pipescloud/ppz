@@ -180,6 +180,26 @@ func (s *terminalSubsAlertStateMachine) ObserveSubsUnread(now time.Time) {
 	s.pending = true
 }
 
+// ObserveSubsUnreadSnapshot is ObserveSubsUnread plus the row state
+// the subs-wait wakeup already carries. Before the first injection
+// the ladder has no baseline, so the arm-time watermarks seed it —
+// that is what lets a fire attempt detect "the agent consumed during
+// this pending window" for an episode that has never alerted (the
+// stale-idle-window bug). Seeding only when nil is deliberate:
+// post-injection the baseline must stay pinned to the last injection,
+// or reads between injections would be erased by the next re-arm.
+func (s *terminalSubsAlertStateMachine) ObserveSubsUnreadSnapshot(now time.Time, reply cliproto.ListReply) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.pending {
+		s.pendingSince = now
+	}
+	s.pending = true
+	if s.baseline == nil {
+		s.baseline = subsReplyWatermarks(reply)
+	}
+}
+
 func (s *terminalSubsAlertStateMachine) ReadyAlert(now time.Time) string {
 	s.mu.Lock()
 	if !s.ready(now) {
@@ -410,6 +430,12 @@ func (p *terminalSubsAlertPump) ObserveUserInput(now time.Time, input []byte) {
 // the alert text — so this takes only `now`.
 func (p *terminalSubsAlertPump) ObserveSubsUnread(now time.Time) {
 	p.sm.ObserveSubsUnread(now)
+}
+
+// ObserveSubsUnreadSnapshot forwards the wakeup with its row state so
+// the state machine can seed the pre-injection consumption baseline.
+func (p *terminalSubsAlertPump) ObserveSubsUnreadSnapshot(now time.Time, reply cliproto.ListReply) {
+	p.sm.ObserveSubsUnreadSnapshot(now, reply)
 }
 
 func (p *terminalSubsAlertPump) Flush(now time.Time) bool {

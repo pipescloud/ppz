@@ -1,0 +1,4 @@
+msg1_read: yes
+suppressed_at_stale_gate: yes
+deferred_alert_fired_once: yes
+exit=0
