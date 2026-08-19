@@ -58,15 +58,16 @@ type terminalSubsAlertConfig struct {
 	// pipe reproduces the flood in full. Suppressed and deferred fires
 	// inject nothing and so consume no rung.
 	//
-	// Known limitation: a read that lands DURING a long backoff window
-	// is not observed until that window opens, because ConfirmUnread
-	// only runs at fire time. If a new message arrives first, the
-	// confirm sees unread and the ladder keeps climbing — so an agent
-	// that recovered mid-window can wait up to CooldownMax for the
-	// nudge on its next message. Bounded and self-healing (the first
-	// gate-open with a clear level resets it), and CooldownMax is the
-	// designed worst case anyway, so this is accepted rather than
-	// fixed with an extra off-schedule poll.
+	// Known limitation: a read that lands DURING a backoff window is
+	// not observed until that window opens, because ConfirmUnread only
+	// runs at fire time — the in-flight window itself is never
+	// shortened. What IS guaranteed (via the consumption watermark,
+	// see terminalSubsAlertStateMachine.baseline) is that the read is
+	// credited when the window opens, even if new traffic has kept the
+	// unread level high the whole time: the fire resets the ladder and
+	// subsequent gaps return to base. A responsive agent therefore
+	// never climbs, and the one inherited window is bounded by
+	// CooldownMax.
 	CooldownMax time.Duration
 	Message     string
 	// Harness identifies which agent harness the wrapped PTY is
@@ -79,20 +80,22 @@ type terminalSubsAlertConfig struct {
 	Harness string
 	// ConfirmUnread is consulted at fire time — after the pending /
 	// idle / cooldown gates have all passed, immediately before the
-	// alert is injected. It must re-sample the live unread level
-	// (production wires a fresh subs snapshot over IPC) and return
-	// whether anything subscribed is still unread. A false return
-	// suppresses the injection AND clears pending: the level is the
-	// source of truth, and a pending bit that disagrees with it is
-	// stale by definition. nil → always fire (tests of unrelated
-	// behaviour skip the wiring).
+	// alert is injected. It must re-sample the live subs snapshot
+	// (production wires `ppz subs ls` over IPC) and return it raw;
+	// the state machine derives the fire/suppress decision via
+	// confirmSubsUnreadDecision. Nothing unread suppresses the
+	// injection AND clears pending: the level is the source of
+	// truth, and a pending bit that disagrees with it is stale by
+	// definition. An IPC error maps to fire-anyway (see
+	// confirmSubsUnreadDecision). nil → always fire (tests of
+	// unrelated behaviour skip the wiring).
 	//
 	// This gate exists because `subs wait` only signals the up-edge
 	// (something became unread). The down-edge — the agent ran
 	// `ppz subs read`, cursor advanced, nothing published — produces
 	// no wakeup, so a pending bit armed up to 250ms before the read
 	// survives it and would otherwise fire one final redundant nag.
-	ConfirmUnread func() bool
+	ConfirmUnread func() (cliproto.ListReply, error)
 }
 
 type terminalSubsAlertStateMachine struct {
@@ -104,10 +107,38 @@ type terminalSubsAlertStateMachine struct {
 	lastAlert     time.Time
 	// unacked counts alerts INJECTED since the last proof the agent
 	// consumed anything. It drives the repeat-backoff ladder (see
-	// CooldownMax) and is reset only by a negative ConfirmUnread —
-	// the unread level actually dropping. Suppressed and deferred
-	// fires inject nothing and so never increment it.
+	// CooldownMax). Two observations reset it: a negative
+	// ConfirmUnread (the level dropped to zero), or a consumption
+	// watermark advance at fire time (see baseline). Suppressed and
+	// deferred fires inject nothing and so never increment it.
 	unacked int
+	// baseline is the per-pipe consumption watermark (Total - Unread,
+	// clamped at zero) snapshotted from the confirm reply at the
+	// moment of the LAST INJECTION; nil until the first successful
+	// one. A later fire whose confirm shows any shared pipe's
+	// watermark above this baseline proves the agent consumed since
+	// the last alert — even when the level never touched zero because
+	// new traffic kept arriving (the field-observed occluded-read
+	// case) — and resets unacked before the fire counts itself.
+	//
+	// The baseline may ONLY move at injection time, and only from a
+	// successful confirm: a deferral's reply must not re-baseline (it
+	// would destroy the advance it carries before anything fired),
+	// and an error-fire retains the last good baseline so a read
+	// around a daemon hiccup is still credited at the next successful
+	// confirm. Pipes are compared only when present in both snapshots
+	// — a freshly subscribed pipe's pre-existing history proves
+	// nothing about consumption since the last alert.
+	//
+	// Deliberate looseness: ANY pipe advancing resets the whole
+	// ladder, so an agent reading its inbox while ignoring one
+	// subscribed room holds the base cadence for that room
+	// indefinitely. That follows from the rule the ladder encodes —
+	// back off an agent that ISN'T consuming, never one that is — a
+	// selectively-inattentive agent is reachable at base cadence by
+	// definition, so per-pipe ladders would add state without adding
+	// reach.
+	baseline map[string]uint64
 }
 
 func newTerminalSubsAlertStateMachine(cfg terminalSubsAlertConfig) *terminalSubsAlertStateMachine {
@@ -162,24 +193,31 @@ func (s *terminalSubsAlertStateMachine) ReadyAlert(now time.Time) string {
 	// trip in production, and ObserveUserInput (called from the stdin
 	// forwarding path) takes the same mutex — holding it here would
 	// stall the user's keystrokes for the duration of the confirm.
-	if confirm != nil && !confirm() {
-		// The level says nothing is unread; the pending bit is stale by
-		// definition — clear it so the next tick doesn't re-confirm
-		// forever. lastAlert is deliberately NOT stamped: nothing was
-		// injected, so a suppressed fire must not push the cooldown out
-		// and delay the next real alert. If a new message arrived
-		// during the confirm, the subs-wait loop's level-triggered
-		// re-arm (≤250ms) re-raises pending.
-		s.mu.Lock()
-		s.pending = false
-		// The level dropped: the agent read its messages. That is the
-		// only evidence the nag is landing, so it returns the repeat
-		// cadence to the base gap. Without the reset a single stalled
-		// stretch would leave the pump permanently desensitised for
-		// the rest of the share session.
-		s.unacked = 0
-		s.mu.Unlock()
-		return ""
+	var wm map[string]uint64
+	if confirm != nil {
+		reply, err := confirm()
+		if err == nil {
+			wm = subsReplyWatermarks(reply)
+		}
+		if !confirmSubsUnreadDecision(reply, err) {
+			// The level says nothing is unread; the pending bit is stale
+			// by definition — clear it so the next tick doesn't
+			// re-confirm forever. lastAlert is deliberately NOT stamped:
+			// nothing was injected, so a suppressed fire must not push
+			// the cooldown out and delay the next real alert. If a new
+			// message arrived during the confirm, the subs-wait loop's
+			// level-triggered re-arm (≤250ms) re-raises pending.
+			s.mu.Lock()
+			s.pending = false
+			// The level dropped: the agent read its messages. That is
+			// the only evidence the nag is landing, so it returns the
+			// repeat cadence to the base gap. Without the reset a single
+			// stalled stretch would leave the pump permanently
+			// desensitised for the rest of the share session.
+			s.unacked = 0
+			s.mu.Unlock()
+			return ""
+		}
 	}
 
 	s.mu.Lock()
@@ -191,8 +229,64 @@ func (s *terminalSubsAlertStateMachine) ReadyAlert(now time.Time) string {
 	}
 	s.pending = false
 	s.lastAlert = now
+	if wm != nil {
+		if watermarkAdvanced(s.baseline, wm) {
+			// The agent consumed something since the last alert. The
+			// level-only view missed it — new traffic kept the confirm
+			// reporting "unread" — but consumption is consumption: this
+			// fire is a fresh episode's first alert, not a repeat that
+			// failed.
+			s.unacked = 0
+		}
+		s.baseline = wm
+	}
 	s.unacked++
 	return s.cfg.Message
+}
+
+// subsReplyWatermarks extracts the per-pipe consumption watermark
+// (Total - Unread) from a fire-time snapshot, walking both row
+// families the same way subsReplyHasUnread does. Keys are prefixed by
+// family so a source pipe and an uncollared pipe sharing a name can't
+// collide. Unread > Total (a mid-update daemon race or bug) clamps to
+// zero — on uint64 the naive subtraction underflows to ~2^64 and
+// would read as an enormous advance.
+func subsReplyWatermarks(reply cliproto.ListReply) map[string]uint64 {
+	wm := make(map[string]uint64)
+	clamped := func(info cliproto.PipeInfo) uint64 {
+		if info.Unread > info.Total {
+			return 0
+		}
+		return info.Total - info.Unread
+	}
+	for _, src := range reply.Sources {
+		for _, p := range src.PipeInfos {
+			// Manifold is part of the key: handle uniqueness is per
+			// (account, manifold) — 0002_manifold.sql — so "zif" at the
+			// root and "zif" in team1 can share one snapshot, and a
+			// manifold-less key would let one shadow the other's reads.
+			wm["s/"+src.Manifold+"/"+src.Handle+"/"+p.Pipe] = clamped(p)
+		}
+	}
+	for _, u := range reply.UncollaredPipes {
+		wm["u/"+u.Manifold+"/"+u.Name] = clamped(u.Info)
+	}
+	return wm
+}
+
+// watermarkAdvanced reports whether any pipe present in BOTH
+// snapshots consumed forward. Strictly greater: an unchanged
+// watermark proves nothing, and a DECREASE (retention expiry of
+// already-read messages shrinks Total without touching Unread) is not
+// consumption either. Pipes only in `next` are freshly subscribed —
+// their pre-existing history is excluded by the both-snapshots rule.
+func watermarkAdvanced(baseline, next map[string]uint64) bool {
+	for key, w := range next {
+		if prev, ok := baseline[key]; ok && w > prev {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *terminalSubsAlertStateMachine) ready(now time.Time) bool {

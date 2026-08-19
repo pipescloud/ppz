@@ -1,0 +1,5 @@
+first_alert_fired: yes
+alert2: yes
+alert3: yes
+ladder_reset_on_read: yes
+exit=0
