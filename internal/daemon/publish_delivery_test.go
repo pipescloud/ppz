@@ -196,27 +196,28 @@ func TestPublishBatchWithAck_SucceedsAndPersistsAllWhenStreamCaptures(t *testing
 	}
 }
 
-// TestPublishWithAck_ClosesNCOnJetStreamTimeout pins the zombie-connection
-// detection: when js.Publish times out (JetStream non-responsive — e.g.
-// JWT just expired server-side while TCP is still alive), publishWithAck
-// must close the NC so the next ensureNATS call rebuilds rather than
-// coalescing on the stale connection.
+// TestPublishWithAck_KeepsHealthyNCOnAckTimeout pins the verify-before-
+// close contract on the publish path (2026-08-19 incident, revising
+// #116's blanket close). A PubAck timeout can mean a genuine zombie
+// connection — but it can also mean a missing stream or one slow
+// JetStream reply on a perfectly healthy connection. #116 closed the NC
+// unconditionally, which converts a single 5s latency blip into a full
+// connection drop for every concurrent command (the 01:44:25Z
+// unattributed-disconnect fingerprint).
 //
-// The production symptom: ppz send returns E_DELIVERY_UNCONFIRMED on the
-// first attempt, then E_NATS_UNREACHABLE on all subsequent attempts, while
-// ppz status keeps lying "nats: connected (N minutes ago)". The NC is
-// genuinely CONNECTED at the TCP/NATS level, so ensureNATS's IsConnected()
-// guard never fires — the zombie persists until the server eventually kicks
-// the TCP connection (minutes later). After this fix, the first timeout
-// closes the NC so the next command rebuilds immediately.
+// Here the server is demonstrably healthy (embedded, local, JetStream
+// enabled — there is simply no stream to ack the publish), so the
+// verification probe must pass and the connection must be KEPT. The
+// caller still gets E_DELIVERY_UNCONFIRMED — delivery really is
+// unconfirmed — but the daemon's connection survives. The true-zombie
+// case (probe fails too) is pinned by
+// TestReportNATSFailure_ClosesZombieAndAttributesIt.
 //
-// RED: without reportNATSFailure, nc.IsConnected() is still true after the
-// timeout — the zombie persists.
-// GREEN: after the publish timeout, nc.IsConnected() is false (NC closed).
-func TestPublishWithAck_ClosesNCOnJetStreamTimeout(t *testing.T) {
+// RED: reportNATSFailure closes the healthy NC unconditionally.
+// GREEN: after the ack timeout, nc.IsConnected() is still true.
+func TestPublishWithAck_KeepsHealthyNCOnAckTimeout(t *testing.T) {
 	// startEmbeddedJS server has JetStream but we create NO stream —
-	// js.Publish hangs until jsPublishAckTimeout, simulating a server
-	// that's connected but not acking JetStream requests.
+	// js.Publish gets no PubAck until jsPublishAckTimeout.
 	nc := startEmbeddedJS(t)
 	d := New(t.TempDir(), "")
 	d.NC = nc
@@ -234,9 +235,10 @@ func TestPublishWithAck_ClosesNCOnJetStreamTimeout(t *testing.T) {
 	if e.Code != cliproto.EDeliveryUnconfirmed {
 		t.Fatalf("expected E_DELIVERY_UNCONFIRMED, got %s", e.Code)
 	}
-	// GREEN contract: after a JetStream timeout on a connected NC, the
-	// NC must be closed so the next ensureNATS call rebuilds.
-	if nc.IsConnected() {
-		t.Fatal("NC is still connected after publish timeout — zombie connection not detected; ppz status will lie 'connected' while all operations fail")
+	// The connection is healthy — the ack timeout alone must not kill
+	// it. reportNATSFailure verifies before closing, and a passing
+	// probe keeps the conn.
+	if !nc.IsConnected() {
+		t.Fatal("healthy NC was closed after a PubAck timeout — verify-before-close regressed; one slow JetStream reply costs every concurrent command the connection")
 	}
 }

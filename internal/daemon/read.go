@@ -18,6 +18,19 @@ import (
 	"github.com/pipescloud/ppz/internal/natsubj"
 )
 
+// isJSTransportErr reports whether a JetStream API error is
+// transport-shaped — the connection/broker was unreachable or
+// unresponsive, as opposed to a definitive JetStream answer (stream not
+// found, invalid config, ...). Transport-shaped failures on idempotent
+// ops are worth one retry across a connection rebuild; definitive
+// answers are not (see handleRead's stream check).
+func isJSTransportErr(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, nats.ErrTimeout) ||
+		errors.Is(err, nats.ErrConnectionClosed) ||
+		errors.Is(err, nats.ErrNoServers)
+}
+
 // handleRead opens a JetStream OrderedConsumer on the pipe's stream, drains
 // retained messages applying the requested filters, then either closes (no
 // --follow) or keeps streaming live messages until the CLI closes the
@@ -112,6 +125,31 @@ func (d *Daemon) handleRead(ctx context.Context, conn net.Conn, params json.RawM
 		return
 	}
 	stream, err := js.Stream(ctx, streamName)
+	if err != nil && isJSTransportErr(err) {
+		// Transport-shaped failure (timeout / conn closed / no servers)
+		// on the stream check. Without a retry, the one command that
+		// trips the failure is GUARANTEED to fail even though recovery
+		// lands ~1s later (2026-08-19 incident: the reporter's manual
+		// +2s retry always succeeded). Report the failure — which
+		// probes, and closes + kicks recovery only if the conn is truly
+		// dead — then re-run ensureNATS and retry the stream check ONCE
+		// on whatever connection is now live. Reads are idempotent, so
+		// the retry is always safe; scope stays transport-only —
+		// retrying a definitive refusal (stream not found) would just
+		// add latency to a genuine error.
+		if !errors.Is(err, nats.ErrConnectionClosed) && !errors.Is(err, nats.ErrNoServers) {
+			d.reportNATSFailure(err)
+		}
+		if rerr := d.ensureNATS(ctx); rerr == nil {
+			if js2, e2 := d.jetStream(); e2 == nil {
+				if s2, err2 := js2.Stream(ctx, streamName); err2 == nil {
+					js, stream, err = js2, s2, nil
+				} else {
+					err = err2
+				}
+			}
+		}
+	}
 	if err != nil {
 		// Classify the error so the user sees the right cause. Mirror of
 		// the routing logic in handleSend / resolveSendTarget
@@ -122,7 +160,8 @@ func (d *Daemon) handleRead(ctx context.Context, conn net.Conn, params json.RawM
 		//   - network / timeout / no-servers → E_NATS_UNREACHABLE. The
 		//     pipe might be perfectly valid; attributing the failure to
 		//     pipe invalidity would mislead users into chasing typos
-		//     when the real cause is connectivity.
+		//     when the real cause is connectivity. (Failure already
+		//     reported + retried above; no second report here.)
 		//   - anything else → E_INVALID_PIPE catch-all. Truly unexpected.
 		switch {
 		case errors.Is(err, jetstream.ErrStreamNotFound):
@@ -132,13 +171,7 @@ func (d *Daemon) handleRead(ctx context.Context, conn net.Conn, params json.RawM
 			} else {
 				writeReadErr(conn, cliproto.NewPipeNotFound(req.Channel, req.Handle))
 			}
-		case errors.Is(err, context.DeadlineExceeded),
-			errors.Is(err, nats.ErrTimeout),
-			errors.Is(err, nats.ErrConnectionClosed),
-			errors.Is(err, nats.ErrNoServers):
-			if !errors.Is(err, nats.ErrConnectionClosed) && !errors.Is(err, nats.ErrNoServers) {
-				d.reportNATSFailure()
-			}
+		case isJSTransportErr(err):
 			writeReadErr(conn, cliproto.New(cliproto.ENATSUnreachable))
 		default:
 			writeReadErr(conn, cliproto.New(cliproto.EInvalidPipe))

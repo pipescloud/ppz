@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/pipescloud/ppz/internal/cliproto"
 )
@@ -94,6 +95,15 @@ type Daemon struct {
 	// reconnect loop (kickReconnect): a failure-close may be reported
 	// by many concurrent operations, but only one recovery loop runs.
 	reconnecting atomic.Bool
+
+	// reportingFailure single-flights reportNATSFailure's verification
+	// probe: N concurrent commands tripping the same JetStream blip
+	// coalesce onto ONE probe and ONE ring event. Later callers return
+	// immediately and let the in-flight report decide the connection's
+	// fate — without this they would serially queue behind each other's
+	// probes (N × jsAPITimeout worst case) and each stamp their own
+	// warn/force_close for a single incident.
+	reportingFailure atomic.Bool
 
 	// reconnectBackoff overrides the initial backoff of the background
 	// connect/recovery loop (kickConnect). Zero means the production
@@ -251,7 +261,9 @@ func (d *Daemon) swapNCLocked(caller string, newNC *nats.Conn) {
 			Caller: caller,
 			NCID:   newID,
 			JWTExp: d.Refresh.JWTExp(),
-			Reason: "old=" + oldID + " new=" + newID,
+			// swapReason, not an inline string: drops_last_hour's
+			// swap-attribution parses this back (see swapReasonRetired).
+			Reason: swapReason(oldID, newID),
 		})
 	}
 	if d.Follows != nil {
@@ -334,25 +346,99 @@ func (d *Daemon) swapNCLocked(caller string, newNC *nats.Conn) {
 }
 
 // reportNATSFailure is called when a JetStream operation times out on a
-// nominally-connected NC — the "zombie connection" state where TCP is
-// alive and nc.Status() == CONNECTED, but the server's JetStream tier is
-// not responding (e.g. JWT just expired server-side, or the server is
-// temporarily overloaded). Closing the NC transitions its Status to CLOSED
-// so natsStateString stops lying "connected" and the next ensureNATS call
-// rebuilds rather than coalescing on the stale connection.
-func (d *Daemon) reportNATSFailure() {
+// nominally-connected NC. That has two very different causes, and the
+// 2026-08-19 incident is why we now tell them apart:
+//
+//   - The "zombie connection" (#116): TCP/core alive, nc.Status() ==
+//     CONNECTED, but the server's JetStream tier is not responding
+//     (e.g. JWT just expired server-side). Dead for real — close it so
+//     natsStateString stops lying "connected" and recovery rebuilds.
+//   - One slow $JS.API reply on a perfectly healthy connection. The
+//     pre-incident code closed here too, converting a 5s latency blip
+//     into a genuine connection drop for every concurrent command —
+//     and the only ring trace was an unattributed caller="nats.go"
+//     disconnect with reason="" (nats.Conn.Close dispatches its
+//     callbacks with a nil error).
+//
+// So: VERIFY before killing. A fresh JetStream round-trip on the same
+// conn separates the two — a true zombie fails it, a healthy conn with
+// one slow reply passes. Probe passes → keep the connection, record a
+// "warn" so diagnostics can still explain the caller's error. Probe
+// fails → record an attributed "force_close" carrying cause (the
+// JetStream error that triggered the report), THEN close and kick the
+// background reconnect — a closed NC never recovers by itself (nats.go's
+// CLOSED state is terminal), and waiting for "the next ensureNATS" means
+// waiting for the user to type a command (the 2026-06-11 incident).
+//
+// Worst-case added latency is one jsAPITimeout for the probe, on a path
+// that already burned a JetStream timeout — acceptable for keeping the
+// daemon's one connection alive. No lock is held across the probe.
+func (d *Daemon) reportNATSFailure(cause error) {
 	d.ncMu.Lock()
 	nc := d.NC
 	d.ncMu.Unlock()
 	if nc == nil || !nc.IsConnected() {
 		return
 	}
+	// Single-flight: a stampede of commands failing on the same blip
+	// coalesces onto the report already in flight (see reportingFailure).
+	if !d.reportingFailure.CompareAndSwap(false, true) {
+		return
+	}
+	defer d.reportingFailure.Store(false)
+	reason := "unknown"
+	if cause != nil {
+		reason = cause.Error()
+	}
+	probeErr := probeJetStream(nc)
+	if probeErr == nil {
+		d.recordNATSEvent(NATSEvent{
+			Type:   "warn",
+			At:     time.Now(),
+			Caller: "reportNATSFailure",
+			NCID:   ncID(nc),
+			JWTExp: d.Refresh.JWTExp(),
+			Reason: "kept connection: probe passed after " + reason,
+		})
+		return
+	}
+	d.recordNATSEvent(NATSEvent{
+		Type:   "force_close",
+		At:     time.Now(),
+		Caller: "reportNATSFailure",
+		NCID:   ncID(nc),
+		JWTExp: d.Refresh.JWTExp(),
+		Reason: reason + "; probe: " + probeErr.Error(),
+	})
+	// The probe ran lock-free; a concurrent swap may have retired nc
+	// already. If so, the daemon is healthy on a newer conn — closing
+	// the retired one again would only fire a second orphan close.
+	d.ncMu.Lock()
+	stillCurrent := d.NC == nc
+	d.ncMu.Unlock()
+	if !stillCurrent {
+		return
+	}
 	nc.Close()
-	// A closed NC never recovers by itself (nats.go's CLOSED state is
-	// terminal), and waiting for "the next ensureNATS" means waiting
-	// for the user to type a command — in the 2026-06-11 incident the
-	// daemon sat dead for minutes this way. Recover in the background.
 	d.kickReconnect()
+}
+
+// probeJetStream performs one fresh JetStream API round-trip on nc,
+// bounded by jsAPITimeout. nil means the JetStream tier answered — the
+// connection is usable and a preceding op timeout was a blip, not a
+// zombie. AccountInfo is the cheapest $JS.API request there is, and its
+// failure modes cover both zombie shapes: a wedged transport times out,
+// a dead/disabled JetStream tier errors immediately (no responders).
+// A var so tests can hold a probe mid-flight (single-flight coverage).
+var probeJetStream = func(nc *nats.Conn) error {
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), jsAPITimeout)
+	defer cancel()
+	_, err = js.AccountInfo(ctx)
+	return err
 }
 
 // reconnectInitialBackoff / reconnectMaxBackoff bound the background
