@@ -352,7 +352,11 @@ func (d *Daemon) handleLogin(ctx context.Context, conn net.Conn, params json.Raw
 	// is active would otherwise silently break the .stdin /.inbox
 	// relays anchored to the prior NC.
 	d.startRefreshLoop(ex.AccountID, ex.NATSUserJWT, ex.NATSUserSeed, ex.ExpiresAt.Unix())
-	newNC, _ := connectNATSWithRefresh(natsURL, d.Refresh, d.recordNATSEvent)
+	dial := d.dial
+	if dial == nil {
+		dial = connectNATSWithRefresh
+	}
+	newNC, _ := dial(natsURL, d.Refresh, d.recordNATSEvent)
 	d.swapNC("handleLogin", newNC)
 	if newNC != nil {
 		if aid, err := uuid.Parse(ex.AccountID); err == nil {
