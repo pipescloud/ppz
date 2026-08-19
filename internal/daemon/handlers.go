@@ -324,6 +324,14 @@ func (d *Daemon) handleLogin(ctx context.Context, conn net.Conn, params json.Raw
 		return
 	}
 
+	// Login crosses an account boundary: heartbeats stamped before this
+	// point belong to the previous account/connection and would never
+	// refresh once swapNC kills the old subscription — `ppz who` would
+	// show them as stale ghosts until a daemon restart. Clear only after
+	// the exchange + SetLogin succeed: a failed login must leave the
+	// "who was running" answer intact.
+	d.Heartbeats.Clear()
+
 	// PPZ_NATS_URL on the daemon overrides what the server told us. Used
 	// when running the daemon outside compose: the server hands out
 	// "nats://ppz-server:4222" (correct for in-compose clients) but a host

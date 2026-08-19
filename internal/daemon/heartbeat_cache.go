@@ -41,6 +41,22 @@ func (c *HeartbeatCache) Stamp(handle, payload string, arrivedAt time.Time) {
 	c.entries[handle] = HeartbeatEntry{Handle: handle, Payload: payload, ArrivedAt: arrivedAt}
 }
 
+// Clear drops every entry. Called on successful login: pre-login
+// entries belong to whatever account/connection the daemon was on
+// before, and with the old NATS subscription gone they would never
+// refresh — `ppz who` would render them as stale ghosts until a
+// daemon restart. Post-clear behaviour matches a restart: the next
+// beat from each live agent repopulates the cache within one
+// heartbeat interval.
+func (c *HeartbeatCache) Clear() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries = map[string]HeartbeatEntry{}
+}
+
 // Snapshot returns all entries sorted by handle (ASCII order). Returns
 // an empty slice (never nil) so callers can range freely.
 func (c *HeartbeatCache) Snapshot() []HeartbeatEntry {
