@@ -79,6 +79,15 @@ sleep 0.5
 READ_OUT=$(PPZ_SESSION=share-fresh-window ppz_s subs read 2>/dev/null)
 echo "$READ_OUT" | matches "msg-1" && echo "msg1_read: yes" \
   || { echo "msg1_read: no"; exit 1; }
+# msg-2 must land LATE in the window — the field shape (msg-2 at
+# second 57 of 60) and the deferral's own boundary. A message sent
+# immediately after the read is nearly as old as the window when the
+# gate opens, i.e. an OLD survivor, and the fix CORRECTLY fires for
+# it at the gate (OldSurvivorFiresAtTheGate pins that). The first
+# version of this fixture sent msg-2 at ~+1s and failed on the FIXED
+# build in CI for exactly that reason. +5s of an 8s window leaves
+# msg-2 ~3-4s young at the gate.
+while (( SECONDS - T0 < 5 )); do sleep 0.2; done
 ppz_b send share-fresh-window.inbox "msg-2" >/dev/null
 # The choreography must land msg-2 with ≥2s of window left for it to
 # become visible to the gate's confirm, or the run proves nothing —
