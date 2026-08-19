@@ -311,6 +311,15 @@ func (d *Daemon) handleLogin(ctx context.Context, conn net.Conn, params json.Raw
 		writeIPCErr(conn, &cliproto.Error{Code: "E_PROTOCOL", Message: err.Error()})
 		return
 	}
+	// An empty/garbage account id would pass every step below yet can
+	// never arm the org-heartbeat subscription (uuid.Parse fails), with
+	// no recovery path — bootstrapNATS only re-exchanges when NATSURL is
+	// empty, and rebuildNC gates on the same failing parse. Reject the
+	// exchange outright, before anything is overwritten.
+	if _, err := uuid.Parse(ex.AccountID); err != nil {
+		writeIPCErr(conn, &cliproto.Error{Code: "E_PROTOCOL", Message: fmt.Sprintf("auth exchange returned invalid account id %q", ex.AccountID)})
+		return
+	}
 
 	creds := Credentials{
 		URL:          req.URL,
@@ -344,12 +353,34 @@ func (d *Daemon) handleLogin(ctx context.Context, conn net.Conn, params json.Raw
 	// is active would otherwise silently break the .stdin /.inbox
 	// relays anchored to the prior NC.
 	d.startRefreshLoop(ex.AccountID, ex.NATSUserJWT, ex.NATSUserSeed, ex.ExpiresAt.Unix())
-	newNC, _ := connectNATSWithRefresh(natsURL, d.Refresh, d.recordNATSEvent)
+	newNC, _ := d.dialer()(natsURL, d.Refresh, d.recordNATSEvent)
 	d.swapNC("handleLogin", newNC)
+	// Account boundary: cached heartbeat rows tagged with OTHER accounts
+	// must not resurface as stale ghosts in `ppz who` if the user later
+	// switches back to one of them — drop them now. What this drop is
+	// NOT: the mechanism keeping other-account rows out of `ppz who`
+	// today. That guarantee is the per-stamp account tag + handleWho's
+	// current-account filter, which stays airtight however login races a
+	// straggling subscription callback (Close doesn't join one
+	// in-flight) or a concurrently-armed new-org subscription — whose
+	// beats, tagged with the new account, survive this drop. Same-account
+	// re-login keeps everything: the re-armed subscription refreshes the
+	// same handles, and wiping would leave `ppz who` empty for up to a
+	// full heartbeat interval. A failed login returns above and touches
+	// nothing — "who was running before my login attempt failed" stays
+	// answerable.
+	d.Heartbeats.DropOtherAccounts(ex.AccountID)
 	if newNC != nil {
 		if aid, err := uuid.Parse(ex.AccountID); err == nil {
 			d.subscribeOrgHeartbeats(aid)
 		}
+	} else {
+		// Best-effort dial failed: with no conn there is no "closed"
+		// event to auto-kick recovery, and handleWho never calls
+		// ensureNATS — the daemon (and a just-cleared `ppz who`) would
+		// sit dead until the JWT refresh fires, up to ~4.5 min out.
+		// Single-flight, so racing a healthy connection is a no-op.
+		d.kickReconnect()
 	}
 
 	writeIPC(conn, cliproto.LoginReply{URL: req.URL, KeyPrefix: prefix, AccountID: ex.AccountID})
@@ -970,8 +1001,9 @@ func (d *Daemon) handleSend(ctx context.Context, conn net.Conn, params json.RawM
 	}
 	// Heartbeat fast-path: stamp the daemon's in-memory cache so
 	// `ppz who` can render this agent without a NATS round-trip.
-	// No-op on every other channel.
-	applyHeartbeatStamp(d.Heartbeats, req.Channel, req.Handle, req.Payload, clock.Now())
+	// No-op on every other channel. Tagged with the current account —
+	// the one the resolved subject was built under.
+	applyHeartbeatStamp(d.Heartbeats, req.Channel, req.Handle, d.State.AccountID(), req.Payload, clock.Now())
 	// Bytes counts the user-visible payload, not the encoded envelope —
 	// matches WIRE.md §8 ppz broadcast and the broadcast-from-* fixtures.
 	writeIPC(conn, cliproto.SendReply{ID: env.ID, Subject: target.subject, Bytes: len(req.Payload)})
@@ -1035,7 +1067,7 @@ func (d *Daemon) handleSendBatch(ctx context.Context, conn net.Conn, params json
 	// belt-and-suspenders — if any caller ever batches heartbeats the
 	// cache still gets the latest payload.
 	if len(req.Payloads) > 0 {
-		applyHeartbeatStamp(d.Heartbeats, req.Channel, req.Handle, req.Payloads[len(req.Payloads)-1], clock.Now())
+		applyHeartbeatStamp(d.Heartbeats, req.Channel, req.Handle, d.State.AccountID(), req.Payloads[len(req.Payloads)-1], clock.Now())
 	}
 	writeIPC(conn, cliproto.SendBatchReply{IDs: ids, Subject: target.subject, Bytes: bytes})
 }

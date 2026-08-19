@@ -154,7 +154,7 @@ type Daemon struct {
 }
 
 func New(home, sock string) *Daemon {
-	return &Daemon{
+	d := &Daemon{
 		Home:       home,
 		Sock:       sock,
 		State:      NewState(home),
@@ -167,6 +167,20 @@ func New(home, sock string) *Daemon {
 		Watches:    newWatchRegistry(),
 		dial:       connectNATSWithRefresh,
 	}
+	// Subs are account-scoped (subs/<account>/<session>.json); wired
+	// here because the literal above can't reference d.State.
+	d.Subs.account = d.State.AccountID
+	return d
+}
+
+// dialer returns d.dial with the production fallback. New() always
+// injects connectNATSWithRefresh, but Daemon literals (tests) may leave
+// dial nil — every dial site goes through here so none can nil-deref.
+func (d *Daemon) dialer() func(string, *RefreshLoop, func(NATSEvent)) (*nats.Conn, error) {
+	if d.dial != nil {
+		return d.dial
+	}
+	return connectNATSWithRefresh
 }
 
 // rebuildNC ensures d.NC is connected with the current JWT generation:
@@ -189,7 +203,7 @@ func (d *Daemon) rebuildNC(caller string) error {
 	if d.NC != nil && d.NC.IsConnected() && d.ncExp == d.Refresh.JWTExp() {
 		return nil // already connected on the current generation — coalesce
 	}
-	nc, err := d.dial(d.NATSURL, d.Refresh, d.recordNATSEvent)
+	nc, err := d.dialer()(d.NATSURL, d.Refresh, d.recordNATSEvent)
 	if err != nil || nc == nil {
 		return cliproto.New(cliproto.ENATSUnreachable)
 	}

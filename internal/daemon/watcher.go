@@ -33,14 +33,34 @@ func (d *Daemon) watchState(ctx context.Context, hupCh <-chan os.Signal) {
 			}
 			lastCred, lastCur = c, u
 		}
-		_ = d.State.LoadFromDisk()
-		if _, ok := d.State.Credentials(); !ok && d.NC != nil {
-			// Logout / creds-deleted-out-of-band: drop NC and evict
-			// every live follow conn so the CLI sees EOF on its IPC
-			// socket and redials. Without the follow eviction the
-			// stdin/inbox forwarders sit on a healthy-looking conn
-			// whose underlying JetStream consumer just died.
-			d.swapNC("watchState-creds-gone", nil)
+		// A failed reload is a transient read problem (EACCES, EMFILE,
+		// EIO), NOT a logout — LoadFromDisk keeps the prior in-memory
+		// state on error, and acting on it here would destructively
+		// drop NATS and wipe the who-cache for a user who is genuinely
+		// logged in. Skip and retry on the next tick/HUP.
+		if err := d.State.LoadFromDisk(); err != nil {
+			// Zero the sigs so the next tick unconditionally retries —
+			// the sig cache was already advanced past the change that
+			// triggered this reload.
+			lastCred, lastCur = fileSig{}, fileSig{}
+			continue
+		}
+		if _, ok := d.State.Credentials(); !ok {
+			if d.NC != nil {
+				// Logout / creds-deleted-out-of-band: drop NC and evict
+				// every live follow conn so the CLI sees EOF on its IPC
+				// socket and redials. Without the follow eviction the
+				// stdin/inbox forwarders sit on a healthy-looking conn
+				// whose underlying JetStream consumer just died.
+				d.swapNC("watchState-creds-gone", nil)
+			}
+			// Forget the logged-out account's rows AFTER the swap (per
+			// the ordering handleLogin documents), outside the NC guard
+			// so a daemon that never got NATS up still forgets them;
+			// idempotent, so re-running on later logged-out reloads is
+			// free. Rendering-wise this is hygiene: handleWho scopes to
+			// the current account, and logged out there is none.
+			d.Heartbeats.Clear()
 		}
 		// Capture sigs after LoadFromDisk so hup-triggered reloads also
 		// align the cache.

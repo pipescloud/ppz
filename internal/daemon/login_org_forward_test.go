@@ -1,15 +1,11 @@
 package daemon
 
 import (
-	"bufio"
-	"context"
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/pipescloud/ppz/internal/cliproto"
 )
@@ -30,55 +26,13 @@ func TestHandleLogin_ForwardsChosenAccountID(t *testing.T) {
 		_ = json.Unmarshal(b, &req)
 		gotReqAccountID = req.AccountID
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(cliproto.AuthExchangeReply{
-			NATSURL:      "nats://127.0.0.1:1", // fails fast (DNS) → connect is best-effort
-			AccountID:    req.AccountID,
-			AccountName:  "beta",
-			NATSUserJWT:  "jwt",
-			NATSUserSeed: "seed",
-			ExpiresAt:    time.Now().Add(5 * time.Minute),
-		})
+		_ = json.NewEncoder(w).Encode(okExchangeReply(req.AccountID))
 	}))
 	defer srv.Close()
 
-	d := &Daemon{
-		State:      NewState(t.TempDir()),
-		NATSEvents: newNATSEventRing(natsEventRingCap),
-		Follows:    newFollowRegistry(),
-		Watches:    newWatchRegistry(),
-		Heartbeats: NewHeartbeatCache(),
-		HTTP:       &http.Client{Timeout: 2 * time.Second},
-	}
-	t.Cleanup(func() {
-		if d.Refresh != nil {
-			d.Refresh.Stop()
-		}
-		if d.NC != nil {
-			d.NC.Close()
-		}
-	})
-
-	srvConn, cliConn := net.Pipe()
-	params, _ := json.Marshal(cliproto.LoginRequest{URL: srv.URL, APIKey: "ppz_oauth_test", AccountID: beta})
-	go func() {
-		d.handleLogin(context.Background(), srvConn, params)
-		srvConn.Close()
-	}()
-
-	// Drain the IPC reply so handleLogin's writeIPC doesn't block on the
-	// unbuffered pipe.
-	_ = cliConn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	line, err := bufio.NewReader(cliConn).ReadBytes('\n')
-	if err != nil && err != io.EOF {
-		t.Fatalf("reading IPC reply: %v", err)
-	}
-	var resp struct {
-		Result cliproto.LoginReply `json:"result"`
-		Error  *cliproto.Error     `json:"error"`
-	}
-	_ = json.Unmarshal(line, &resp)
-	if resp.Error != nil {
-		t.Fatalf("login returned error: %v", resp.Error)
+	d := newLoginTestDaemon(t)
+	if _, e := driveLogin(t, d, cliproto.LoginRequest{URL: srv.URL, APIKey: "ppz_oauth_test", AccountID: beta}); e != nil {
+		t.Fatalf("login returned error: %v", e)
 	}
 
 	if gotReqAccountID != beta {

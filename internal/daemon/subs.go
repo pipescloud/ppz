@@ -33,10 +33,30 @@ import (
 type subscriptions struct {
 	dir string
 	mu  sync.Mutex
+	// account returns the account id that scopes every read/write —
+	// subs live at subs/<account>/<session>.json so a cross-account
+	// login can't bind one org's subscription set to another org's
+	// subjects (the Cursors precedent: CursorKey embeds accountID).
+	// nil, or a func returning "" (logged out), falls back to the
+	// legacy un-scoped subs/<session>.json layout; a legacy file is
+	// adopted into the account dir on first scoped access, so
+	// pre-upgrade single-account users keep their subs.
+	account func() string
 }
 
 func newSubscriptions(home string) *subscriptions {
 	return &subscriptions{dir: filepath.Join(home, "subs")}
+}
+
+// sessDir returns the directory session files live in under the
+// current account scope (caller holds mutex).
+func (s *subscriptions) sessDir() string {
+	if s.account != nil {
+		if acct := s.account(); acct != "" {
+			return filepath.Join(s.dir, acct)
+		}
+	}
+	return s.dir
 }
 
 // List returns the session's subscribed subjects, sorted and de-duplicated.
@@ -106,42 +126,76 @@ func (s *subscriptions) SweepHandle(handle string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	entries, err := os.ReadDir(s.dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
 	prefix := handle + "."
-	for _, e := range entries {
-		name := e.Name()
-		// `<sess>.json.tmp` write-temps already fail the .json suffix test.
-		if e.IsDir() || !strings.HasSuffix(name, ".json") {
-			continue
-		}
-		sess := strings.TrimSuffix(name, ".json")
-		cur := s.loadLocked(sess)
-		kept := make([]string, 0, len(cur))
-		for _, subj := range cur {
-			if subj == handle || strings.HasPrefix(subj, prefix) {
+	// Sweep the current account's scope, plus the legacy flat layout —
+	// a not-yet-adopted legacy file may still reference the handle.
+	// Other accounts' dirs are deliberately left alone: handle names
+	// are only unique per org, so a same-named source elsewhere must
+	// keep its subscriptions.
+	dirs := []string{s.sessDir()}
+	if dirs[0] != s.dir {
+		dirs = append(dirs, s.dir)
+	}
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			kept = append(kept, subj)
+			return err
 		}
-		if len(kept) != len(cur) {
-			if err := s.saveLocked(sess, kept); err != nil {
-				return err
+		for _, e := range entries {
+			name := e.Name()
+			// `<sess>.json.tmp` write-temps already fail the .json suffix test.
+			if e.IsDir() || !strings.HasSuffix(name, ".json") {
+				continue
+			}
+			path := filepath.Join(dir, name)
+			cur := readSubsFile(path)
+			kept := make([]string, 0, len(cur))
+			for _, subj := range cur {
+				if subj == handle || strings.HasPrefix(subj, prefix) {
+					continue
+				}
+				kept = append(kept, subj)
+			}
+			if len(kept) != len(cur) {
+				if err := writeSubsFile(path, kept); err != nil {
+					return err
+				}
 			}
 		}
 	}
 	return nil
 }
 
-// loadLocked reads + parses the session file, returning subjects sorted.
-// A missing or unparseable file yields an empty list (caller holds mutex).
+// loadLocked reads + parses the session file under the current account
+// scope, returning subjects sorted. A missing or unparseable file
+// yields an empty list (caller holds mutex). When the scoped file is
+// missing but a legacy un-scoped one exists, the legacy file is adopted
+// (renamed) into the account dir first — pre-account-scoping daemons
+// wrote flat subs/<sess>.json, and the overwhelmingly-common
+// single-account user should keep their subs across the upgrade.
 func (s *subscriptions) loadLocked(sess string) []string {
-	data, err := os.ReadFile(filepath.Join(s.dir, sess+".json"))
+	dir := s.sessDir()
+	path := filepath.Join(dir, sess+".json")
+	if dir != s.dir {
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			legacy := filepath.Join(s.dir, sess+".json")
+			if _, lerr := os.Stat(legacy); lerr == nil {
+				if os.MkdirAll(dir, 0o700) == nil {
+					_ = os.Rename(legacy, path)
+				}
+			}
+		}
+	}
+	return readSubsFile(path)
+}
+
+// readSubsFile reads + parses one subs file. Missing or unparseable
+// yields nil.
+func readSubsFile(path string) []string {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
@@ -153,21 +207,28 @@ func (s *subscriptions) loadLocked(sess string) []string {
 	return subs
 }
 
-// saveLocked writes the list atomically (tmp + rename), same as cursors.
+// saveLocked writes the list atomically (tmp + rename), same as
+// cursors, under the current account scope.
 func (s *subscriptions) saveLocked(sess string, subs []string) error {
-	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+	dir := s.sessDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	sort.Strings(subs)
+	return writeSubsFile(filepath.Join(dir, sess+".json"), subs)
+}
+
+// writeSubsFile writes one subs file atomically (tmp + rename).
+func writeSubsFile(path string, subs []string) error {
 	data, err := json.Marshal(subs)
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(s.dir, sess+".json.tmp")
+	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, filepath.Join(s.dir, sess+".json"))
+	return os.Rename(tmp, path)
 }
 
 func sliceToSet(xs []string) map[string]bool {

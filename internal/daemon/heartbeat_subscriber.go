@@ -43,27 +43,8 @@ import (
 // automatically when swapNC closes the old nats.Conn.
 func (d *Daemon) subscribeOrgHeartbeats(accountID uuid.UUID) {
 	prefix := accountID.String() + "."
-	const suffix = ".heartbeat"
 	_, err := d.NC.Subscribe(prefix+">", func(msg *nats.Msg) {
-		subj := msg.Subject
-		if !strings.HasSuffix(subj, suffix) {
-			return
-		}
-		parts := strings.Split(subj, ".")
-		// Need at least <acct>.<handle>.heartbeat for there to be a
-		// handle segment at all.
-		if len(parts) < 3 {
-			return
-		}
-		handle := parts[len(parts)-2]
-		if handle == "" {
-			return
-		}
-		var env envelope.Message
-		if err := json.Unmarshal(msg.Data, &env); err != nil {
-			return
-		}
-		d.Heartbeats.Stamp(handle, env.Payload, time.Now())
+		d.stampOrgHeartbeat(accountID, msg)
 	})
 	if err != nil {
 		d.recordNATSEvent(NATSEvent{
@@ -74,4 +55,31 @@ func (d *Daemon) subscribeOrgHeartbeats(accountID uuid.UUID) {
 			Reason: err.Error(),
 		})
 	}
+}
+
+// stampOrgHeartbeat is the subscription callback body: filter for
+// .heartbeat subjects, extract the handle, unwrap the envelope, stamp
+// the cache. A method (rather than a closure) so tests can invoke it
+// directly to model a callback executing at an arbitrary point relative
+// to login/logout — nats.go's Close does not join in-flight callbacks.
+func (d *Daemon) stampOrgHeartbeat(accountID uuid.UUID, msg *nats.Msg) {
+	subj := msg.Subject
+	if !strings.HasSuffix(subj, ".heartbeat") {
+		return
+	}
+	parts := strings.Split(subj, ".")
+	// Need at least <acct>.<handle>.heartbeat for there to be a
+	// handle segment at all.
+	if len(parts) < 3 {
+		return
+	}
+	handle := parts[len(parts)-2]
+	if handle == "" {
+		return
+	}
+	var env envelope.Message
+	if err := json.Unmarshal(msg.Data, &env); err != nil {
+		return
+	}
+	d.Heartbeats.Stamp(handle, accountID.String(), env.Payload, time.Now())
 }
