@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -192,7 +193,10 @@ func TestFailureCloseRecoversWithoutChurn(t *testing.T) {
 
 	// Failure-close: closes the live conn AND kicks the background
 	// reconnect, exactly like a JetStream-op failure in production.
-	d.reportNATSFailure()
+	// (The embedded server here is core-only — no JetStream — so under
+	// the verify-before-close contract this still legitimately closes:
+	// a JS-level probe against it fails, which is the real zombie shape.)
+	d.reportNATSFailure(errors.New("test: simulated jetstream op timeout"))
 
 	if !waitNCConnected(d, 5*time.Second) {
 		t.Fatalf("did not recover after failure-close")

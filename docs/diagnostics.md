@@ -57,7 +57,10 @@ Order matters:
 
 1. **Summary** — current state, refresh timing, broker URL. Read first.
    "since 4m23s ago" means the connection has been stable for ~4m.
-   `drops_last_hour=2` is a quick health metric.
+   `drops_last_hour=2` is a quick health metric. It counts only
+   unplanned disconnects: teardowns caused by the daemon's own
+   refresh-rotation swaps (a `swap` naming the conn as `old=` just
+   before) are excluded, so a healthy hour reads 0 — not ~14.
 2. **Pattern warnings** — auto-detected anomalies. If this block is
    empty, the recent trace is clean. Each `⚠` line names the pattern
    (anchors into §6), the wall-clock time, and a one-line interpretation.
@@ -139,7 +142,8 @@ the new type.
 | `reconnect`     | nats.go ReconnectHandler **or** ensureNATS | Connection (re)established. `caller="nats.go"` for the library callback; otherwise the daemon function that rebuilt it. |
 | `closed`        | nats.go ClosedHandler                     | Connection fully closed; will not auto-retry.          |
 | `swap`          | daemon `swapNC`                           | Daemon code installed a new NC and closed the old one. The most useful single event for "who replaced this connection?" — see §6. |
-| `warn`          | non-fatal failure paths                   | Today: `subscribeOrgHeartbeats` failure. Add new sources sparingly. |
+| `force_close`   | daemon `reportNATSFailure`                | A JetStream op failed AND a verification probe confirmed the connection dead (true zombie); the daemon is closing it. `reason` = the triggering error + the probe error. The `nats.go` disconnect/closed pair that follows is this close's fallout — never an orphan. |
+| `warn`          | non-fatal failure paths                   | Today: `subscribeOrgHeartbeats` failure, and `reportNATSFailure` whose probe passed (connection kept; `reason` names the op error it absorbed). Add new sources sparingly. |
 | `daemon_start`  | `Daemon.Run` enters                       | Process began.                                         |
 | `daemon_stop`   | `Daemon.Run` defer                        | Process exited cleanly. Absence = crash.               |
 
@@ -159,6 +163,7 @@ library-initiated ones. Today's set:
 | `OnRefreshed-callback`       | Refresh-loop callback proactively rebuilt NC after rotation.              |
 | `watchState-creds-gone`      | File-watcher dropped NC because creds were deleted out-of-band.            |
 | `subscribeOrgHeartbeats`     | (warn only) heartbeat subscription failed.                                 |
+| `reportNATSFailure`          | (`force_close`/`warn` only) JetStream-op failure report: probe failed → closing, or probe passed → kept. |
 | `?`                          | Pre-Phase-0 event reloaded from disk with no caller stamped.              |
 
 When you read a trace: every NC transition should be attributable to

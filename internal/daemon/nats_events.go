@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,7 +57,12 @@ const NATSEventSchemaVersion = 1
 //   - "reconnect"   — nats.go ReconnectHandler fired
 //   - "closed"      — nats.go ClosedHandler fired
 //   - "swap"        — daemon code called swapNC (Caller names which fn)
-//   - "warn"        — non-fatal failure (e.g. resubscribe error)
+//   - "force_close" — reportNATSFailure verified the conn dead (probe
+//     failed) and is about to close it; Reason carries the triggering
+//     JetStream error + the probe error, so the nats.go
+//     disconnect/closed pair that follows is never an orphan
+//   - "warn"        — non-fatal failure (e.g. resubscribe error, or a
+//     reportNATSFailure whose probe passed — connection kept)
 //   - "daemon_start" / "daemon_stop" — lifecycle hooks
 //
 // Caller distinguishes daemon-initiated transitions from nats.go-initiated
@@ -164,10 +170,45 @@ func (d *Daemon) natsStatusSnapshot() (state string, dropsLastHour int, lastEven
 		lastEventAt = &t
 	}
 	cutoff := time.Now().Add(-time.Hour)
-	for _, ev := range events {
-		if ev.Type == "disconnect" && !ev.At.Before(cutoff) {
+	for i, ev := range events {
+		if ev.Type == "disconnect" && !ev.At.Before(cutoff) && !swapAttributedDisconnect(events, i) {
 			dropsLastHour++
 		}
 	}
 	return state, dropsLastHour, lastEventAt
+}
+
+// swapDropAttributionWindow bounds how far back a disconnect looks for
+// the swap that retired its connection. swapNCLocked records the "swap"
+// (then closes the old conn) strictly before nats.go's async handlers
+// record the resulting "disconnect", so in practice the pair lands
+// within milliseconds; a couple of seconds absorbs handler-dispatch lag
+// (e.g. the rearm flush) without reaching back to unrelated swaps.
+const swapDropAttributionWindow = 5 * time.Second
+
+// swapAttributedDisconnect reports whether events[i] (a "disconnect") is
+// the teardown of a connection the daemon retired ON PURPOSE: a "swap"
+// event just before it names the disconnect's NCID as the replaced conn
+// ("old=<id> new=..."). Those are routine — every JWT-refresh rotation
+// produces one — and counting them made drops_last_hour read ~14 on a
+// completely healthy hour (2026-08-19 incident report, question 3).
+// Genuine network drops and reportNATSFailure force-closes carry no such
+// swap and still count.
+func swapAttributedDisconnect(events []NATSEvent, i int) bool {
+	ev := events[i]
+	if ev.NCID == "" {
+		return false
+	}
+	// The retired id is always followed by " new=" in swap reasons, so
+	// matching with the trailing space can't confuse 0xA with 0xAB.
+	needle := "old=" + ev.NCID + " "
+	for j := i - 1; j >= 0; j-- {
+		if ev.At.Sub(events[j].At) > swapDropAttributionWindow {
+			return false
+		}
+		if events[j].Type == "swap" && strings.Contains(events[j].Reason, needle) {
+			return true
+		}
+	}
+	return false
 }

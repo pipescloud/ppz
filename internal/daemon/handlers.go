@@ -1148,7 +1148,7 @@ func (d *Daemon) resolveSendTarget(ctx context.Context, reqHandle, reqChannel, b
 				errors.Is(err, nats.ErrConnectionClosed),
 				errors.Is(err, nats.ErrNoServers):
 				if !errors.Is(err, nats.ErrConnectionClosed) && !errors.Is(err, nats.ErrNoServers) {
-					d.reportNATSFailure()
+					d.reportNATSFailure(err)
 				}
 				return sendTarget{}, cliproto.New(cliproto.ENATSUnreachable)
 			default:
@@ -1230,7 +1230,7 @@ func (d *Daemon) resolveSendTarget(ctx context.Context, reqHandle, reqChannel, b
 				errors.Is(err, nats.ErrConnectionClosed),
 				errors.Is(err, nats.ErrNoServers):
 				if !errors.Is(err, nats.ErrConnectionClosed) && !errors.Is(err, nats.ErrNoServers) {
-					d.reportNATSFailure()
+					d.reportNATSFailure(err)
 				}
 				return sendTarget{}, cliproto.New(cliproto.ENATSUnreachable)
 			default:

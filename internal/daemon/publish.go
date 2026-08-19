@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,7 +40,7 @@ func (d *Daemon) publishWithAck(subject string, data []byte) *cliproto.Error {
 		// Timeout on a live NC → zombie connection. Close so the next
 		// ensureNATS rebuilds rather than coalescing on the dead conn.
 		if !isNATSConnErr(err) {
-			d.reportNATSFailure()
+			d.reportNATSFailure(err)
 		}
 		return classifyPublishErr(err)
 	}
@@ -70,7 +71,7 @@ func (d *Daemon) publishBatchWithAck(subject string, datas [][]byte) *cliproto.E
 	select {
 	case <-js.PublishAsyncComplete():
 	case <-time.After(jsPublishAckTimeout):
-		d.reportNATSFailure()
+		d.reportNATSFailure(fmt.Errorf("jetstream batch publish: no PubAck within %v", jsPublishAckTimeout))
 		return cliproto.New(cliproto.EDeliveryUnconfirmed)
 	}
 	for _, f := range futures {
@@ -78,7 +79,7 @@ func (d *Daemon) publishBatchWithAck(subject string, datas [][]byte) *cliproto.E
 		case <-f.Ok():
 		case e := <-f.Err():
 			if !isNATSConnErr(e) {
-				d.reportNATSFailure()
+				d.reportNATSFailure(e)
 			}
 			return classifyPublishErr(e)
 		}

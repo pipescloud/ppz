@@ -6,6 +6,7 @@ import (
 	"net"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
@@ -131,6 +132,14 @@ func (d *Daemon) handleListWatch(ctx context.Context, conn net.Conn, params json
 // Returns ENATSUnreachable when no connection is currently installed — the
 // same fail-soft error every existing call site already mapped a
 // jetstream.New failure to.
+// jsAPITimeout bounds JetStream API requests made with a deadline-less
+// context (stream checks, consumer setup — the daemon's request ctx
+// carries no deadline). 5s mirrors jetstream's own defaultAPITimeout, so
+// production behaviour is unchanged; it exists as a var so tests can
+// shrink it and exercise the timeout paths in milliseconds. Calls that
+// pass their own deadline ctx (e.g. publishWithAck) are unaffected.
+var jsAPITimeout = 5 * time.Second
+
 func (d *Daemon) jetStream() (jetstream.JetStream, *cliproto.Error) {
 	d.ncMu.Lock()
 	nc := d.NC
@@ -138,7 +147,7 @@ func (d *Daemon) jetStream() (jetstream.JetStream, *cliproto.Error) {
 	if nc == nil {
 		return nil, cliproto.New(cliproto.ENATSUnreachable)
 	}
-	js, err := jetstream.New(nc)
+	js, err := jetstream.New(nc, jetstream.WithDefaultTimeout(jsAPITimeout))
 	if err != nil {
 		return nil, cliproto.New(cliproto.ENATSUnreachable)
 	}
