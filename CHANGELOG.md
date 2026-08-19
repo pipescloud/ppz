@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased — fresh idle window for consumed episodes
+
+**Bug fix (`ppz terminal share`).** A message arriving after the agent
+had consumed the pending episode inherited the REMAINDER of the idle
+window the previous message opened, instead of getting its own.
+Field-observed on v0.56.6: msg-1 armed the 60s gate, the agent's
+monitor read it, msg-2 landed 57s in — and was nagged five seconds
+after arriving. Same root as the ladder bug (consumption is invisible
+between fire attempts, so `pendingSince` went stale exactly the way
+`unacked` did), expressed through the idle gate.
+
+- **Consumed-episode deferral.** At a fire attempt whose confirm shows
+  the watermark advanced during the pending window AND whose surviving
+  unread is young (newest unread `LastAt` within `IdleAfter`), the
+  injection is suppressed and the idle window restamped: the young
+  message earns a full 60s of its own — usually resolving silently via
+  the agent's own read, exactly like any fresh message.
+- **One read buys one deferral.** The suppression adopts the confirm's
+  watermarks as the new baseline, so further arrivals without further
+  reads fire at the fresh gate regardless of youth — traffic alone can
+  never starve the nag, and a non-reading agent still fires at the
+  original 60s.
+- **Old survivors fire at the gate** (the post-cooldown shape):
+  deferring a message that already waited minutes would add latency
+  for nothing. Unprovable youth (no `LastAt` in the snapshot) also
+  fires — at-least-once preserved.
+- The deferral's consumption proof resets the backoff ladder, and the
+  arm-time baseline comes from the subs-wait wakeup's own row state —
+  no new IPC anywhere.
+
 ## Unreleased — subs alert ladder resets on consumption
 
 **Bug fix (`ppz terminal share`).** The repeat-alert backoff ladder

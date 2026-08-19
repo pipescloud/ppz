@@ -113,22 +113,31 @@ type terminalSubsAlertStateMachine struct {
 	// deferred fires inject nothing and so never increment it.
 	unacked int
 	// baseline is the per-pipe consumption watermark (Total - Unread,
-	// clamped at zero) snapshotted from the confirm reply at the
-	// moment of the LAST INJECTION; nil until the first successful
-	// one. A later fire whose confirm shows any shared pipe's
+	// clamped at zero) at the start of the current accountability
+	// window. A fire attempt whose confirm shows any shared pipe's
 	// watermark above this baseline proves the agent consumed since
-	// the last alert — even when the level never touched zero because
-	// new traffic kept arriving (the field-observed occluded-read
-	// case) — and resets unacked before the fire counts itself.
+	// then — even when the level never touched zero because new
+	// traffic kept arriving (the field-observed occluded-read case).
 	//
-	// The baseline may ONLY move at injection time, and only from a
-	// successful confirm: a deferral's reply must not re-baseline (it
-	// would destroy the advance it carries before anything fired),
-	// and an error-fire retains the last good baseline so a read
-	// around a daemon hiccup is still credited at the next successful
-	// confirm. Pipes are compared only when present in both snapshots
-	// — a freshly subscribed pipe's pre-existing history proves
-	// nothing about consumption since the last alert.
+	// It moves at exactly three points, each starting a new window:
+	//   1. seeded from the subs-wait wakeup's row state when a pending
+	//      episode arms with no baseline yet (pre-first-injection —
+	//      what lets the fresh-idle-window deferral see a read in an
+	//      episode that has never alerted). Seeding ONLY when nil is
+	//      load-bearing: the loop re-arms every ~250ms while unread,
+	//      and re-seeding would track the live watermark and erase
+	//      every read between injections (#194's reset would die);
+	//      pinned by SnapshotRearmsDoNotEraseConsumption.
+	//   2. at an INJECTION, from that fire's successful confirm.
+	//   3. at a consumed-episode DEFERRAL, from its confirm — one read
+	//      buys one deferral.
+	// It never moves from a user-input deferral's reply (that would
+	// destroy the advance before anything fired) nor on a confirm
+	// error (the last good baseline is retained so a read around a
+	// daemon hiccup is credited at the next successful confirm).
+	// Pipes are compared only when present in both snapshots — a
+	// freshly subscribed pipe's pre-existing history proves nothing
+	// about consumption since the window began.
 	//
 	// Deliberate looseness: ANY pipe advancing resets the whole
 	// ladder, so an agent reading its inbox while ignoring one
@@ -139,6 +148,13 @@ type terminalSubsAlertStateMachine struct {
 	// definition, so per-pipe ladders would add state without adding
 	// reach.
 	baseline map[string]uint64
+	// deferUntil is the consumed-episode deferral's own gate: no
+	// injection before this instant. A dedicated stamp rather than a
+	// pendingSince restamp because ready()'s idle gate only consults
+	// pendingSince while lastUserInput is zero — in an attended share
+	// (any local keystroke, ever) a restamp gates nothing and the
+	// deferral collapsed to a single flush tick (review on #196).
+	deferUntil time.Time
 }
 
 func newTerminalSubsAlertStateMachine(cfg terminalSubsAlertConfig) *terminalSubsAlertStateMachine {
@@ -171,6 +187,12 @@ func (s *terminalSubsAlertStateMachine) ObserveUserInput(now time.Time, input []
 // after a clear stamps pendingSince so the idle-after gate can
 // measure how long the unread has been outstanding without user
 // input.
+//
+// Production exclusively uses ObserveSubsUnreadSnapshot (the subs-wait
+// loop always has the row state in hand); this variant remains as a
+// test convenience for scenarios that steer the baseline through
+// confirm replies alone. New tests exercising arm/re-arm behaviour
+// should prefer the snapshot variant — it is the shipped path.
 func (s *terminalSubsAlertStateMachine) ObserveSubsUnread(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -178,6 +200,26 @@ func (s *terminalSubsAlertStateMachine) ObserveSubsUnread(now time.Time) {
 		s.pendingSince = now
 	}
 	s.pending = true
+}
+
+// ObserveSubsUnreadSnapshot is ObserveSubsUnread plus the row state
+// the subs-wait wakeup already carries. Before the first injection
+// the ladder has no baseline, so the arm-time watermarks seed it —
+// that is what lets a fire attempt detect "the agent consumed during
+// this pending window" for an episode that has never alerted (the
+// stale-idle-window bug). Seeding only when nil is deliberate:
+// post-injection the baseline must stay pinned to the last injection,
+// or reads between injections would be erased by the next re-arm.
+func (s *terminalSubsAlertStateMachine) ObserveSubsUnreadSnapshot(now time.Time, reply cliproto.ListReply) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.pending {
+		s.pendingSince = now
+	}
+	s.pending = true
+	if s.baseline == nil {
+		s.baseline = subsReplyWatermarks(reply)
+	}
 }
 
 func (s *terminalSubsAlertStateMachine) ReadyAlert(now time.Time) string {
@@ -194,10 +236,12 @@ func (s *terminalSubsAlertStateMachine) ReadyAlert(now time.Time) string {
 	// forwarding path) takes the same mutex — holding it here would
 	// stall the user's keystrokes for the duration of the confirm.
 	var wm map[string]uint64
+	var newestUnread time.Time
 	if confirm != nil {
 		reply, err := confirm()
 		if err == nil {
 			wm = subsReplyWatermarks(reply)
+			newestUnread = subsReplyNewestUnreadAt(reply)
 		}
 		if !confirmSubsUnreadDecision(reply, err) {
 			// The level says nothing is unread; the pending bit is stale
@@ -227,6 +271,28 @@ func (s *terminalSubsAlertStateMachine) ReadyAlert(now time.Time) string {
 	if !s.ready(now) {
 		return ""
 	}
+	// Consumed-episode deferral: the agent read something during this
+	// pending window (watermark advance — the same consumption proof
+	// the ladder keys on) and the surviving unread is YOUNG. Injecting
+	// now would nag for a message that has had only seconds of the
+	// idle grace the gate exists to provide (field-observed: 5s), so
+	// suppress and restamp — the survivor earns a full window of its
+	// own. Adopting the confirm's watermarks as the new baseline means
+	// one read buys exactly one deferral: further arrivals without
+	// further reads fire at the fresh gate regardless of youth (no
+	// starvation), as does an OLD survivor (the post-cooldown shape —
+	// deferring a message that already waited minutes adds pure
+	// latency), or a snapshot with no LastAt to prove youth. The
+	// advance also resets the ladder, and pending stays true: there IS
+	// unread, the question was only when to say so.
+	if wm != nil && watermarkAdvanced(s.baseline, wm) &&
+		!newestUnread.IsZero() && now.Sub(newestUnread) < s.cfg.IdleAfter {
+		s.deferUntil = now.Add(s.cfg.IdleAfter)
+		s.baseline = wm
+		s.unacked = 0
+		return ""
+	}
+
 	s.pending = false
 	s.lastAlert = now
 	if wm != nil {
@@ -274,6 +340,40 @@ func subsReplyWatermarks(reply cliproto.ListReply) map[string]uint64 {
 	return wm
 }
 
+// subsReplyNewestUnreadAt returns the newest LastAt across rows that
+// carry unread, walking both row families — the youngness input for
+// the consumed-episode deferral. Zero when no unread row is stamped:
+// youth is then unprovable and the fire proceeds (at-least-once — a
+// daemon that stops stamping LastAt must not silently widen every
+// alert by an idle window). Note LastAt is the pipe's last MESSAGE
+// time, which for a single fresh unread is its arrival; with several
+// unread it overstates the oldest one's youth, deferring at most one
+// extra window and only while reads keep happening — WITHIN a pipe
+// (cursor monotonicity makes a pipe's unread its newest suffix).
+// ACROSS pipes the max is looser: a chatty pipe that always has a
+// young unread and keeps being read can defer another pipe's old
+// unread indefinitely. Accepted, same family as the any-pipe-resets
+// looseness on the ladder (see baseline): each deferral still costs
+// a real read somewhere, so the agent holding it off is demonstrably
+// attending the session; any halt in reading fires at the next gate.
+func subsReplyNewestUnreadAt(reply cliproto.ListReply) time.Time {
+	var newest time.Time
+	consider := func(info cliproto.PipeInfo) {
+		if info.Unread > 0 && info.LastAt != nil && info.LastAt.After(newest) {
+			newest = *info.LastAt
+		}
+	}
+	for _, src := range reply.Sources {
+		for _, p := range src.PipeInfos {
+			consider(p)
+		}
+	}
+	for _, u := range reply.UncollaredPipes {
+		consider(u.Info)
+	}
+	return newest
+}
+
 // watermarkAdvanced reports whether any pipe present in BOTH
 // snapshots consumed forward. Strictly greater: an unchanged
 // watermark proves nothing, and a DECREASE (retention expiry of
@@ -300,6 +400,9 @@ func (s *terminalSubsAlertStateMachine) ready(now time.Time) bool {
 		return false
 	}
 	if gap := s.repeatCooldown(); gap > 0 && !s.lastAlert.IsZero() && now.Sub(s.lastAlert) < gap {
+		return false
+	}
+	if now.Before(s.deferUntil) {
 		return false
 	}
 	return true
@@ -410,6 +513,12 @@ func (p *terminalSubsAlertPump) ObserveUserInput(now time.Time, input []byte) {
 // the alert text — so this takes only `now`.
 func (p *terminalSubsAlertPump) ObserveSubsUnread(now time.Time) {
 	p.sm.ObserveSubsUnread(now)
+}
+
+// ObserveSubsUnreadSnapshot forwards the wakeup with its row state so
+// the state machine can seed the pre-injection consumption baseline.
+func (p *terminalSubsAlertPump) ObserveSubsUnreadSnapshot(now time.Time, reply cliproto.ListReply) {
+	p.sm.ObserveSubsUnreadSnapshot(now, reply)
 }
 
 func (p *terminalSubsAlertPump) Flush(now time.Time) bool {
