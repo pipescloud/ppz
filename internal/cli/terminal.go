@@ -1602,7 +1602,11 @@ func streamForwardSubsAlertsOnce(ctx context.Context, handle string, pump *termi
 			return
 		}
 		if subsReplyHasUnread(reply) {
-			pump.ObserveSubsUnread(time.Now())
+			// Snapshot variant: the wakeup's own row state seeds the
+			// consumption baseline for episodes that have never
+			// alerted, so a fire attempt can tell "the agent read
+			// during this window" (fresh-idle-window deferral).
+			pump.ObserveSubsUnreadSnapshot(time.Now(), reply)
 		}
 		select {
 		case <-ctx.Done():

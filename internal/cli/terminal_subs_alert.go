@@ -214,10 +214,12 @@ func (s *terminalSubsAlertStateMachine) ReadyAlert(now time.Time) string {
 	// forwarding path) takes the same mutex — holding it here would
 	// stall the user's keystrokes for the duration of the confirm.
 	var wm map[string]uint64
+	var newestUnread time.Time
 	if confirm != nil {
 		reply, err := confirm()
 		if err == nil {
 			wm = subsReplyWatermarks(reply)
+			newestUnread = subsReplyNewestUnreadAt(reply)
 		}
 		if !confirmSubsUnreadDecision(reply, err) {
 			// The level says nothing is unread; the pending bit is stale
@@ -247,6 +249,28 @@ func (s *terminalSubsAlertStateMachine) ReadyAlert(now time.Time) string {
 	if !s.ready(now) {
 		return ""
 	}
+	// Consumed-episode deferral: the agent read something during this
+	// pending window (watermark advance — the same consumption proof
+	// the ladder keys on) and the surviving unread is YOUNG. Injecting
+	// now would nag for a message that has had only seconds of the
+	// idle grace the gate exists to provide (field-observed: 5s), so
+	// suppress and restamp — the survivor earns a full window of its
+	// own. Adopting the confirm's watermarks as the new baseline means
+	// one read buys exactly one deferral: further arrivals without
+	// further reads fire at the fresh gate regardless of youth (no
+	// starvation), as does an OLD survivor (the post-cooldown shape —
+	// deferring a message that already waited minutes adds pure
+	// latency), or a snapshot with no LastAt to prove youth. The
+	// advance also resets the ladder, and pending stays true: there IS
+	// unread, the question was only when to say so.
+	if wm != nil && watermarkAdvanced(s.baseline, wm) &&
+		!newestUnread.IsZero() && now.Sub(newestUnread) < s.cfg.IdleAfter {
+		s.pendingSince = now
+		s.baseline = wm
+		s.unacked = 0
+		return ""
+	}
+
 	s.pending = false
 	s.lastAlert = now
 	if wm != nil {
@@ -292,6 +316,33 @@ func subsReplyWatermarks(reply cliproto.ListReply) map[string]uint64 {
 		wm["u/"+u.Manifold+"/"+u.Name] = clamped(u.Info)
 	}
 	return wm
+}
+
+// subsReplyNewestUnreadAt returns the newest LastAt across rows that
+// carry unread, walking both row families — the youngness input for
+// the consumed-episode deferral. Zero when no unread row is stamped:
+// youth is then unprovable and the fire proceeds (at-least-once — a
+// daemon that stops stamping LastAt must not silently widen every
+// alert by an idle window). Note LastAt is the pipe's last MESSAGE
+// time, which for a single fresh unread is its arrival; with several
+// unread it overstates the oldest one's youth, deferring at most one
+// extra window and only while reads keep happening.
+func subsReplyNewestUnreadAt(reply cliproto.ListReply) time.Time {
+	var newest time.Time
+	consider := func(info cliproto.PipeInfo) {
+		if info.Unread > 0 && info.LastAt != nil && info.LastAt.After(newest) {
+			newest = *info.LastAt
+		}
+	}
+	for _, src := range reply.Sources {
+		for _, p := range src.PipeInfos {
+			consider(p)
+		}
+	}
+	for _, u := range reply.UncollaredPipes {
+		consider(u.Info)
+	}
+	return newest
 }
 
 // watermarkAdvanced reports whether any pipe present in BOTH

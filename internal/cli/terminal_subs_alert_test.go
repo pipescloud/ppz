@@ -1833,3 +1833,45 @@ func TestTerminalSubsAlertPumpConsumedSuppressionResetsLadder(t *testing.T) {
 		t.Fatal("repeat after the deferred injection did not come on the base gap; the consumed-suppression must reset the ladder")
 	}
 }
+
+// TestTerminalSubsAlertPumpSuppressionRebaselinesConsumption pins the
+// deferral's own bookkeeping: the consumed-suppression must adopt the
+// confirm's watermarks as the new baseline. Without that, the advance
+// that justified the FIRST deferral stays visible forever, and every
+// later young arrival re-defers with no further reads — starvation of
+// the nag by traffic alone, exactly what the youngness rule exists to
+// prevent. One read buys one deferral.
+func TestTerminalSubsAlertPumpSuppressionRebaselinesConsumption(t *testing.T) {
+	now := time.Date(2026, 8, 19, 17, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	confirms := 0
+	var confirmReply cliproto.ListReply
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			confirms++
+			return confirmReply, nil
+		},
+	}, &ptyStdin)
+
+	// Episode arms; the agent reads msg-1 and msg-2 lands young: the
+	// stale gate defers (one read, one deferral).
+	pump.ObserveSubsUnreadSnapshot(now, subsUnreadReplyAt(1, 1, now))
+	confirmReply = subsUnreadReplyAt(1, 2, now.Add(57*time.Second))
+	if wrote := pump.Flush(now.Add(60 * time.Second)); wrote {
+		t.Fatalf("stale-gate fire was not suppressed: %q", ptyStdin.String())
+	}
+
+	// msg-3 arrives young before the fresh gate — but NOTHING further
+	// was read (watermark unchanged since the suppression). The read
+	// that bought the first deferral is spent; the fresh gate must
+	// fire despite the survivor being young.
+	confirmReply = subsUnreadReplyAt(2, 3, now.Add(115*time.Second))
+	if wrote := pump.Flush(now.Add(120 * time.Second)); !wrote {
+		t.Fatal("second deferral granted with no further reads; the suppression must adopt the confirm's watermarks as the new baseline — one read buys one deferral")
+	}
+}
