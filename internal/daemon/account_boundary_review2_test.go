@@ -234,7 +234,7 @@ func TestWatchState_TransientLoadErrorDoesNotWipe(t *testing.T) {
 	}
 	d := newLoginTestDaemon(t)
 	loginAsPriorAccount(t, d, loginTestAcctOld)
-	d.Heartbeats.Stamp("alice", `{"harness":"claude"}`, time.Now())
+	d.Heartbeats.Stamp("alice", loginTestAcctOld, `{"harness":"claude"}`, time.Now())
 
 	credPath := filepath.Join(d.State.Home(), fileCredentials)
 	if err := os.Chmod(credPath, 0o000); err != nil {
@@ -304,7 +304,7 @@ func TestHandleLogin_EmptyAccountIDFails(t *testing.T) {
 	srv := okExchangeServer(t, "")
 	d := newLoginTestDaemon(t)
 	loginAsPriorAccount(t, d, loginTestAcctOld)
-	d.Heartbeats.Stamp("alice", `{"harness":"claude"}`, time.Now())
+	d.Heartbeats.Stamp("alice", loginTestAcctOld, `{"harness":"claude"}`, time.Now())
 
 	if _, e := driveLogin(t, d, cliproto.LoginRequest{URL: srv.URL, APIKey: "ppz_oauth_test"}); e == nil {
 		t.Fatalf("login with an empty exchange account_id must fail — it can never arm " +

@@ -162,6 +162,11 @@ func (s *State) SetLogin(creds Credentials, accountID, accountName, keyPrefix st
 	s.knownPipes = map[string]struct{}{}
 	s.handleManifold = map[string]string{}
 	s.pipesLoaded = false
+	// The completion vocabulary is per-account too: serving the previous
+	// org's source/pipe names as Stale:false under the new org would
+	// persist until an ls/send/connect happens to refresh it.
+	s.completionSources = nil
+	s.completionLoaded = false
 	// Login itself is a successful server round-trip — record it as the
 	// initial "ok" observation so status shows the right state right away.
 	s.loginCheck = cliproto.LoginCheckOK
@@ -359,35 +364,32 @@ func (s *State) HandleManifold(handle string) string {
 func (s *State) LoadFromDisk() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.creds = nil
-	s.accountID = ""
-	s.accountName = ""
-	s.keyPrefix = ""
-	s.current = map[string]string{}
-	s.currentNamespace = map[string]string{}
-	s.knownPipes = map[string]struct{}{}
-	s.handleManifold = map[string]string{}
-	s.pipesLoaded = false
-	// Reload zeros the cache: a daemon that just woke up hasn't talked to
-	// the server yet under the new credentials, so status should probe.
-	s.loginCheck = ""
 
+	// Stage every read BEFORE mutating anything: reload is
+	// all-or-nothing. A transient read failure (EACCES, EMFILE, EIO)
+	// or corrupt credentials JSON returns the error with the prior
+	// in-memory state intact — otherwise a hiccup is indistinguishable
+	// from a logout and the watcher destructively drops NATS and wipes
+	// caches for a genuinely-logged-in user.
+	var creds *Credentials
 	if data, err := os.ReadFile(filepath.Join(s.home, fileCredentials)); err == nil {
 		var c Credentials
-		if err := json.Unmarshal(data, &c); err == nil {
-			s.creds = &c
-			s.keyPrefix = keyPrefix(c.APIKey)
-			s.accountID = c.AccountID
-			s.accountName = c.AccountName
+		if uerr := json.Unmarshal(data, &c); uerr != nil {
+			// Corrupt is treated like unreadable, not like logged-out:
+			// the only writer is tmp+rename-atomic, so garbage here is
+			// a foreign truncation/partial state worth surfacing.
+			return uerr
 		}
+		creds = &c
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 
+	current := map[string]string{}
 	if data, err := os.ReadFile(filepath.Join(s.home, fileCurrent)); err == nil {
-		_ = json.Unmarshal(data, &s.current)
-		if s.current == nil {
-			s.current = map[string]string{}
+		_ = json.Unmarshal(data, &current)
+		if current == nil {
+			current = map[string]string{}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -395,10 +397,11 @@ func (s *State) LoadFromDisk() error {
 
 	// Phase 1.5: namespace state. Missing file = no namespaces set
 	// (graceful upgrade from v0.30 daemon state).
+	currentNamespace := map[string]string{}
 	if data, err := os.ReadFile(filepath.Join(s.home, fileNamespace)); err == nil {
-		_ = json.Unmarshal(data, &s.currentNamespace)
-		if s.currentNamespace == nil {
-			s.currentNamespace = map[string]string{}
+		_ = json.Unmarshal(data, &currentNamespace)
+		if currentNamespace == nil {
+			currentNamespace = map[string]string{}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -408,11 +411,32 @@ func (s *State) LoadFromDisk() error {
 	// "current" file. If we find it, fold it into the "default" session.
 	if data, err := os.ReadFile(filepath.Join(s.home, "current")); err == nil {
 		if h := strings.TrimSpace(string(data)); h != "" {
-			if _, ok := s.current["default"]; !ok {
-				s.current["default"] = h
+			if _, ok := current["default"]; !ok {
+				current["default"] = h
 			}
 		}
 	}
+
+	// Commit.
+	s.creds = creds
+	s.accountID = ""
+	s.accountName = ""
+	s.keyPrefix = ""
+	if creds != nil {
+		s.keyPrefix = keyPrefix(creds.APIKey)
+		s.accountID = creds.AccountID
+		s.accountName = creds.AccountName
+	}
+	s.current = current
+	s.currentNamespace = currentNamespace
+	s.knownPipes = map[string]struct{}{}
+	s.handleManifold = map[string]string{}
+	s.pipesLoaded = false
+	s.completionSources = nil
+	s.completionLoaded = false
+	// Reload zeros the cache: a daemon that just woke up hasn't talked to
+	// the server yet under the new credentials, so status should probe.
+	s.loginCheck = ""
 	return nil
 }
 
@@ -458,7 +482,14 @@ func (s *State) persistCredsLocked() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.home, fileCredentials), data, 0o600)
+	// Atomic like its persist siblings: a crash mid-write must never
+	// leave a truncated credentials file — LoadFromDisk treats corrupt
+	// creds as an error, so a partial write would wedge reloads.
+	tmp := filepath.Join(s.home, fileCredentials+".tmp")
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(s.home, fileCredentials))
 }
 
 func keyPrefix(plaintext string) string {

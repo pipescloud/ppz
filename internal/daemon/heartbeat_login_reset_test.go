@@ -44,8 +44,8 @@ func TestHandleLogin_ClearsHeartbeatCache(t *testing.T) {
 
 	// Beats from the pre-login account, as handleSend/subscribeOrgHeartbeats
 	// would have stamped them.
-	d.Heartbeats.Stamp("alice", `{"harness":"claude"}`, time.Now())
-	d.Heartbeats.Stamp("bob", `{"harness":"claude"}`, time.Now())
+	d.Heartbeats.Stamp("alice", loginTestAcctOld, `{"harness":"claude"}`, time.Now())
+	d.Heartbeats.Stamp("bob", loginTestAcctOld, `{"harness":"claude"}`, time.Now())
 
 	if _, e := driveLogin(t, d, cliproto.LoginRequest{URL: srv.URL, APIKey: "ppz_oauth_test"}); e != nil {
 		t.Fatalf("login returned error: %v", e)
@@ -74,7 +74,7 @@ func TestHandleLogin_FailedLoginKeepsHeartbeatCache(t *testing.T) {
 	defer srv.Close()
 
 	d := newLoginTestDaemon(t)
-	d.Heartbeats.Stamp("alice", `{"harness":"claude"}`, time.Now())
+	d.Heartbeats.Stamp("alice", loginTestAcctOld, `{"harness":"claude"}`, time.Now())
 
 	if _, e := driveLogin(t, d, cliproto.LoginRequest{URL: srv.URL, APIKey: "ppz_bad_key"}); e == nil {
 		t.Fatalf("expected login to fail with E_INVALID_API_KEY, got success")

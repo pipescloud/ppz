@@ -27,7 +27,12 @@ func (d *Daemon) handleWho(ctx context.Context, conn net.Conn, params json.RawMe
 	var req cliproto.WhoRequest
 	_ = json.Unmarshal(params, &req) // currently empty; reserved for future scoping
 
-	cache := d.Heartbeats.Snapshot()
+	// Scoped to the current account: every stamp is tagged with the
+	// account it arrived under, and rows from any other account —
+	// pre-login leftovers, straggler callbacks from a closed
+	// subscription — must never render. Logged out ⇒ no current
+	// account ⇒ no rows.
+	cache := d.Heartbeats.SnapshotAccount(d.State.AccountID())
 
 	var lr cliproto.ListSourcesReply
 	_ = d.callServer(ctx, "GET", "/api/v1/sources", nil, &lr)

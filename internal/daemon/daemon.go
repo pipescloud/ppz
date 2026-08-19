@@ -144,7 +144,7 @@ type Daemon struct {
 }
 
 func New(home, sock string) *Daemon {
-	return &Daemon{
+	d := &Daemon{
 		Home:       home,
 		Sock:       sock,
 		State:      NewState(home),
@@ -157,6 +157,10 @@ func New(home, sock string) *Daemon {
 		Watches:    newWatchRegistry(),
 		dial:       connectNATSWithRefresh,
 	}
+	// Subs are account-scoped (subs/<account>/<session>.json); wired
+	// here because the literal above can't reference d.State.
+	d.Subs.account = d.State.AccountID
+	return d
 }
 
 // dialer returns d.dial with the production fallback. New() always

@@ -14,12 +14,12 @@ func TestHeartbeatCache_StampAndSnapshot(t *testing.T) {
 	c := NewHeartbeatCache()
 	t1 := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
 	t2 := time.Date(2026, 5, 16, 12, 1, 0, 0, time.UTC)
-	c.Stamp("alice", `{"seq":1}`, t1)
-	c.Stamp("bob", `{"seq":1}`, t2)
+	c.Stamp("alice", "acct-1", `{"seq":1}`, t1)
+	c.Stamp("bob", "acct-1", `{"seq":1}`, t2)
 	got := c.Snapshot()
 	want := []HeartbeatEntry{
-		{Handle: "alice", Payload: `{"seq":1}`, ArrivedAt: t1},
-		{Handle: "bob", Payload: `{"seq":1}`, ArrivedAt: t2},
+		{Handle: "alice", AccountID: "acct-1", Payload: `{"seq":1}`, ArrivedAt: t1},
+		{Handle: "bob", AccountID: "acct-1", Payload: `{"seq":1}`, ArrivedAt: t2},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Snapshot mismatch:\n got=%#v\nwant=%#v", got, want)
@@ -32,8 +32,8 @@ func TestHeartbeatCache_StampOverwritesPrevious(t *testing.T) {
 	c := NewHeartbeatCache()
 	t1 := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
 	t2 := t1.Add(60 * time.Second)
-	c.Stamp("alice", `{"seq":1}`, t1)
-	c.Stamp("alice", `{"seq":2}`, t2)
+	c.Stamp("alice", "acct-1", `{"seq":1}`, t1)
+	c.Stamp("alice", "acct-1", `{"seq":2}`, t2)
 	got := c.Snapshot()
 	if len(got) != 1 {
 		t.Fatalf("Snapshot len = %d, want 1", len(got))
@@ -51,9 +51,9 @@ func TestHeartbeatCache_StampOverwritesPrevious(t *testing.T) {
 func TestHeartbeatCache_SnapshotSortedByHandle(t *testing.T) {
 	c := NewHeartbeatCache()
 	now := time.Now()
-	c.Stamp("zulu", `{}`, now)
-	c.Stamp("alpha", `{}`, now)
-	c.Stamp("mike", `{}`, now)
+	c.Stamp("zulu", "acct-1", `{}`, now)
+	c.Stamp("alpha", "acct-1", `{}`, now)
+	c.Stamp("mike", "acct-1", `{}`, now)
 	got := c.Snapshot()
 	handles := []string{got[0].Handle, got[1].Handle, got[2].Handle}
 	want := []string{"alpha", "mike", "zulu"}
@@ -67,7 +67,7 @@ func TestHeartbeatCache_SnapshotSortedByHandle(t *testing.T) {
 func TestApplyHeartbeatStamp_StampsOnHeartbeatChannel(t *testing.T) {
 	c := NewHeartbeatCache()
 	now := time.Now()
-	applyHeartbeatStamp(c, "heartbeat", "alice", `{"seq":1}`, now)
+	applyHeartbeatStamp(c, "heartbeat", "alice", "acct-1", `{"seq":1}`, now)
 	if len(c.Snapshot()) != 1 {
 		t.Errorf("heartbeat channel did not stamp; snapshot = %v", c.Snapshot())
 	}
@@ -77,7 +77,7 @@ func TestApplyHeartbeatStamp_IgnoresOtherChannels(t *testing.T) {
 	c := NewHeartbeatCache()
 	now := time.Now()
 	for _, ch := range []string{"stdout", "stdin", "stdctrl", "inbox", "broadcast", "custom"} {
-		applyHeartbeatStamp(c, ch, "alice", "payload", now)
+		applyHeartbeatStamp(c, ch, "alice", "acct-1", "payload", now)
 	}
 	if len(c.Snapshot()) != 0 {
 		t.Errorf("non-heartbeat channels stamped; snapshot = %v", c.Snapshot())
@@ -88,5 +88,5 @@ func TestApplyHeartbeatStamp_NilCacheSafe(t *testing.T) {
 	// handleSend may be called before the cache is initialised in
 	// unusual startup paths or tests. Guarded as a no-op rather than
 	// panicking so a missing cache never blocks a publish.
-	applyHeartbeatStamp(nil, "heartbeat", "alice", `{"seq":1}`, time.Now())
+	applyHeartbeatStamp(nil, "heartbeat", "alice", "acct-1", `{"seq":1}`, time.Now())
 }

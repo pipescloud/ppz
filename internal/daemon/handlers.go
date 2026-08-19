@@ -311,6 +311,15 @@ func (d *Daemon) handleLogin(ctx context.Context, conn net.Conn, params json.Raw
 		writeIPCErr(conn, &cliproto.Error{Code: "E_PROTOCOL", Message: err.Error()})
 		return
 	}
+	// An empty/garbage account id would pass every step below yet can
+	// never arm the org-heartbeat subscription (uuid.Parse fails), with
+	// no recovery path — bootstrapNATS only re-exchanges when NATSURL is
+	// empty, and rebuildNC gates on the same failing parse. Reject the
+	// exchange outright, before anything is overwritten.
+	if _, err := uuid.Parse(ex.AccountID); err != nil {
+		writeIPCErr(conn, &cliproto.Error{Code: "E_PROTOCOL", Message: fmt.Sprintf("auth exchange returned invalid account id %q", ex.AccountID)})
+		return
+	}
 
 	creds := Credentials{
 		URL:          req.URL,
@@ -319,9 +328,6 @@ func (d *Daemon) handleLogin(ctx context.Context, conn net.Conn, params json.Raw
 		NATSUserSeed: ex.NATSUserSeed,
 	}
 	prefix := keyPrefix(req.APIKey)
-	// Captured before SetLogin overwrites it: decides below whether this
-	// login crosses an account boundary.
-	priorAccountID := d.State.AccountID()
 	if err := d.State.SetLogin(creds, ex.AccountID, ex.AccountName, prefix); err != nil {
 		writeIPCErr(conn, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
 		return
@@ -349,22 +355,21 @@ func (d *Daemon) handleLogin(ctx context.Context, conn net.Conn, params json.Raw
 	d.startRefreshLoop(ex.AccountID, ex.NATSUserJWT, ex.NATSUserSeed, ex.ExpiresAt.Unix())
 	newNC, _ := d.dialer()(natsURL, d.Refresh, d.recordNATSEvent)
 	d.swapNC("handleLogin", newNC)
-	// Cross-account login crosses an account boundary: cached heartbeat
-	// rows belong to the previous account and — old subscription now
-	// closed by swapNC — would never refresh, rendering as stale ghosts
-	// in `ppz who` until a daemon restart. The clear sits in a precise
-	// window: AFTER swapNC (until the old connection dies, the old org
-	// subscription still stamps — a beat delivered mid-dial would
-	// otherwise be re-inserted post-clear as a permanent ghost) and
-	// BEFORE subscribeOrgHeartbeats re-arms (new-org beats must never be
-	// wiped). Same-account re-login keeps the cache: no boundary was
-	// crossed, the re-armed subscription refreshes the same handles, and
-	// wiping would leave `ppz who` empty for up to a full heartbeat
-	// interval. A failed login returns above and touches nothing —
-	// "who was running before my login attempt failed" stays answerable.
-	if priorAccountID != ex.AccountID {
-		d.Heartbeats.Clear()
-	}
+	// Account boundary: cached heartbeat rows tagged with OTHER accounts
+	// must not resurface as stale ghosts in `ppz who` if the user later
+	// switches back to one of them — drop them now. What this drop is
+	// NOT: the mechanism keeping other-account rows out of `ppz who`
+	// today. That guarantee is the per-stamp account tag + handleWho's
+	// current-account filter, which stays airtight however login races a
+	// straggling subscription callback (Close doesn't join one
+	// in-flight) or a concurrently-armed new-org subscription — whose
+	// beats, tagged with the new account, survive this drop. Same-account
+	// re-login keeps everything: the re-armed subscription refreshes the
+	// same handles, and wiping would leave `ppz who` empty for up to a
+	// full heartbeat interval. A failed login returns above and touches
+	// nothing — "who was running before my login attempt failed" stays
+	// answerable.
+	d.Heartbeats.DropOtherAccounts(ex.AccountID)
 	if newNC != nil {
 		if aid, err := uuid.Parse(ex.AccountID); err == nil {
 			d.subscribeOrgHeartbeats(aid)
@@ -996,8 +1001,9 @@ func (d *Daemon) handleSend(ctx context.Context, conn net.Conn, params json.RawM
 	}
 	// Heartbeat fast-path: stamp the daemon's in-memory cache so
 	// `ppz who` can render this agent without a NATS round-trip.
-	// No-op on every other channel.
-	applyHeartbeatStamp(d.Heartbeats, req.Channel, req.Handle, req.Payload, clock.Now())
+	// No-op on every other channel. Tagged with the current account —
+	// the one the resolved subject was built under.
+	applyHeartbeatStamp(d.Heartbeats, req.Channel, req.Handle, d.State.AccountID(), req.Payload, clock.Now())
 	// Bytes counts the user-visible payload, not the encoded envelope —
 	// matches WIRE.md §8 ppz broadcast and the broadcast-from-* fixtures.
 	writeIPC(conn, cliproto.SendReply{ID: env.ID, Subject: target.subject, Bytes: len(req.Payload)})
@@ -1061,7 +1067,7 @@ func (d *Daemon) handleSendBatch(ctx context.Context, conn net.Conn, params json
 	// belt-and-suspenders — if any caller ever batches heartbeats the
 	// cache still gets the latest payload.
 	if len(req.Payloads) > 0 {
-		applyHeartbeatStamp(d.Heartbeats, req.Channel, req.Handle, req.Payloads[len(req.Payloads)-1], clock.Now())
+		applyHeartbeatStamp(d.Heartbeats, req.Channel, req.Handle, d.State.AccountID(), req.Payloads[len(req.Payloads)-1], clock.Now())
 	}
 	writeIPC(conn, cliproto.SendBatchReply{IDs: ids, Subject: target.subject, Bytes: bytes})
 }

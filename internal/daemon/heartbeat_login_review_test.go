@@ -40,7 +40,7 @@ func TestHandleLogin_ClearSurvivesLateOldOrgBeat(t *testing.T) {
 	var dials atomic.Int32
 	d.dial = func(string, *RefreshLoop, func(NATSEvent)) (*nats.Conn, error) {
 		if dials.Add(1) == 1 {
-			d.Heartbeats.Stamp("ghost", `{"harness":"claude"}`, time.Now())
+			d.Heartbeats.Stamp("ghost", loginTestAcctOld, `{"harness":"claude"}`, time.Now())
 		}
 		return nil, errors.New("dial window: connect refused")
 	}
@@ -66,7 +66,7 @@ func TestHandleLogin_SameAccountReloginKeepsHeartbeatCache(t *testing.T) {
 	d := newLoginTestDaemon(t)
 	loginAsPriorAccount(t, d, loginTestAcctOld)
 
-	d.Heartbeats.Stamp("alice", `{"harness":"claude"}`, time.Now())
+	d.Heartbeats.Stamp("alice", loginTestAcctOld, `{"harness":"claude"}`, time.Now())
 
 	if _, e := driveLogin(t, d, cliproto.LoginRequest{URL: srv.URL, APIKey: "ppz_rotated_key"}); e != nil {
 		t.Fatalf("login returned error: %v", e)
@@ -88,7 +88,7 @@ func TestHandleLogin_SameAccountReloginKeepsHeartbeatCache(t *testing.T) {
 func TestWatchState_LogoutClearsHeartbeatCache(t *testing.T) {
 	d := newLoginTestDaemon(t)
 	loginAsPriorAccount(t, d, loginTestAcctOld)
-	d.Heartbeats.Stamp("alice", `{"harness":"claude"}`, time.Now())
+	d.Heartbeats.Stamp("alice", loginTestAcctOld, `{"harness":"claude"}`, time.Now())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

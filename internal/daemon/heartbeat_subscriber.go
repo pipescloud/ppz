@@ -81,5 +81,5 @@ func (d *Daemon) stampOrgHeartbeat(accountID uuid.UUID, msg *nats.Msg) {
 	if err := json.Unmarshal(msg.Data, &env); err != nil {
 		return
 	}
-	d.Heartbeats.Stamp(handle, env.Payload, time.Now())
+	d.Heartbeats.Stamp(handle, accountID.String(), env.Payload, time.Now())
 }
