@@ -728,12 +728,19 @@ func TestTerminalSubsAlertPumpLadderResetsAfterConfirmedRead(t *testing.T) {
 func TestTerminalSubsAlertPumpLadderNotResetByNewUnreadMessages(t *testing.T) {
 	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	var ptyStdin bytes.Buffer
+	// The fake mirrors the narrative: every confirm sees MORE unread
+	// on a bigger stream — arrivals move Total and Unread in lockstep,
+	// nothing is ever consumed.
+	arrivals := uint64(0)
 	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
-		IdleAfter:     60 * time.Second,
-		Cooldown:      5 * time.Minute,
-		CooldownMax:   30 * time.Minute,
-		Message:       terminalSubsAlertMessage,
-		ConfirmUnread: confirmAlwaysUnread,
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			arrivals++
+			return subsUnreadReply(arrivals, arrivals), nil
+		},
 	}, &ptyStdin)
 
 	pump.ObserveSubsUnread(now)
@@ -1144,10 +1151,13 @@ func TestTerminalSubsAlertPumpUncollaredPipeReadResetsLadder(t *testing.T) {
 	}
 }
 
-// The three guards below pass on the CURRENT (buggy) build too — they
-// are not reproductions, they pin the boundaries of the fix so the
-// watermark comparison cannot overshoot into resetting on the wrong
-// signals. Flagged here so a reviewer doesn't count them as RED.
+// FIVE of the tests in this block pass on the CURRENT (buggy) build —
+// the three guards directly below, plus UnreadAboveTotalDoesNot-
+// SpuriouslyReset and ConfirmErrorNeitherSuppressesNorResets further
+// down. They are not reproductions; they pin the boundaries of the
+// fix so the watermark comparison cannot overshoot into resetting on
+// the wrong signals. Flagged here so a reviewer counting RED arrives
+// at five reproductions/contracts, not eight.
 
 // TestTerminalSubsAlertPumpArrivalsMoveTotalsButNotWatermark: arrivals
 // grow Total and Unread in lockstep, watermark stays put — the ladder
@@ -1236,6 +1246,9 @@ func TestTerminalSubsAlertPumpWatermarkDecreaseDoesNotReset(t *testing.T) {
 	if wrote := pump.Flush(at.Add(5 * time.Minute)); wrote {
 		t.Fatal("alert #3 fired on the base gap; a watermark DECREASE (expiry of read messages) is not consumption and must not reset the ladder")
 	}
+	if wrote := pump.Flush(at.Add(10 * time.Minute)); !wrote {
+		t.Fatal("alert #3 did not fire after the doubled 10m gap; deferred is not dropped")
+	}
 }
 
 // TestTerminalSubsAlertPumpNewPipeDoesNotResetLadder: a pipe absent
@@ -1295,18 +1308,16 @@ func TestTerminalSubsAlertPumpNewPipeDoesNotResetLadder(t *testing.T) {
 func TestTerminalSubsAlertPumpConfirmErrorNeitherSuppressesNorResets(t *testing.T) {
 	now := time.Date(2026, 8, 19, 11, 0, 0, 0, time.UTC)
 	var ptyStdin bytes.Buffer
-	failing := true
 	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
 		IdleAfter:   60 * time.Second,
 		Cooldown:    5 * time.Minute,
 		CooldownMax: 30 * time.Minute,
 		Message:     terminalSubsAlertMessage,
 		Harness:     "claude",
+		// Every confirm fails: this test is about the flapping-daemon
+		// steady state; recovery crediting is ErrorFireKeepsConsumptionBaseline's job.
 		ConfirmUnread: func() (cliproto.ListReply, error) {
-			if failing {
-				return cliproto.ListReply{}, errors.New("ipc: connection refused")
-			}
-			return subsUnreadReply(1, 1), nil
+			return cliproto.ListReply{}, errors.New("ipc: connection refused")
 		},
 	}, &ptyStdin)
 
@@ -1498,5 +1509,68 @@ func TestTerminalSubsAlertPumpUnreadAboveTotalDoesNotSpuriouslyReset(t *testing.
 	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
 	if wrote := pump.Flush(at.Add(5 * time.Minute)); wrote {
 		t.Fatal("alert #3 fired on the base gap; Unread > Total underflowed into a spurious watermark advance (clamp at zero)")
+	}
+}
+
+// TestTerminalSubsAlertPumpManifoldNamespacedHandlesDoNotCollide pins
+// the watermark key against Phase 1.5.1's handle scoping: handle
+// uniqueness is per (account, manifold) — 0002_manifold.sql replaces
+// UNIQUE (account_id, handle) with (account_id, manifold, handle) —
+// so ListReply.Sources can legitimately carry "zif" at the root AND
+// "zif" in manifold team1 in one snapshot. A key that omits the
+// manifold collapses both onto one entry: the later row shadows the
+// earlier, the shadowed pipe's reads are never credited, and the
+// ladder climbs for a responsive agent — this PR's bug silently
+// reintroduced for exactly that subscription.
+func TestTerminalSubsAlertPumpManifoldNamespacedHandlesDoNotCollide(t *testing.T) {
+	now := time.Date(2026, 8, 19, 11, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	twoZifs := func(rootUnread, rootTotal, teamUnread, teamTotal uint64) cliproto.ListReply {
+		return cliproto.ListReply{Sources: []cliproto.Source{
+			{
+				Handle:    "zif", // root manifold
+				PipeInfos: []cliproto.PipeInfo{{Pipe: "inbox", Unread: rootUnread, Total: rootTotal}},
+			},
+			{
+				Handle:    "zif",
+				Manifold:  "team1",
+				PipeInfos: []cliproto.PipeInfo{{Pipe: "inbox", Unread: teamUnread, Total: teamTotal}},
+			},
+		}}
+	}
+	replies := []cliproto.ListReply{
+		twoZifs(1, 1, 1, 1), // alert #1: both unread, watermarks 0/0
+		// alert #2: the ROOT zif's message was read and a new one
+		// arrived (wm 0→1); team1's zif is untouched. Root comes first
+		// in the slice, so a manifold-less key is overwritten by the
+		// team1 row and the advance vanishes.
+		twoZifs(1, 2, 1, 1),
+		twoZifs(1, 3, 1, 1), // alert #3: same shape again
+	}
+	confirms := 0
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			r := replies[min(confirms, len(replies)-1)]
+			confirms++
+			return r, nil
+		},
+	}, &ptyStdin)
+
+	pump.ObserveSubsUnread(now)
+	at := now.Add(60 * time.Second)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #1 did not fire")
+	}
+	for cycle := 2; cycle <= 3; cycle++ {
+		pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+		at = at.Add(5 * time.Minute)
+		if wrote := pump.Flush(at); !wrote {
+			t.Fatalf("alert #%d did not fire on the base gap; the root-manifold zif's reads were shadowed by team1's zif under a manifold-less watermark key", cycle)
+		}
 	}
 }

@@ -129,6 +129,15 @@ type terminalSubsAlertStateMachine struct {
 	// confirm. Pipes are compared only when present in both snapshots
 	// — a freshly subscribed pipe's pre-existing history proves
 	// nothing about consumption since the last alert.
+	//
+	// Deliberate looseness: ANY pipe advancing resets the whole
+	// ladder, so an agent reading its inbox while ignoring one
+	// subscribed room holds the base cadence for that room
+	// indefinitely. That follows from the rule the ladder encodes —
+	// back off an agent that ISN'T consuming, never one that is — a
+	// selectively-inattentive agent is reachable at base cadence by
+	// definition, so per-pipe ladders would add state without adding
+	// reach.
 	baseline map[string]uint64
 }
 
@@ -252,7 +261,11 @@ func subsReplyWatermarks(reply cliproto.ListReply) map[string]uint64 {
 	}
 	for _, src := range reply.Sources {
 		for _, p := range src.PipeInfos {
-			wm["s/"+src.Handle+"/"+p.Pipe] = clamped(p)
+			// Manifold is part of the key: handle uniqueness is per
+			// (account, manifold) — 0002_manifold.sql — so "zif" at the
+			// root and "zif" in team1 can share one snapshot, and a
+			// manifold-less key would let one shadow the other's reads.
+			wm["s/"+src.Manifold+"/"+src.Handle+"/"+p.Pipe] = clamped(p)
 		}
 	}
 	for _, u := range reply.UncollaredPipes {

@@ -93,7 +93,6 @@ ppz_b send share-ladder-reset.inbox "msg-1" >/dev/null
 wait_for 60 "[ \"\$(alert_count)\" -ge 1 ]" \
   || { echo "first alert never fired"; exit 1; }
 echo "first_alert_fired: yes"
-T1=$SECONDS
 
 # Two read→send→alert cycles. The read must drain (assert it, so a
 # silent read failure can't fake the choreography); the send must land
@@ -139,7 +138,13 @@ fi
 # by ErrorFireKeepsConsumptionBaseline), so under host contention one
 # window can legitimately miss its credit and pick it up at the next
 # alert; observed once in CI-like conditions alongside a sibling
-# fixture timing out. One more cycle separates the cases: a delayed
+# fixture timing out. Known leniencies, accepted: a hypothetical build
+# that resets only on alternating cycles would pass (the every-cycle
+# contract is pinned by the unit tests; this fixture exists to prove
+# the mechanism end-to-end, not to re-prove the state machine), and
+# under contention heavy enough to delay the probe itself the run can
+# hit the harness 30s ceiling — a loud infra timeout, never a false
+# pass. One more cycle separates the cases: a delayed
 # credit resets at alert3 and alert4 arrives on the BASE gap; a real
 # regression climbs to the 20s rung, which overruns the wait budget —
 # "alert 4 never fired" — or lands far outside the base band.
