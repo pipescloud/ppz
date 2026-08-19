@@ -40,6 +40,17 @@ SOCK_S=$HOME_S/daemon.sock
 # the harness 30s ceiling.
 export PPZ_TERMINAL_INBOX_IDLE_MS=200
 export PPZ_TERMINAL_INBOX_COOLDOWN_MS=2000
+# Ceiling pinned to the base so repeat alerts keep a FLAT 2s cadence.
+# Repeats normally back off geometrically (see CooldownMax in
+# terminal_subs_alert.go), and this scenario deliberately syncs past
+# TWO alerts before reading — so unacked would be 2 and the next
+# would-be nag 4s out, not 2s. That narrows the DETECTION margin: the
+# redundant nag this fixture exists to catch would land at [T+4s, T+5s]
+# against a 5s quiet window sampled at ~T+5.5s, leaving ~0.5s for the
+# PTY->publisher->reread round trip. A regressed ConfirmUnread could
+# then false-PASS. The flat cadence restores the ~2.5s cushion the
+# quiet window was sized for.
+export PPZ_TERMINAL_INBOX_COOLDOWN_MAX_MS=2000
 
 ppz_s() { PPZ_HOME=$HOME_S PPZ_IPC_SOCKET=$SOCK_S ppz "$@"; }
 

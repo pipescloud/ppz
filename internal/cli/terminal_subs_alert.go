@@ -12,10 +12,63 @@ import (
 
 const terminalSubsAlertMessage = "Please run 'ppz subs read' and action messages\n"
 
+// Production alert cadence. The nag is a backstop for an agent that
+// has stopped watching its own subs, not a metronome: agents poll
+// their pipes themselves, so the common case should resolve before
+// the pump ever injects.
+//
+//   - IdleAfter 60s: wide enough that the agent's own watch usually
+//     reads the message first — the fire-time ConfirmUnread then
+//     suppresses the nudge and nothing reaches the PTY at all —
+//     while still prompt enough that a genuinely parked agent isn't
+//     sitting on an unread message for minutes.
+//   - Cooldown 5m / CooldownMax 30m: the repeat ladder. See
+//     CooldownMax on terminalSubsAlertConfig for why repeats escalate.
+const (
+	defaultSubsAlertIdleAfter   = 60 * time.Second
+	defaultSubsAlertCooldown    = 5 * time.Minute
+	defaultSubsAlertCooldownMax = 30 * time.Minute
+)
+
 type terminalSubsAlertConfig struct {
 	IdleAfter time.Duration
-	Cooldown  time.Duration
-	Message   string
+	// Cooldown is the BASE gap between repeat alerts — the gap after
+	// the first unacknowledged alert. Subsequent gaps double (see
+	// CooldownMax).
+	Cooldown time.Duration
+	// CooldownMax is the ceiling on the repeat-alert backoff ladder.
+	//
+	// A repeat alert is, by definition, evidence that the previous one
+	// did not work: the agent was told and the message is still
+	// unread. So repeats escalate — the gap after the Nth consecutive
+	// unacknowledged alert is min(Cooldown * 2^(N-1), CooldownMax).
+	//
+	// Without the ladder a flat Cooldown nags forever at full rate. The
+	// reported failure is a session usage limit: the agent hits its
+	// limit with a message unread, cannot run `ppz subs read` for n
+	// hours, and every injected nag is queued as a real turn that
+	// flushes the moment the limit lifts — ~600 of them across a
+	// 5-hour block at a 30s cadence, burning context window and token
+	// budget. The ladder bounds the same block to ~12.
+	//
+	// The rung counts alerts INJECTED since the last proof the agent
+	// consumed anything, and the only such proof is a negative
+	// ConfirmUnread — the unread level actually dropped. Message
+	// ARRIVALS are not proof and must not reset the ladder, or a busy
+	// pipe reproduces the flood in full. Suppressed and deferred fires
+	// inject nothing and so consume no rung.
+	//
+	// Known limitation: a read that lands DURING a long backoff window
+	// is not observed until that window opens, because ConfirmUnread
+	// only runs at fire time. If a new message arrives first, the
+	// confirm sees unread and the ladder keeps climbing — so an agent
+	// that recovered mid-window can wait up to CooldownMax for the
+	// nudge on its next message. Bounded and self-healing (the first
+	// gate-open with a clear level resets it), and CooldownMax is the
+	// designed worst case anyway, so this is accepted rather than
+	// fixed with an extra off-schedule poll.
+	CooldownMax time.Duration
+	Message     string
 	// Harness identifies which agent harness the wrapped PTY is
 	// running (one of "claude" / "copilot" / "codex" / "agy" /
 	// "pi", or empty for non-agent shares). Used by
@@ -49,11 +102,23 @@ type terminalSubsAlertStateMachine struct {
 	pendingSince  time.Time
 	lastUserInput time.Time
 	lastAlert     time.Time
+	// unacked counts alerts INJECTED since the last proof the agent
+	// consumed anything. It drives the repeat-backoff ladder (see
+	// CooldownMax) and is reset only by a negative ConfirmUnread —
+	// the unread level actually dropping. Suppressed and deferred
+	// fires inject nothing and so never increment it.
+	unacked int
 }
 
 func newTerminalSubsAlertStateMachine(cfg terminalSubsAlertConfig) *terminalSubsAlertStateMachine {
 	if cfg.IdleAfter <= 0 {
-		cfg.IdleAfter = 15 * time.Second
+		cfg.IdleAfter = defaultSubsAlertIdleAfter
+	}
+	if cfg.Cooldown <= 0 {
+		cfg.Cooldown = defaultSubsAlertCooldown
+	}
+	if cfg.CooldownMax <= 0 {
+		cfg.CooldownMax = defaultSubsAlertCooldownMax
 	}
 	if cfg.Message == "" {
 		cfg.Message = terminalSubsAlertMessage
@@ -107,6 +172,12 @@ func (s *terminalSubsAlertStateMachine) ReadyAlert(now time.Time) string {
 		// re-arm (≤250ms) re-raises pending.
 		s.mu.Lock()
 		s.pending = false
+		// The level dropped: the agent read its messages. That is the
+		// only evidence the nag is landing, so it returns the repeat
+		// cadence to the base gap. Without the reset a single stalled
+		// stretch would leave the pump permanently desensitised for
+		// the rest of the share session.
+		s.unacked = 0
 		s.mu.Unlock()
 		return ""
 	}
@@ -120,6 +191,7 @@ func (s *terminalSubsAlertStateMachine) ReadyAlert(now time.Time) string {
 	}
 	s.pending = false
 	s.lastAlert = now
+	s.unacked++
 	return s.cfg.Message
 }
 
@@ -133,10 +205,46 @@ func (s *terminalSubsAlertStateMachine) ready(now time.Time) bool {
 	if s.lastUserInput.IsZero() && !s.pendingSince.IsZero() && now.Sub(s.pendingSince) < s.cfg.IdleAfter {
 		return false
 	}
-	if s.cfg.Cooldown > 0 && !s.lastAlert.IsZero() && now.Sub(s.lastAlert) < s.cfg.Cooldown {
+	if gap := s.repeatCooldown(); gap > 0 && !s.lastAlert.IsZero() && now.Sub(s.lastAlert) < gap {
 		return false
 	}
 	return true
+}
+
+// repeatCooldown returns the gap required before the next alert:
+// min(Cooldown * 2^(unacked-1), CooldownMax). Callers hold s.mu.
+//
+// The doubling is what bounds a nag that isn't working. unacked is the
+// number of alerts already injected with no proof the agent consumed
+// anything, so each repeat is evidence the previous one failed to land
+// and buys a longer silence. See CooldownMax for the failure this
+// prevents.
+//
+// A CooldownMax below Cooldown is a misconfiguration, not an
+// instruction to nag faster than the operator asked: the base gap is a
+// floor, so the ceiling is raised to meet it rather than shrinking the
+// first repeat. The loop exits at the ceiling rather than computing
+// the full shift, so a long block can't overflow the doubling.
+func (s *terminalSubsAlertStateMachine) repeatCooldown() time.Duration {
+	base := s.cfg.Cooldown
+	if base <= 0 || s.unacked <= 1 {
+		return base
+	}
+	ceiling := s.cfg.CooldownMax
+	if ceiling < base {
+		ceiling = base
+	}
+	gap := base
+	for i := 1; i < s.unacked; i++ {
+		if gap >= ceiling {
+			return ceiling
+		}
+		gap *= 2
+	}
+	if gap > ceiling {
+		gap = ceiling
+	}
+	return gap
 }
 
 // confirmSubsUnreadDecision maps a fire-time subs snapshot (reply, err)

@@ -7,7 +7,7 @@ Heartbeats already carry `harness` and `model` fields, but they are stamped from
 (`internal/cli/agent.go:80`). A user who runs `ppz terminal share` and then starts
 `claude` by hand shows up in `ppz who` as a bare shell; conversely the env vars stay
 set after the harness exits back to a shell. The wrapper also has harness-conditional
-behavior (alert submit keys, `terminal_subs_alert.go:190`) that silently degrades for
+behavior (alert submit keys, `submitAlertToPTY` in `terminal_subs_alert.go`) that silently degrades for
 manual launches.
 
 herdr solves this for its panes with three layered mechanisms; this epic ports the

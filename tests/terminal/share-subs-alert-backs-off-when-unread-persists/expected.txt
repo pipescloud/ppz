@@ -1,0 +1,4 @@
+first_alert_fired: yes
+alerts_continue: yes
+repeat_alerts_bounded: yes
+exit=0

@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased — subs alert backoff (bounded nagging)
+
+**Behaviour change (`ppz terminal share`).** The unread-subs alert the PTY
+wrapper injects into a wrapped agent now fires on a **backoff ladder** instead
+of a flat 30s cooldown, and the first nudge waits **60s** instead of 15s.
+
+Flood protection for agent consumers, the injection-side counterpart to the
+read flood cap below. An agent that *cannot* action its messages — session
+usage limit, wedged REPL, crashed harness — used to be fed one
+injected-and-submitted turn every 30s for as long as the condition lasted.
+Nothing in the pump could tell a first nudge from a six-hundredth: the
+fire-time unread check truthfully reports "still unread" every time, because
+it is. A 5-hour usage-limit block queued ~600 copies of the same nag, and the
+whole backlog flushed into the model as real turns the moment the limit
+reset — burning context window and token budget.
+
+- **Repeats escalate.** The gap after the Nth consecutive unacknowledged alert
+  is `min(5m * 2^(N-1), 30m)`: 5m, 10m, 20m, then every 30m. A 5-hour block
+  now costs 12 injections rather than ~600.
+- **Only consumption resets the ladder.** The rung counts alerts *injected*
+  since the unread level was last observed to drop — the one signal that
+  proves the agent acted. Message **arrivals** deliberately do not reset it,
+  or a busy pipe would reproduce the flood in full. Alerts that are suppressed
+  (already read) or deferred (user typing) inject nothing and consume no rung.
+- **First nudge at 60s.** Agents mostly watch their own subs, so the wider
+  window lets the agent's own `ppz subs read` land first — the fire-time check
+  then suppresses the nudge entirely and nothing reaches the PTY.
+- Cadence is tunable via `PPZ_TERMINAL_INBOX_IDLE_MS`,
+  `PPZ_TERMINAL_INBOX_COOLDOWN_MS` and the new
+  `PPZ_TERMINAL_INBOX_COOLDOWN_MAX_MS` (ceiling). Setting the ceiling equal to
+  the base restores a flat cadence.
+
 ## Unreleased — web chat console (`ppz chat` for the browser)
 
 **New GUI surface.** The ppz-server web UI gains a chat console at
