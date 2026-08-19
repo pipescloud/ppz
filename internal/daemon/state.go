@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -373,14 +374,21 @@ func (s *State) LoadFromDisk() error {
 	// caches for a genuinely-logged-in user.
 	var creds *Credentials
 	if data, err := os.ReadFile(filepath.Join(s.home, fileCredentials)); err == nil {
-		var c Credentials
-		if uerr := json.Unmarshal(data, &c); uerr != nil {
-			// Corrupt is treated like unreadable, not like logged-out:
-			// the only writer is tmp+rename-atomic, so garbage here is
-			// a foreign truncation/partial state worth surfacing.
-			return uerr
+		// A zero-byte file is a DELIBERATE logout signal, same as
+		// removal: the e2e harness truncates instead of unlinking
+		// (reset.sh — stat polling misses pure unlink on named-volume
+		// mounts), and the tmp+rename-atomic writer can never leave an
+		// empty file here by accident. Non-empty garbage, by contrast,
+		// is corrupt state treated like an unreadable file — surface
+		// the error with prior in-memory state intact rather than
+		// mistaking it for a logout.
+		if len(bytes.TrimSpace(data)) != 0 {
+			var c Credentials
+			if uerr := json.Unmarshal(data, &c); uerr != nil {
+				return uerr
+			}
+			creds = &c
 		}
-		creds = &c
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
