@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -94,12 +95,14 @@ func TestWatchState_LogoutClearsHeartbeatCache(t *testing.T) {
 	hupCh := make(chan os.Signal, 1)
 	go d.watchState(ctx, hupCh)
 
-	// Let the watcher observe the logged-in state first, so the file
-	// deletion below is a transition, not the initial snapshot.
-	time.Sleep(150 * time.Millisecond)
 	if err := os.Remove(d.State.Home() + "/" + fileCredentials); err != nil {
 		t.Fatalf("removing credentials file: %v", err)
 	}
+	// SIGHUP forces a reload regardless of fileSig bookkeeping — the
+	// deterministic trigger; a tick-based wait raced the watcher's first
+	// 50ms stat (if removal won, lastCred stayed the zero fileSig, which
+	// equals the post-removal stat forever, and the reload never fired).
+	hupCh <- syscall.SIGHUP
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {

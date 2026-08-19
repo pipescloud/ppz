@@ -61,6 +61,13 @@ func newLoginTestDaemon(t *testing.T) *Daemon {
 		Heartbeats: NewHeartbeatCache(),
 		HTTP:       &http.Client{Timeout: 2 * time.Second},
 	}
+	// handleLogin kicks the background reconnect loop when its dial
+	// fails; the loop runs on baseCtx (nil would mean an un-cancellable
+	// context.Background), so give it one the test tears down — no
+	// leaked goroutines dialing dead ports into a deleted TempDir.
+	ctx, cancel := context.WithCancel(context.Background())
+	d.baseCtx = ctx
+	t.Cleanup(cancel)
 	t.Cleanup(func() {
 		if d.Refresh != nil {
 			d.Refresh.Stop()
