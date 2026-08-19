@@ -1330,3 +1330,173 @@ func TestTerminalSubsAlertPumpConfirmErrorNeitherSuppressesNorResets(t *testing.
 		t.Fatal("alert #3 did not fire after the doubled 10m gap")
 	}
 }
+
+// TestTerminalSubsAlertPumpDeferredFireStillObservesConsumption pins
+// where the watermark baseline lives: it may only move at INJECTION
+// time. A deferral (user typed mid-confirm) runs the confirm and gets
+// a reply carrying the advance, but injects nothing — if that reply
+// quietly re-baselines the snapshot without applying the reset, the
+// consumption evidence is destroyed and the eventually-fired alert
+// climbs the ladder despite a real read. Outcome pinned, not
+// mechanism: whether the implementation resets during the deferred
+// attempt or re-derives the advance at the later fire, the alert that
+// eventually lands must be a fresh episode's first — base gap after.
+func TestTerminalSubsAlertPumpDeferredFireStillObservesConsumption(t *testing.T) {
+	now := time.Date(2026, 8, 19, 11, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	var pump *terminalSubsAlertPump
+	deferOnce := false
+	confirms := 0
+	pump = newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			confirms++
+			if deferOnce {
+				deferOnce = false
+				pump.ObserveUserInput(now.Add(6*time.Minute), []byte("typed mid-confirm"))
+			}
+			if confirms == 1 {
+				return subsUnreadReply(1, 1), nil // alert #1: msg A unread
+			}
+			return subsUnreadReply(1, 2), nil // A read, B arrived — wm 0→1
+		},
+	}, &ptyStdin)
+
+	pump.ObserveSubsUnread(now)
+	at := now.Add(60 * time.Second)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #1 did not fire")
+	}
+
+	// Agent reads A; msg B arrives; the base-gap fire attempt runs its
+	// confirm (which sees the advance) but is deferred by keystrokes.
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	deferOnce = true
+	if wrote := pump.Flush(at.Add(5 * time.Minute)); wrote {
+		t.Fatalf("deferral injected anyway: %q", ptyStdin.String())
+	}
+
+	// User idle again: the deferred alert lands.
+	at = at.Add(8 * time.Minute)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("deferred alert never fired once the user went idle")
+	}
+
+	// The consumption that preceded the deferral must have been
+	// credited: the fired alert is a fresh episode's first, so the
+	// next repeat comes on the BASE gap, not a climbed rung.
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	if wrote := pump.Flush(at.Add(5 * time.Minute)); !wrote {
+		t.Fatal("next alert did not fire on the base gap; the deferred attempt's confirm reply destroyed the consumption evidence (baseline may only move at injection)")
+	}
+}
+
+// TestTerminalSubsAlertPumpErrorFireKeepsConsumptionBaseline pins the
+// snapshot behaviour across error-fires: an IPC failure at fire time
+// yields no snapshot, so the LAST GOOD baseline must be retained — a
+// read that happened around a flapping daemon is still credited at
+// the next successful confirm. An implementation that clears the
+// baseline on error would silently disable resets for one extra
+// window after every daemon hiccup.
+func TestTerminalSubsAlertPumpErrorFireKeepsConsumptionBaseline(t *testing.T) {
+	now := time.Date(2026, 8, 19, 11, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	confirms := 0
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			confirms++
+			switch confirms {
+			case 1:
+				return subsUnreadReply(1, 1), nil // alert #1: baseline wm 0
+			case 2:
+				return cliproto.ListReply{}, errors.New("ipc: daemon restarting")
+			default:
+				return subsUnreadReply(1, 2), nil // read + new arrival — wm 1 vs baseline 0
+			}
+		},
+	}, &ptyStdin)
+
+	pump.ObserveSubsUnread(now)
+	at := now.Add(60 * time.Second)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #1 did not fire")
+	}
+
+	// Error-fire: at-least-once, no snapshot taken.
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	at = at.Add(5 * time.Minute)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #2 did not fire on confirm error")
+	}
+
+	// The agent read around the hiccup; a new message arrived. The
+	// next successful confirm sees wm 1 vs the retained wm-0 baseline
+	// from alert #1 → reset → alert #3 fires... but only after ITS
+	// gate: alert #2 climbed to unacked=2, so the gate is 10m. The
+	// reset is observable in what follows #3, not in #3's own timing.
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	at = at.Add(10 * time.Minute)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #3 did not fire after the 10m rung")
+	}
+
+	// #3's confirm observed the advance → it was a fresh episode's
+	// first alert → #4 comes on the BASE gap. A baseline-clearing
+	// implementation sees no advance at #3 (nothing to compare), so
+	// unacked climbs to 3 and #4 waits 20m.
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	if wrote := pump.Flush(at.Add(5 * time.Minute)); !wrote {
+		t.Fatal("alert #4 did not fire on the base gap; the error-fire dropped the consumption baseline instead of retaining it")
+	}
+}
+
+// TestTerminalSubsAlertPumpUnreadAboveTotalDoesNotSpuriouslyReset
+// guards the uint64 arithmetic: a daemon bug (or mid-update race)
+// reporting Unread > Total makes the naive Total-Unread underflow to
+// ~2^64, which reads as an enormous watermark advance and spuriously
+// resets the ladder. The watermark must clamp at zero.
+func TestTerminalSubsAlertPumpUnreadAboveTotalDoesNotSpuriouslyReset(t *testing.T) {
+	now := time.Date(2026, 8, 19, 11, 0, 0, 0, time.UTC)
+	var ptyStdin bytes.Buffer
+	confirms := 0
+	pump := newTerminalSubsAlertPump(terminalSubsAlertConfig{
+		IdleAfter:   60 * time.Second,
+		Cooldown:    5 * time.Minute,
+		CooldownMax: 30 * time.Minute,
+		Message:     terminalSubsAlertMessage,
+		Harness:     "claude",
+		ConfirmUnread: func() (cliproto.ListReply, error) {
+			confirms++
+			if confirms == 1 {
+				return subsUnreadReply(1, 1), nil // baseline wm 0
+			}
+			return subsUnreadReply(5, 3), nil // inconsistent snapshot: underflow bait
+		},
+	}, &ptyStdin)
+
+	pump.ObserveSubsUnread(now)
+	at := now.Add(60 * time.Second)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #1 did not fire")
+	}
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	at = at.Add(5 * time.Minute)
+	if wrote := pump.Flush(at); !wrote {
+		t.Fatal("alert #2 did not fire after the base gap")
+	}
+	// Nothing was consumed; the inconsistent snapshot must not have
+	// read as an advance. Ladder at unacked=2 → 10m gap.
+	pump.ObserveSubsUnread(at.Add(250 * time.Millisecond))
+	if wrote := pump.Flush(at.Add(5 * time.Minute)); wrote {
+		t.Fatal("alert #3 fired on the base gap; Unread > Total underflowed into a spurious watermark advance (clamp at zero)")
+	}
+}
