@@ -49,8 +49,12 @@ func okExchangeServer(t *testing.T, accountID string) *httptest.Server {
 // with refresh-loop / NC teardown registered.
 func newLoginTestDaemon(t *testing.T) *Daemon {
 	t.Helper()
+	// Home and State share one dir, as in New(): watchState polls
+	// d.Home while State reads/writes the same files.
+	home := t.TempDir()
 	d := &Daemon{
-		State:      NewState(t.TempDir()),
+		Home:       home,
+		State:      NewState(home),
 		NATSEvents: newNATSEventRing(natsEventRingCap),
 		Follows:    newFollowRegistry(),
 		Watches:    newWatchRegistry(),

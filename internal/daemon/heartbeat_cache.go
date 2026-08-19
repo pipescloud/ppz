@@ -41,13 +41,11 @@ func (c *HeartbeatCache) Stamp(handle, payload string, arrivedAt time.Time) {
 	c.entries[handle] = HeartbeatEntry{Handle: handle, Payload: payload, ArrivedAt: arrivedAt}
 }
 
-// Clear drops every entry. Called on successful login: pre-login
-// entries belong to whatever account/connection the daemon was on
-// before, and with the old NATS subscription gone they would never
-// refresh — `ppz who` would render them as stale ghosts until a
-// daemon restart. Post-clear behaviour matches a restart: the next
-// beat from each live agent repopulates the cache within one
-// heartbeat interval.
+// Clear drops every entry. Called when the daemon crosses an account
+// boundary — cross-account login and logout; see the account-boundary
+// comment in handleLogin for the full rationale and the ordering it
+// must run in. Post-clear behaviour matches a daemon restart: each
+// live agent's next beat repopulates the cache within one interval.
 func (c *HeartbeatCache) Clear() {
 	if c == nil {
 		return

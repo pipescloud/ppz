@@ -170,6 +170,16 @@ func New(home, sock string) *Daemon {
 // stale dials + swaps; everyone else blocks, then re-checks and finds the
 // connection current and no-ops. That collapses the rotation thundering
 // herd into a single reconnect.
+// dialer returns d.dial with the production fallback. New() always
+// injects connectNATSWithRefresh, but Daemon literals (tests) may leave
+// dial nil — every dial site goes through here so none can nil-deref.
+func (d *Daemon) dialer() func(string, *RefreshLoop, func(NATSEvent)) (*nats.Conn, error) {
+	if d.dial != nil {
+		return d.dial
+	}
+	return connectNATSWithRefresh
+}
+
 func (d *Daemon) rebuildNC(caller string) error {
 	d.ncMu.Lock()
 	defer d.ncMu.Unlock()
@@ -179,7 +189,7 @@ func (d *Daemon) rebuildNC(caller string) error {
 	if d.NC != nil && d.NC.IsConnected() && d.ncExp == d.Refresh.JWTExp() {
 		return nil // already connected on the current generation — coalesce
 	}
-	nc, err := d.dial(d.NATSURL, d.Refresh, d.recordNATSEvent)
+	nc, err := d.dialer()(d.NATSURL, d.Refresh, d.recordNATSEvent)
 	if err != nil || nc == nil {
 		return cliproto.New(cliproto.ENATSUnreachable)
 	}

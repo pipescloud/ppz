@@ -319,18 +319,13 @@ func (d *Daemon) handleLogin(ctx context.Context, conn net.Conn, params json.Raw
 		NATSUserSeed: ex.NATSUserSeed,
 	}
 	prefix := keyPrefix(req.APIKey)
+	// Captured before SetLogin overwrites it: decides below whether this
+	// login crosses an account boundary.
+	priorAccountID := d.State.AccountID()
 	if err := d.State.SetLogin(creds, ex.AccountID, ex.AccountName, prefix); err != nil {
 		writeIPCErr(conn, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
 		return
 	}
-
-	// Login crosses an account boundary: heartbeats stamped before this
-	// point belong to the previous account/connection and would never
-	// refresh once swapNC kills the old subscription — `ppz who` would
-	// show them as stale ghosts until a daemon restart. Clear only after
-	// the exchange + SetLogin succeed: a failed login must leave the
-	// "who was running" answer intact.
-	d.Heartbeats.Clear()
 
 	// PPZ_NATS_URL on the daemon overrides what the server told us. Used
 	// when running the daemon outside compose: the server hands out
@@ -352,16 +347,35 @@ func (d *Daemon) handleLogin(ctx context.Context, conn net.Conn, params json.Raw
 	// is active would otherwise silently break the .stdin /.inbox
 	// relays anchored to the prior NC.
 	d.startRefreshLoop(ex.AccountID, ex.NATSUserJWT, ex.NATSUserSeed, ex.ExpiresAt.Unix())
-	dial := d.dial
-	if dial == nil {
-		dial = connectNATSWithRefresh
-	}
-	newNC, _ := dial(natsURL, d.Refresh, d.recordNATSEvent)
+	newNC, _ := d.dialer()(natsURL, d.Refresh, d.recordNATSEvent)
 	d.swapNC("handleLogin", newNC)
+	// Cross-account login crosses an account boundary: cached heartbeat
+	// rows belong to the previous account and — old subscription now
+	// closed by swapNC — would never refresh, rendering as stale ghosts
+	// in `ppz who` until a daemon restart. The clear sits in a precise
+	// window: AFTER swapNC (until the old connection dies, the old org
+	// subscription still stamps — a beat delivered mid-dial would
+	// otherwise be re-inserted post-clear as a permanent ghost) and
+	// BEFORE subscribeOrgHeartbeats re-arms (new-org beats must never be
+	// wiped). Same-account re-login keeps the cache: no boundary was
+	// crossed, the re-armed subscription refreshes the same handles, and
+	// wiping would leave `ppz who` empty for up to a full heartbeat
+	// interval. A failed login returns above and touches nothing —
+	// "who was running before my login attempt failed" stays answerable.
+	if priorAccountID != ex.AccountID {
+		d.Heartbeats.Clear()
+	}
 	if newNC != nil {
 		if aid, err := uuid.Parse(ex.AccountID); err == nil {
 			d.subscribeOrgHeartbeats(aid)
 		}
+	} else {
+		// Best-effort dial failed: with no conn there is no "closed"
+		// event to auto-kick recovery, and handleWho never calls
+		// ensureNATS — the daemon (and a just-cleared `ppz who`) would
+		// sit dead until the JWT refresh fires, up to ~4.5 min out.
+		// Single-flight, so racing a healthy connection is a no-op.
+		d.kickReconnect()
 	}
 
 	writeIPC(conn, cliproto.LoginReply{URL: req.URL, KeyPrefix: prefix, AccountID: ex.AccountID})
