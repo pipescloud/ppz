@@ -96,6 +96,22 @@ type ReadRequest struct {
 	NoAdvance bool   `json:"no_advance,omitempty"` // observational reads (terminal view) skip cursor advance
 	All       bool   `json:"all,omitempty"`        // forensic mode (`reread`): ignore the cursor (deliver everything) and don't advance it. Implies NoAdvance.
 
+	// SeedLatest treats "no stored cursor for this session+key" as caught
+	// up rather than empty: the daemon stamps the cursor at LastSeq and
+	// starts there instead of draining the retained window.
+	//
+	// Set by the pty host's .stdin follow (internal/cli/terminal.go). A
+	// watermark only starts protecting a handle once one has been written,
+	// so without this the FIRST share on a handle — after an upgrade, a
+	// wiped PPZ_HOME, a new machine, or on a brand-new handle — re-feeds
+	// the child every command still inside the pipe's 24h retention. For
+	// .stdin those are commands that execute on arrival, and they have
+	// already run once.
+	//
+	// Deliberately opt-in: for `ppz read` a fresh session SHOULD see
+	// retained history — that is the unread model.
+	SeedLatest bool `json:"seed_latest,omitempty"`
+
 	// Sender is the CLI's resolved current-handle hint for ack:read
 	// emission. Mirrors SendRequest.Sender's role: inside a `ppz
 	// terminal share` wrapped shell, terminalShareEnv exports

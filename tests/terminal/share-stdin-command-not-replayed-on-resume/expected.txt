@@ -1,4 +1,4 @@
 session1_executed: 1
-session2_live_input_works: 1
 cmd1_executions_total: 1
+session2_live_input_works: 1
 exit=0
