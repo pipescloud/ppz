@@ -236,6 +236,20 @@ func (d *Daemon) handleRead(ctx context.Context, conn net.Conn, params json.RawM
 		// skipped past.
 		entry := d.Cursors.GetEntry(req.Session, cursorKey)
 		cursor := effectiveCursor(entry, createdNanos(info.Created), info.State.LastSeq)
+		// SeedLatest: no usable cursor means "caught up", not "start from
+		// the beginning". A watermark only protects a pipe once one has
+		// been written, so a first-ever read would otherwise drain the
+		// whole retained window — which for .stdin is a backlog of
+		// commands that execute on arrival and have already run once. Set
+		// by the pty host so the first share on a handle (post-upgrade,
+		// wiped PPZ_HOME, new machine, brand-new handle) starts listening
+		// instead of replaying. Persisted immediately so a host that dies
+		// before delivering anything doesn't re-expose the backlog to its
+		// successor.
+		if cursor == 0 && req.SeedLatest {
+			cursor = info.State.LastSeq
+			_ = d.Cursors.Advance(req.Session, cursorKey, cursor, createdNanos(info.Created))
+		}
 		if cursor+1 > startSeq {
 			startSeq = cursor + 1
 		}
@@ -398,10 +412,27 @@ func (d *Daemon) handleRead(ctx context.Context, conn net.Conn, params json.RawM
 	// Follow mode: open a live consumer starting just after the last
 	// sequence we drained (so we don't double-deliver). Stream until the
 	// CLI closes the socket or the request ctx is cancelled.
+	//
+	// startSeq is the floor, not just lastSeqSeen+1. lastSeqSeen is only
+	// assigned inside the drain loop above, and the drain is skipped
+	// entirely when the cursor already covers the retained window
+	// (startSeq > LastSeq) — the caught-up case, which is the normal one
+	// for any follower that reconnects with nothing outstanding. Taking
+	// lastSeqSeen+1 == 1 there restarts the live consumer at the head of
+	// the stream and re-delivers the whole retained window as "live"
+	// messages, undoing the cursor the caller just honoured.
+	//
+	// For `ppz terminal share` that was a resumed pty session re-feeding
+	// its child every retained command (AR#17: a `/compact` replayed 22.5h
+	// after it was issued). Pinned by the daemon-level
+	// TestHandleRead_Follow_DoesNotReplayPastCursor and end-to-end by
+	// share-stdin-command-not-replayed-on-resume. Note the defect hid
+	// whenever anything newer than the cursor was outstanding, since that
+	// takes the drain path and sets lastSeqSeen correctly.
 	consumer, err := stream.OrderedConsumer(ctx, jetstream.OrderedConsumerConfig{
 		FilterSubjects: []string{filterSubject},
 		DeliverPolicy:  jetstream.DeliverByStartSequencePolicy,
-		OptStartSeq:    lastSeqSeen + 1,
+		OptStartSeq:    max(lastSeqSeen+1, startSeq),
 	})
 	if err != nil {
 		return

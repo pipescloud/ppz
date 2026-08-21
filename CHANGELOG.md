@@ -20,12 +20,37 @@ action most of a day later, on an agent nobody had asked.
   on an existing handle began with an empty ring and re-fed the child
   every `.stdin` message still inside the 24h retention, oldest first,
   submit sequences and all.
-- **Fix.** The follow is now cursor-advancing and keyed to session
-  `<handle>`, so the watermark belongs to the agent rather than the
-  shell that started it. A resumed share picks up after whatever an
-  earlier one already fed the child. The watermark persists at
-  `<PPZ_HOME>/cursors/<handle>.json`, so it survives daemon restarts as
-  well as share restarts.
+- **Fix.** The follow is now cursor-advancing and keyed to a session
+  derived from the handle, so the watermark belongs to the agent rather
+  than the shell that started it. A resumed share picks up after
+  whatever an earlier one already fed the child. The watermark persists
+  under `<PPZ_HOME>/cursors/`, so it survives daemon restarts as well as
+  share restarts.
+- **The live consumer honours the cursor too.** `handleRead` derived the
+  follow's start sequence solely from what its retained-drain delivered.
+  When the cursor already covered the whole window — the caught-up case,
+  which is every ordinary resume — the drain was skipped and the live
+  consumer restarted from the head of the stream, re-delivering
+  everything the cursor had just excluded. The start sequence is now
+  floored at the cursor. This defect hid whenever anything newer than
+  the cursor was outstanding, because that takes the drain path.
+- **A first share no longer inherits a backlog.** A watermark only
+  protects a handle once one has been written, so the first share after
+  upgrading (or on a wiped `PPZ_HOME`, a new machine, or a brand-new
+  handle) would still have drained the full 24h window. The host now
+  declares "no cursor means caught up": the daemon stamps the cursor at
+  the pipe's last sequence and starts there. A command issued to a
+  handle never shared from this daemon is dropped rather than executed
+  late.
+- **The host's watermark is isolated from the agent's own reads.** The
+  cursor namespace is deliberately not `<handle>`, which is what the
+  host exports as `PPZ_SESSION` into the wrapped child: sharing it would
+  let an agent that reads its own `.stdin` — directly or through a
+  matching subscription — advance the host's watermark and silently
+  consume commands the host then never delivered. The follow also stamps
+  `Sender`, so the `ack:read` it now emits is attributed to the agent
+  rather than to whatever `State.Current` resolves to (empty, for a pty
+  source).
 - **At-most-once, deliberately.** The daemon advances as it writes to
   the socket, so a host killed mid-drain drops what was in flight. For
   a channel whose messages execute on arrival that is the right trade:
@@ -37,7 +62,13 @@ action most of a day later, on an agent nobody had asked.
   child.
 - Pinned by `share-stdin-command-not-replayed-on-resume`, which counts
   executions rather than echoes and also asserts the resumed session
-  still accepts live input.
+  still accepts live input. Its barrier waits for the resumed child
+  itself: an earlier version published its marker before the resumed
+  host had connected, which left something newer than the cursor
+  outstanding and so passed against a daemon that replays. Backed by
+  `TestHandleRead_Follow_DoesNotReplayPastCursor`,
+  `TestHandleRead_Follow_SeedLatest_SkipsBacklogOnFirstRead` and
+  `TestForwardStdinRequestIsolatesHostCursor`.
 
 ## Unreleased — fresh idle window for consumed episodes
 

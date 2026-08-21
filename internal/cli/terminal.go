@@ -738,13 +738,27 @@ func publishWinsize(handle string, ptmx *os.File) {
 // duplicate, it runs the command again — under whatever consent the
 // operator gave at some unrelated earlier moment.
 //
-// So the Read is cursor-advancing (no NoAdvance) and keyed by Session:
-// handle. The daemon persists that watermark at
-// <PPZ_HOME>/cursors/<handle>.json, so a share process that starts on a
+// So the Read is cursor-advancing (no NoAdvance) and keyed to a session
+// derived from the handle (ptyHostCursorSession). The daemon persists that
+// watermark under <PPZ_HOME>/cursors/, so a share process that starts on a
 // handle resumes after whatever a previous share process already fed to
 // the child, instead of re-draining the pipe's whole retained window.
-// Keying on the handle rather than sessionID() is what makes it survive:
-// the resuming shell is a different session, but it is the same agent.
+// Deriving it from the handle rather than sessionID() is what makes it
+// survive: the resuming shell is a different session, but it is the same
+// agent.
+//
+// Sender is explicit because a cursor-advancing read auto-emits ack:read,
+// and the daemon otherwise attributes it to State.Current(session), which
+// is empty for a pty source.
+//
+// SeedLatest covers what a watermark structurally cannot: its own absence.
+// The first share on a handle has no stored cursor — after an upgrade, a
+// wiped PPZ_HOME, a new machine, or on a brand-new handle — and would
+// otherwise drain the pipe's whole 24h retention into the child. It means
+// "no cursor = caught up", so a share starts listening rather than
+// replaying. The trade is deliberate: a command issued to a handle that
+// has never been shared on this machine is dropped rather than executed
+// late, which is the same at-most-once bet the rest of this path makes.
 //
 // Before this the Read passed NoAdvance=true and the only thing standing
 // between the retained window and the child was seenIDRing — in-memory,
@@ -766,6 +780,18 @@ func publishWinsize(handle string, ptmx *os.File) {
 // stays as the intra-connection guard — JetStream can redeliver within
 // a consumer's lifetime, and the cursor cannot cover the window between
 // the daemon advancing it and us writing the bytes.
+// ptyHostCursorSession is the cursor namespace for the pty host's .stdin
+// follow. Deliberately NOT the handle itself: terminalShareEnv exports
+// PPZ_SESSION=<handle> into the wrapped child, so every `ppz read` /
+// `ppz subs read` the agent runs sends Session=<handle> with advance
+// enabled. Sharing that namespace would let an agent that reads its own
+// .stdin — directly, or via a subscription matching it — advance the
+// host's watermark and silently consume commands the host then never
+// delivers to the PTY. The suffix cannot collide with a real session
+// derived from a handle: handles are [a-z0-9-] (natsubj.ValidateHandle),
+// so no handle contains a dot.
+func ptyHostCursorSession(handle string) string { return handle + ".ptyhost" }
+
 func forwardStdin(ctx context.Context, handle string, master io.Writer, lease *leaseState) {
 	seen := newSeenIDRing(1024)
 
@@ -796,10 +822,12 @@ func streamForwardStdinOnce(ctx context.Context, handle string, master io.Writer
 	defer conn.Close()
 
 	body, _ := json.Marshal(cliproto.ReadRequest{
-		Handle:  handle,
-		Channel: "stdin",
-		Follow:  true,
-		Session: handle,
+		Handle:     handle,
+		Channel:    "stdin",
+		Follow:     true,
+		Session:    ptyHostCursorSession(handle),
+		Sender:     handle,
+		SeedLatest: true,
 	})
 	if err := json.NewEncoder(conn).Encode(map[string]any{"method": cliproto.IPCRead, "params": json.RawMessage(body)}); err != nil {
 		return

@@ -637,13 +637,25 @@ subscribed `<handle>.stdin` messages forward to the PTY master. Foreground;
 blocks until child exits. Exit 0 on clean child exit.
 
 `.stdin` delivery to the child is **once-only**. The host follows the pipe with
-a cursor-advancing read keyed to session `<handle>`, so the watermark is the
-agent's, not the shell's: a later `terminal share` on the same handle resumes
-after whatever an earlier one already fed the child, rather than re-draining the
-pipe's retained window. This is at-most-once by design — `.stdin` messages are
-commands that execute on arrival, so a message dropped by a host that died
-mid-delivery is preferable to one replayed into an agent hours after the
-operator issued it.
+a cursor-advancing read keyed to a session derived from the handle (not the
+handle itself, and not the shell's session), so the watermark is the agent's: a
+later `terminal share` on the same handle resumes after whatever an earlier one
+already fed the child, rather than re-draining the pipe's retained window. The
+namespace is deliberately distinct from `PPZ_SESSION=<handle>` — which the host
+exports into the wrapped child — so that an agent reading its own `.stdin`
+cannot advance the host's watermark past commands the host has not delivered.
+
+A host with **no stored watermark** treats the pipe as caught up rather than
+empty, and stamps the cursor at the pipe's last sequence before it starts. So
+the first share on a handle — after an upgrade, a wiped `PPZ_HOME`, on a new
+machine, or on a brand-new handle — starts listening instead of replaying a
+retained window of commands that have already run. The trade: a command issued
+to a handle that has never been shared from this daemon is dropped rather than
+executed late.
+
+Both properties are at-most-once by design. `.stdin` messages are commands that
+execute on arrival, so a message dropped by a host that died mid-delivery is
+preferable to one replayed into an agent hours after the operator issued it.
 
 Bare `ppz terminal share` (no handle) shares the session's current source. If
 that source is inbox-only (kind=message — e.g. from `source create` or
