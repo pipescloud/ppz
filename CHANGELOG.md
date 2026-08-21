@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased — once-only `.stdin` delivery (no command replay on resume)
+
+**Bug fix (`ppz terminal share`).** A `ppz command` that a pty session
+had already received and executed was delivered AGAIN when a new share
+process started on the same handle. Field-observed on v0.56.10: a
+`/compact` issued at 09:59:35 and executed at 10:01:25 was relayed a
+second time at 08:26 the next morning — a 22.5 hour gap. It failed to
+run only because that harness happened to be closed.
+
+This bypassed every consent guard, because the guards run before the
+send and not on delivery: approval given for one moment produced an
+action most of a day later, on an agent nobody had asked.
+
+- **Root cause.** The host followed `.stdin` with `NoAdvance=true`, so
+  the daemon's cursor never moved and every Read re-drained the pipe
+  from its first retained sequence. The only thing suppressing that
+  replay was `seenIDRing` — an in-memory, in-process ring. A new share
+  on an existing handle began with an empty ring and re-fed the child
+  every `.stdin` message still inside the 24h retention, oldest first,
+  submit sequences and all.
+- **Fix.** The follow is now cursor-advancing and keyed to session
+  `<handle>`, so the watermark belongs to the agent rather than the
+  shell that started it. A resumed share picks up after whatever an
+  earlier one already fed the child. The watermark persists at
+  `<PPZ_HOME>/cursors/<handle>.json`, so it survives daemon restarts as
+  well as share restarts.
+- **At-most-once, deliberately.** The daemon advances as it writes to
+  the socket, so a host killed mid-drain drops what was in flight. For
+  a channel whose messages execute on arrival that is the right trade:
+  a lost keystroke can be retyped, a replayed one is an action nobody
+  authorised.
+- `seenIDRing` stays as the intra-connection guard, covering the window
+  between the daemon advancing the cursor and the bytes reaching the
+  PTY — it is no longer what stands between the retained window and the
+  child.
+- Pinned by `share-stdin-command-not-replayed-on-resume`, which counts
+  executions rather than echoes and also asserts the resumed session
+  still accepts live input.
+
 ## Unreleased — fresh idle window for consumed episodes
 
 **Bug fix (`ppz terminal share`).** A message arriving after the agent

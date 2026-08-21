@@ -732,13 +732,40 @@ func publishWinsize(handle string, ptmx *os.File) {
 // responsible for including whatever terminator they need (e.g. via
 // ppz command which appends \n or --claude etc.).
 //
+// Delivery is once-only, and that is load-bearing rather than a nicety.
+// .stdin is a command channel: every byte on it executes in the wrapped
+// agent the moment it lands. Re-delivering one is not a cosmetic
+// duplicate, it runs the command again — under whatever consent the
+// operator gave at some unrelated earlier moment.
+//
+// So the Read is cursor-advancing (no NoAdvance) and keyed by Session:
+// handle. The daemon persists that watermark at
+// <PPZ_HOME>/cursors/<handle>.json, so a share process that starts on a
+// handle resumes after whatever a previous share process already fed to
+// the child, instead of re-draining the pipe's whole retained window.
+// Keying on the handle rather than sessionID() is what makes it survive:
+// the resuming shell is a different session, but it is the same agent.
+//
+// Before this the Read passed NoAdvance=true and the only thing standing
+// between the retained window and the child was seenIDRing — in-memory,
+// so scoped to one process. A new share on an existing handle started
+// with an empty ring and re-fed the child every .stdin message still
+// inside the 24h retention (internal/server/streams.go), oldest first.
+// The field case was a `ppz command <h> "/compact"` replayed 22.5 hours
+// after it was issued and executed, submit sequence and all. Pinned by
+// share-stdin-command-not-replayed-on-resume.
+//
+// Cursor-advancing makes this at-most-once: the daemon advances as it
+// writes to the socket, so a share killed mid-drain drops whatever was
+// in flight. That is the right trade for a channel whose messages are
+// commands — a lost keystroke is a keystroke the operator can retype,
+// while a replayed one is an action nobody authorised.
+//
 // Resilient to daemon restarts: if the IPC connection drops (daemon
-// stop/crash/upgrade), we sleep with backoff and redial. We use
-// NoAdvance=true (the daemon's cursor never moves), so on redial the
-// daemon redelivers every retained message; we skip ones we've
-// already written to the PTY by tracking message IDs in a bounded
-// ring. Without dedupe, every reconnect would replay history into
-// the wrapped child.
+// stop/crash/upgrade), we sleep with backoff and redial. seenIDRing
+// stays as the intra-connection guard — JetStream can redeliver within
+// a consumer's lifetime, and the cursor cannot cover the window between
+// the daemon advancing it and us writing the bytes.
 func forwardStdin(ctx context.Context, handle string, master io.Writer, lease *leaseState) {
 	seen := newSeenIDRing(1024)
 
@@ -769,10 +796,10 @@ func streamForwardStdinOnce(ctx context.Context, handle string, master io.Writer
 	defer conn.Close()
 
 	body, _ := json.Marshal(cliproto.ReadRequest{
-		Handle:    handle,
-		Channel:   "stdin",
-		Follow:    true,
-		NoAdvance: true,
+		Handle:  handle,
+		Channel: "stdin",
+		Follow:  true,
+		Session: handle,
 	})
 	if err := json.NewEncoder(conn).Encode(map[string]any{"method": cliproto.IPCRead, "params": json.RawMessage(body)}); err != nil {
 		return
@@ -1501,8 +1528,16 @@ func streamForwardResizeOnce(ctx context.Context, handle string, ptmx *os.File) 
 }
 
 // seenIDRing keeps a bounded set of message IDs, evicting oldest first.
-// Used by forwardStdin to skip retained-message redelivery after a
-// daemon-restart redial.
+// Used by forwardStdin to skip redelivery of a message it has already
+// written to the PTY master.
+//
+// The daemon cursor (see forwardStdin) is the durable half of that
+// guarantee and the one that spans processes; the ring covers what a
+// watermark structurally cannot — a message the daemon has already
+// counted as delivered (cursor advanced on socket write) arriving twice
+// on our side, e.g. JetStream redelivery inside one consumer's lifetime.
+// In-memory and per-process by nature, so it is never the thing that
+// stops a resumed session replaying history.
 type seenIDRing struct {
 	mu    sync.Mutex
 	order []string
