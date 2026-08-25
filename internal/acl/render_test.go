@@ -40,7 +40,7 @@ func TestRenderPipeRoster_ColumnsAndProvenance(t *testing.T) {
 		{Principal: "bob", Decision: Evaluate(bob, stdoutOf(owner), []Grant{g})},
 	}
 
-	out := mustRender(t, func(b *bytes.Buffer) { RenderPipeRoster(b, "alice.stdout", rows) })
+	out := mustRender(t, func(b *bytes.Buffer) { RenderPipeRoster(b, "alice.stdout", Roster{Rows: rows, Enforced: true}) })
 
 	for _, want := range []string{"PRINCIPAL", "VIA", "alice", "bob"} {
 		if !strings.Contains(out, want) {
@@ -66,7 +66,7 @@ func TestRenderPipeRoster_OmitsPrincipalsWithNoAccess(t *testing.T) {
 		{Principal: "carol", Decision: Evaluate(carol, stdoutOf(owner), nil)},
 	}
 
-	out := mustRender(t, func(b *bytes.Buffer) { RenderPipeRoster(b, "alice.stdout", rows) })
+	out := mustRender(t, func(b *bytes.Buffer) { RenderPipeRoster(b, "alice.stdout", Roster{Rows: rows, Enforced: true}) })
 
 	// Positive control first: an empty render would otherwise satisfy
 	// the omission assertion without rendering anything at all.

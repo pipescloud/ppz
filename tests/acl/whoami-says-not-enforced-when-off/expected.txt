@@ -1,0 +1,5 @@
+--- text output carries the caveat ---
+1
+--- and so does the roster ---
+1
+exit=0

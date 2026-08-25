@@ -1,0 +1,7 @@
+--- enforcement state ---
+false
+--- bar holds nothing by the defaults ---
+{"read":false,"write":false,"enforced":false}
+--- but can still read it, because nothing is enforced ---
+hello
+exit=0

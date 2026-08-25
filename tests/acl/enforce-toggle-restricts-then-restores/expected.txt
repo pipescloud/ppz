@@ -1,0 +1,11 @@
+--- off: bar can read ---
+secret
+--- enable ---
+true
+--- on: bar is denied, without restarting anything ---
+denied
+--- grant bar read, then it works ---
+secret
+--- disable: grants persist ---
+1
+exit=0
