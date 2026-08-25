@@ -1,5 +1,85 @@
 # Changelog
 
+## Unreleased — once-only `.stdin` delivery (no command replay on resume)
+
+**Bug fix (`ppz terminal share`).** A `ppz command` that a pty session
+had already received and executed was delivered AGAIN when a new share
+process started on the same handle. Field-observed on v0.56.10: a
+`/compact` issued at 09:59:35 and executed at 10:01:25 was relayed a
+second time at 08:26 the next morning — a 22.5 hour gap. It failed to
+run only because that harness happened to be closed.
+
+This bypassed every consent guard, because the guards run before the
+send and not on delivery: approval given for one moment produced an
+action most of a day later, on an agent nobody had asked.
+
+- **Root cause.** The host followed `.stdin` with `NoAdvance=true`, so
+  the daemon's cursor never moved and every Read re-drained the pipe
+  from its first retained sequence. The only thing suppressing that
+  replay was `seenIDRing` — an in-memory, in-process ring. A new share
+  on an existing handle began with an empty ring and re-fed the child
+  every `.stdin` message still inside the 24h retention, oldest first,
+  submit sequences and all.
+- **Fix.** The follow is now cursor-advancing and keyed to a session
+  derived from the handle, so the watermark belongs to the agent rather
+  than the shell that started it. A resumed share picks up after
+  whatever an earlier one already fed the child. The watermark persists
+  under `<PPZ_HOME>/cursors/`, so it survives daemon restarts as well as
+  share restarts.
+- **The live consumer honours the cursor too.** `handleRead` derived the
+  follow's start sequence solely from what its retained-drain delivered.
+  When the cursor already covered the whole window — the caught-up case,
+  which is every ordinary resume — the drain was skipped and the live
+  consumer restarted from the head of the stream, re-delivering
+  everything the cursor had just excluded. The start sequence is now
+  floored at the cursor. This defect hid whenever anything newer than
+  the cursor was outstanding, because that takes the drain path.
+- **A first share no longer inherits a backlog.** A watermark only
+  protects a handle once one has been written, so the first share after
+  upgrading (or on a wiped `PPZ_HOME`, a new machine, or a brand-new
+  handle) would still have drained the full 24h window. With no cursor
+  the daemon now seeks by time, to the moment the host started
+  following: older is backlog the agent has already run, newer is owed
+  to it. A command issued to a handle before any host existed for it is
+  dropped rather than executed late.
+
+  The floor is a time rather than "skip to the latest sequence" because
+  the pipe is provisioned before the host dials, so a send can land
+  before the follow is established — `ppz terminal share agent & ppz
+  command agent …`, and every ordinary share startup. Skipping to the
+  end silently discarded those. It is stamped once per host, not per
+  dial: `ppz daemon logout` removes `<PPZ_HOME>/cursors` mid-process, so
+  a dial can find no watermark with the pipe live and messages genuinely
+  outstanding; redelivery back to the host's start is safe because the
+  in-process dedupe ring suppresses whatever already reached the PTY.
+- **The host's watermark is isolated from the agent's own reads.** The
+  cursor namespace is deliberately not `<handle>`, which is what the
+  host exports as `PPZ_SESSION` into the wrapped child: sharing it would
+  let an agent that reads its own `.stdin` — directly or through a
+  matching subscription — advance the host's watermark and silently
+  consume commands the host then never delivered. The follow also stamps
+  `Sender`, so the `ack:read` it now emits is attributed to the agent
+  rather than to whatever `State.Current` resolves to (empty, for a pty
+  source).
+- **At-most-once, deliberately.** The daemon advances as it writes to
+  the socket, so a host killed mid-drain drops what was in flight. For
+  a channel whose messages execute on arrival that is the right trade:
+  a lost keystroke can be retyped, a replayed one is an action nobody
+  authorised.
+- `seenIDRing` stays as the intra-connection guard, covering the window
+  between the daemon advancing the cursor and the bytes reaching the
+  PTY — it is no longer what stands between the retained window and the
+  child.
+- Pinned by `share-stdin-command-not-replayed-on-resume`, which counts
+  executions rather than echoes and also asserts the resumed session
+  still accepts live input. Its barrier waits for the resumed child
+  itself: an earlier version published its marker before the resumed
+  host had connected, which left something newer than the cursor
+  outstanding and so passed against a daemon that replays. Backed by
+  `TestHandleRead_Follow_DoesNotReplayPastCursor`,
+  `TestHandleRead_Follow_SeedLatest_SkipsBacklogOnFirstRead` and
+  `TestForwardStdinRequestIsolatesHostCursor`.
+
 ## Unreleased — fresh idle window for consumed episodes
 
 **Bug fix (`ppz terminal share`).** A message arriving after the agent

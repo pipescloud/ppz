@@ -636,6 +636,33 @@ exported to the child. Stdout chunks publish verbatim to `<handle>.stdout`;
 subscribed `<handle>.stdin` messages forward to the PTY master. Foreground;
 blocks until child exits. Exit 0 on clean child exit.
 
+`.stdin` delivery to the child is **once-only**. The host follows the pipe with
+a cursor-advancing read keyed to a session derived from the handle (not the
+handle itself, and not the shell's session), so the watermark is the agent's: a
+later `terminal share` on the same handle resumes after whatever an earlier one
+already fed the child, rather than re-draining the pipe's retained window. The
+namespace is deliberately distinct from `PPZ_SESSION=<handle>` — which the host
+exports into the wrapped child — so that an agent reading its own `.stdin`
+cannot advance the host's watermark past commands the host has not delivered.
+
+A host with **no stored watermark** falls back to a wall-clock floor: the moment
+it started following. Anything older is a backlog the agent has already run, so
+the first share on a handle — after an upgrade, a wiped `PPZ_HOME`, on a new
+machine, or on a brand-new handle — starts listening instead of replaying a
+retained window of commands. Anything newer is owed to it, including a send that
+lands in the window between the pipe being provisioned and the follow being
+established (`ppz terminal share agent & ppz command agent …`). The floor is the
+host's start, not each dial's, so a mid-process loss of the watermark — `ppz
+daemon logout` removes `<PPZ_HOME>/cursors` — doesn't discard what arrived while
+the host was reconnecting; the in-process dedupe ring covers the redelivery.
+
+The trade that remains: a command issued to a handle before any host existed for
+it is dropped rather than executed late.
+
+Both properties are at-most-once by design. `.stdin` messages are commands that
+execute on arrival, so a message dropped by a host that died mid-delivery is
+preferable to one replayed into an agent hours after the operator issued it.
+
 Bare `ppz terminal share` (no handle) shares the session's current source. If
 that source is inbox-only (kind=message — e.g. from `source create` or
 `connect`), sharing it **upgrades it to a full terminal**: kind flips to pty and

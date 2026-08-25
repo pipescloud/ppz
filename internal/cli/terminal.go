@@ -732,21 +732,89 @@ func publishWinsize(handle string, ptmx *os.File) {
 // responsible for including whatever terminator they need (e.g. via
 // ppz command which appends \n or --claude etc.).
 //
+// Delivery is once-only, and that is load-bearing rather than a nicety.
+// .stdin is a command channel: every byte on it executes in the wrapped
+// agent the moment it lands. Re-delivering one is not a cosmetic
+// duplicate, it runs the command again — under whatever consent the
+// operator gave at some unrelated earlier moment.
+//
+// So the Read is cursor-advancing (no NoAdvance) and keyed to a session
+// derived from the handle (ptyHostCursorSession). The daemon persists that
+// watermark under <PPZ_HOME>/cursors/, so a share process that starts on a
+// handle resumes after whatever a previous share process already fed to
+// the child, instead of re-draining the pipe's whole retained window.
+// Deriving it from the handle rather than sessionID() is what makes it
+// survive: the resuming shell is a different session, but it is the same
+// agent.
+//
+// Sender is explicit because a cursor-advancing read auto-emits ack:read,
+// and the daemon otherwise attributes it to State.Current(session), which
+// is empty for a pty source.
+//
+// SeedSinceUnixMS covers what a watermark structurally cannot: its own
+// absence. The first share on a handle has no stored cursor — after an
+// upgrade, a wiped PPZ_HOME, a new machine, or on a brand-new handle — and
+// would otherwise drain the pipe's whole 24h retention into the child. The
+// floor is the moment this host started following, so anything older is
+// treated as a backlog the agent has already run.
+//
+// A time rather than "skip to whatever is latest": the pipe is provisioned
+// before we dial, so a send can legitimately land before the follow is up —
+// `ppz terminal share agent & ppz command agent ...` is exactly that shape.
+// Those messages are newer than the host, so the floor keeps them. The
+// trade that remains is deliberate: a command issued BEFORE the host
+// existed is dropped rather than executed late, which is the same
+// at-most-once bet the rest of this path makes.
+//
+// Before this the Read passed NoAdvance=true and the only thing standing
+// between the retained window and the child was seenIDRing — in-memory,
+// so scoped to one process. A new share on an existing handle started
+// with an empty ring and re-fed the child every .stdin message still
+// inside the 24h retention (internal/server/streams.go), oldest first.
+// The field case was a `ppz command <h> "/compact"` replayed 22.5 hours
+// after it was issued and executed, submit sequence and all. Pinned by
+// share-stdin-command-not-replayed-on-resume.
+//
+// Cursor-advancing makes this at-most-once: the daemon advances as it
+// writes to the socket, so a share killed mid-drain drops whatever was
+// in flight. That is the right trade for a channel whose messages are
+// commands — a lost keystroke is a keystroke the operator can retype,
+// while a replayed one is an action nobody authorised.
+//
 // Resilient to daemon restarts: if the IPC connection drops (daemon
-// stop/crash/upgrade), we sleep with backoff and redial. We use
-// NoAdvance=true (the daemon's cursor never moves), so on redial the
-// daemon redelivers every retained message; we skip ones we've
-// already written to the PTY by tracking message IDs in a bounded
-// ring. Without dedupe, every reconnect would replay history into
-// the wrapped child.
+// stop/crash/upgrade), we sleep with backoff and redial. seenIDRing
+// stays as the intra-connection guard — JetStream can redeliver within
+// a consumer's lifetime, and the cursor cannot cover the window between
+// the daemon advancing it and us writing the bytes.
+// ptyHostCursorSession is the cursor namespace for the pty host's .stdin
+// follow. Deliberately NOT the handle itself: terminalShareEnv exports
+// PPZ_SESSION=<handle> into the wrapped child, so every `ppz read` /
+// `ppz subs read` the agent runs sends Session=<handle> with advance
+// enabled. Sharing that namespace would let an agent that reads its own
+// .stdin — directly, or via a subscription matching it — advance the
+// host's watermark and silently consume commands the host then never
+// delivers to the PTY. The suffix cannot collide with a real session
+// derived from a handle: handles are [a-z0-9-] (natsubj.ValidateHandle),
+// so no handle contains a dot.
+func ptyHostCursorSession(handle string) string { return handle + ".ptyhost" }
+
 func forwardStdin(ctx context.Context, handle string, master io.Writer, lease *leaseState) {
 	seen := newSeenIDRing(1024)
+	// Captured ONCE, not per redial: it is the floor used when the daemon
+	// has no cursor for us, and "when this host started" is the honest
+	// answer every time we reconnect. Re-stamping it on each dial would
+	// discard anything sent while we were away — `ppz daemon logout` wipes
+	// <PPZ_HOME>/cursors mid-process, so that path is reached with the pipe
+	// live and messages genuinely owed to the child. Redelivery back to the
+	// host's start is safe because seen (same process) suppresses whatever
+	// already reached the PTY.
+	hostStart := time.Now()
 
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		streamForwardStdinOnce(ctx, handle, master, seen, lease)
+		streamForwardStdinOnce(ctx, handle, master, seen, lease, hostStart)
 		if ctx.Err() != nil {
 			return
 		}
@@ -761,7 +829,7 @@ func forwardStdin(ctx context.Context, handle string, master io.Writer, lease *l
 	}
 }
 
-func streamForwardStdinOnce(ctx context.Context, handle string, master io.Writer, seen *seenIDRing, lease *leaseState) {
+func streamForwardStdinOnce(ctx context.Context, handle string, master io.Writer, seen *seenIDRing, lease *leaseState, hostStart time.Time) {
 	conn, err := net.Dial("unix", ipcSocket())
 	if err != nil {
 		return
@@ -769,10 +837,12 @@ func streamForwardStdinOnce(ctx context.Context, handle string, master io.Writer
 	defer conn.Close()
 
 	body, _ := json.Marshal(cliproto.ReadRequest{
-		Handle:    handle,
-		Channel:   "stdin",
-		Follow:    true,
-		NoAdvance: true,
+		Handle:          handle,
+		Channel:         "stdin",
+		Follow:          true,
+		Session:         ptyHostCursorSession(handle),
+		Sender:          handle,
+		SeedSinceUnixMS: hostStart.UnixMilli(),
 	})
 	if err := json.NewEncoder(conn).Encode(map[string]any{"method": cliproto.IPCRead, "params": json.RawMessage(body)}); err != nil {
 		return
@@ -1501,8 +1571,16 @@ func streamForwardResizeOnce(ctx context.Context, handle string, ptmx *os.File) 
 }
 
 // seenIDRing keeps a bounded set of message IDs, evicting oldest first.
-// Used by forwardStdin to skip retained-message redelivery after a
-// daemon-restart redial.
+// Used by forwardStdin to skip redelivery of a message it has already
+// written to the PTY master.
+//
+// The daemon cursor (see forwardStdin) is the durable half of that
+// guarantee and the one that spans processes; the ring covers what a
+// watermark structurally cannot — a message the daemon has already
+// counted as delivered (cursor advanced on socket write) arriving twice
+// on our side, e.g. JetStream redelivery inside one consumer's lifetime.
+// In-memory and per-process by nature, so it is never the thing that
+// stops a resumed session replaying history.
 type seenIDRing struct {
 	mu    sync.Mutex
 	order []string
