@@ -34,8 +34,10 @@ not read your terminal) don't decompose into org-wide roles.
 
 - Cross-org sharing. A grant names a principal in the same account; the
   NATS account boundary from Auth V2 Phase 3.5 stays the tenancy edge.
-- Audit log of grant changes. Same V3 bucket as the rest of the admin
-  audit trail.
+- ~~Audit log of grant changes.~~ **Revised** — this was a non-goal only
+  because no audit table existed. PR #191 (`ppz pipe set`) lands
+  `audit_events`, so grant/revoke should emit audit events. Folded into
+  Phase 3; see "Interaction with #191" below.
 - Content-level policy (redaction, DLP, per-message rules). ACLs gate
   pipes, not payloads.
 - Deny rules. See "Why there are no deny rules" below — the derived
@@ -122,10 +124,12 @@ each other. Uncollared pipes are shared org space.
 Handle ownership is `sources.created_by_user_id`, which already exists.
 
 Note the inventory: `broadcast` was removed pre-launch (locked decision
-#16), so the auto-provisioned set is `inbox` for `message` sources and
+#16), so what is actually provisioned is `inbox` for `message` sources and
 `heartbeat`/`inbox`/`stdin`/`stdout`/`stdctrl`/`system` for `pty` sources
-(`internal/daemon/handlers.go`, `pipesForKind`). `natsubj.AutoProvisionedPipes`
-still lists `broadcast` and is stale — Phase 0 cleanup.
+(`internal/daemon/handlers.go`, `pipesForKind`).
+`natsubj.AutoProvisionedPipes` must *cover* that set — it was missing
+`heartbeat` and `system` until Phase 0c — but is deliberately a superset
+and retains `broadcast`. See "Interaction with PR #191" above.
 
 ### Evaluation
 
@@ -183,6 +187,38 @@ rows can be added additively without reworking anything here.
 | Pipe roster | Visible to any principal holding any access on that pipe |
 | Every surface | Reports effective access **with provenance**, never the raw grant table |
 | Selector grammar | Subject path with `*` (one token) / `**` (rest) |
+
+## Interaction with PR #191 (`ppz pipe set` — retention + audit)
+
+#191 is ahead of this work in the queue and overlaps it in twelve files.
+Most are mechanical (both add a case to the same switch, a row to the
+same help table, a line to `reset.sh`). Three items are not:
+
+**Migration numbering.** #191 claims `0006_audit_events.sql`. This work
+renumbered to `0007_api_key_principal` / `0008_principals` /
+`0009_acl` to leave it clear. Relative order is preserved — principals
+must precede `acl_grants`, which FKs `users` and expects the `@everyone`
+seed.
+
+**`AutoProvisionedPipes`.** Both branches independently found the same
+bug (the set was missing `system` and `heartbeat`), and disagreed on
+`broadcast`: this work removed it, #191 kept it deliberately because the
+`pipe destroy` glob consumer treats the set as a skip-list, where
+retaining a dead name costs nothing. #191's reading is the better one and
+has been adopted here — the set is a **superset that must cover** what is
+provisioned, not an exact mirror. Both consumers are safe under a
+superset; neither is safe under a subset.
+
+**Two things #191 makes newly necessary, both Phase 3 scope:**
+
+- `ppz pipe set` needs an ACL gate. Its own doc comment notes it
+  deliberately reaches reserved auto-pipes (`inbox`, `stdout`) that
+  `pipe create` can never name — and changing a pipe's retention is
+  exactly what `admin` is defined to cover. It is currently ungated.
+- `auditPipe(ctx, key, …)` must attribute via `key.Actor()`, not the
+  key's creator. Same argument as row attribution: a service-account key
+  is minted by a human and acts as the bot, so logging the human makes
+  the audit trail wrong precisely where it matters most.
 
 ## Build protocol
 

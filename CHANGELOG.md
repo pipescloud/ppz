@@ -63,7 +63,7 @@ were defects in their own right.
   identity (`AuthedCaller.UserID` was `uuid.Nil` on the API-key path), so
   every handler needing a user rejected API keys outright with "this
   endpoint requires an OAuth token". New `api_keys.principal_user_id`
-  (migration 0006, backfilled from the creator) is the identity a key acts
+  (migration 0007, backfilled from the creator) is the identity a key acts
   as, and both auth surfaces now populate the caller uniformly. Invite
   endpoints consequently work with an API key, gated on the key's principal
   rather than refused.

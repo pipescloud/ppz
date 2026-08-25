@@ -1,4 +1,4 @@
--- 0007_principals.sql — ACL Phase 1
+-- 0008_principals.sql — ACL Phase 1
 --
 -- Two additions the ACL model needs a subject for:
 --

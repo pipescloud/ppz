@@ -22,36 +22,35 @@ import (
 //     heartbeat/inbox/stdctrl/stdin/stdout/system for pty sources and
 //     inbox for message sources
 //
-// broadcast was removed pre-launch (locked decision #16) and never
-// cleaned out of natsubj; heartbeat and system were added and never
-// propagated. A default derived from the stale set would silently grant
-// the wrong access on `system` and `heartbeat`.
+// heartbeat and system were provisioned but never propagated into
+// natsubj, so a default derived from the stale set silently granted the
+// wrong access on both.
 
-func TestAutoProvisionedPipes_MatchesPipesForKind(t *testing.T) {
-	union := map[string]bool{}
+// The set must COVER everything actually provisioned. It is deliberately
+// a superset, not an exact mirror: `ppz pipe destroy` glob expansion uses
+// it as a skip-list, where retaining a name that no longer exists (e.g.
+// the pre-launch `broadcast`) costs nothing, while the ACL default table
+// is keyed on it, where a default for an impossible pipe is never
+// consulted. Both are safe under a superset; neither is safe under a
+// subset.
+func TestAutoProvisionedPipes_CoversPipesForKind(t *testing.T) {
 	for _, kind := range []cliproto.SourceKind{cliproto.KindPTY, cliproto.KindMessage} {
 		for _, p := range pipesForKind(string(kind)) {
-			union[p] = true
+			if !natsubj.AutoProvisionedPipes[p] {
+				t.Errorf("pipesForKind(%s) provisions %q, missing from natsubj.AutoProvisionedPipes (have %v)",
+					kind, p, sortedKeys(natsubj.AutoProvisionedPipes))
+			}
 		}
-	}
-
-	if !equalSets(union, natsubj.AutoProvisionedPipes) {
-		t.Errorf("auto-provisioned set disagrees:\n  pipesForKind union      = %v\n  natsubj.AutoProvisioned = %v",
-			sortedKeys(union), sortedKeys(natsubj.AutoProvisionedPipes))
 	}
 }
 
-// broadcast was removed pre-launch. Leaving it in the auto-provisioned
-// set means the ACL evaluator would carry a default for a pipe that
-// cannot exist.
-func TestAutoProvisionedPipes_ExcludesBroadcast(t *testing.T) {
-	if natsubj.AutoProvisionedPipes["broadcast"] {
-		t.Error("natsubj.AutoProvisionedPipes still lists broadcast (removed pre-launch, locked decision #16)")
-	}
+// broadcast is no longer provisioned by anything, even though the name is
+// retained in the skip-list above.
+func TestPipesForKind_DoesNotProvisionBroadcast(t *testing.T) {
 	for _, kind := range []cliproto.SourceKind{cliproto.KindPTY, cliproto.KindMessage} {
 		for _, p := range pipesForKind(string(kind)) {
 			if p == "broadcast" {
-				t.Errorf("pipesForKind(%s) still provisions broadcast", kind)
+				t.Errorf("pipesForKind(%s) still provisions broadcast (removed pre-launch, locked decision #16)", kind)
 			}
 		}
 	}
@@ -66,27 +65,6 @@ func TestAutoProvisionedPipes_CoversACLDefaultTable(t *testing.T) {
 			t.Errorf("%q has an ACL default but is not in natsubj.AutoProvisionedPipes", name)
 		}
 	}
-}
-
-func equalSets(a, b map[string]bool) bool {
-	count := func(m map[string]bool) int {
-		n := 0
-		for _, v := range m {
-			if v {
-				n++
-			}
-		}
-		return n
-	}
-	if count(a) != count(b) {
-		return false
-	}
-	for k, v := range a {
-		if v && !b[k] {
-			return false
-		}
-	}
-	return true
 }
 
 func sortedKeys(m map[string]bool) []string {

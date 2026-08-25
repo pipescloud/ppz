@@ -20,7 +20,7 @@ type APIKey struct {
 	AccountID  uuid.UUID
 	CreatedByUserID uuid.UUID // user that minted the key (NOT NULL)
 	// PrincipalUserID is the identity the key ACTS AS — the subject an
-	// ACL grant names. Seeded from CreatedByUserID by migration 0006,
+	// ACL grant names. Seeded from CreatedByUserID by migration 0007,
 	// but distinct: an ACL Phase 1 service-account key is created_by a
 	// human and acts_as the service. Never collapse the two, or the
 	// service inherits the human's rights.

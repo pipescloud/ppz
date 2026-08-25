@@ -1,4 +1,4 @@
--- 0006_api_key_principal.sql — ACL Phase 0a
+-- 0007_api_key_principal.sql — ACL Phase 0a
 --
 -- An API key must resolve to a principal.
 --

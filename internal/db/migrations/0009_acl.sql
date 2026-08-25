@@ -1,4 +1,4 @@
--- 0008_acl.sql — ACL Phase 2
+-- 0009_acl.sql — ACL Phase 2
 --
 -- Per-pipe grants. Every row is an ALLOW that widens a derived default
 -- (docs/ACL.md): defaults come from (collar, pipe name) and are never
