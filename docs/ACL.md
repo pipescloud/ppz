@@ -7,13 +7,16 @@ Status: **phases 0-2 landed** (2026-08-18); phases 3-4 planned.
 | 0 | Prerequisites — key principals, presence isolation | landed |
 | 1 | Principals — org roles, service accounts | landed |
 | 2 | ACL store, evaluator, CLI + HTTP surface | landed |
-| 3 | Enforcement — HTTP + NATS credentials | planned |
+| 3 | Enforcement — opt-in per org, HTTP + NATS credentials | planned |
 | 4 | Key attenuation | planned |
 
 **Nothing is enforced yet.** Through phase 2 an ACL describes intent and the
 CLI/HTTP surfaces honour it, but the minted NATS credential is still
 `pub: >, sub: >` — a hand-rolled NATS client is not stopped. Phase 3 is
-what makes it real.
+what makes it real, and it is **opt-in per org**: `accounts.acl_enforced`
+defaults to false everywhere, existing and new, so no org changes
+behaviour until an admin turns it on from the Security tab after
+reviewing what it would break.
 
 Picks up the thread `docs/AUTH-V2.md` deferred as "Phase 3.6 — per-user
 role-scoped JWTs + HTTP RBAC middleware". That entry assumed roles were
@@ -680,6 +683,120 @@ hard as `Decision.Perm`.
 
 ## Phase 3 — Enforcement
 
+Enforcement is **opt-in per org**, off everywhere until an admin turns it
+on. That decision is what makes this shippable against live data: with
+grants derived rather than stored, flipping enforcement globally would
+silently make every shared terminal private on upgrade morning.
+
+### The opt-in switch
+
+```sql
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS acl_enforced boolean NOT NULL DEFAULT false;
+```
+
+Default `false` for every org, existing and new. The cost of that choice
+is adoption — a control nobody has been bitten by does not get switched
+on, so each org keeps the migration ahead of it rather than behind it.
+The preview below is what makes flipping it safe when they do.
+
+Every enforcement point reads the flag:
+
+| Point | `acl_enforced = false` | `acl_enforced = true` |
+|---|---|---|
+| `/auth/exchange` | `pub: >`, `sub: >` (today) | compiled permissions |
+| HTTP control plane | no check | `eff()` check |
+| GUI server-side reads | no check | `eff()` check |
+
+Toggling bumps `acl_generation` and publishes on `<A>._system.acl`, so
+live daemons re-exchange and pick up (or drop) compiled credentials
+without a restart — the same invalidation path a revoke uses.
+
+**Every ACL surface reports the enforcement state.** `ppz acl whoami`,
+the roster, the by-principal view and the GUI all carry it. Without
+that, a surface that says "bob cannot read alice.stdout" while bob
+demonstrably can is worse than no surface at all: it is a security
+control that lies. When enforcement is off the answer is prefixed
+`not enforced —` and the JSON carries `"enforced": false`.
+
+### GUI: the Security tab
+
+`orgTabs` gains `security`, beside pipes / chat / users / API keys.
+Visible to org owner and admin; others get 404, consistent with the
+other org-management surfaces.
+
+**Disabled state** — an explanation, the preview (below), and an Enable
+button. **Enabled state** — the rights table and a Disable button.
+Disabling is non-destructive: grant rows persist, so toggling back on
+restores exactly the previous configuration.
+
+### The preview — what enabling would break
+
+Computed from the same derived default table, not from observed
+traffic. Traffic-based inference would be wrong in both directions:
+silent on a collaboration that happens to be idle, and noisy about a
+one-off read from months ago.
+
+Reported in the order that matters:
+
+1. **Orphaned handles** — sources whose `created_by_user_id` is no
+   longer a member of the org. `Evaluate` returns nothing for a
+   non-member *before* it checks handle ownership, so these pipes become
+   reachable only by org owner/admin, and the nominal owner loses their
+   own handles. Surfaced first and loudest; it is the case that locks
+   people out with no obvious cause.
+2. **Orgs owned by the `unauthenticated` placeholder** — `InsertAccount`
+   falls back to it when an org is created without an owner. Such an org
+   has no real principal holding implicit admin.
+3. **Shared terminals** — every `pty` source's `stdin` / `stdout` /
+   `stdctrl` / `system` becomes owner-only. The largest visible change,
+   and the one an org is most likely to be relying on right now.
+4. **Shared inboxes** — non-owners keep write, lose read.
+5. **Collared user-created pipes** — become owner-only.
+
+Uncollared pipes are unaffected and are not listed.
+
+The admin grants what is needed, re-previews, then enables. Enabling is
+not blocked on a clean preview — "currently relying on" is not knowable
+from stored state — but the orphaned-handle section is a hard warning
+rather than a line item.
+
+### The rights table
+
+Rows are principals; each expands to the pipes it can reach. Access is
+**computed live** and labelled with its provenance, never materialised
+into rows on enable:
+
+```
+PRINCIPAL    PIPE            R  W  A  VIA
+foo          alice.stdout    ✓  ✓  ✓  handle owner (default)
+bar          alice.inbox     ·  ✓  ·  default
+bar          alice.stdout    ✓  ·  ·  granted by foo · 2026-08-14
+```
+
+Editing a cell writes an `acl_grants` row; **Reset to defaults** deletes
+that principal's rows and lets the derived defaults show through again.
+
+Materialising defaults into rows on enable was considered and rejected:
+pipes created afterwards would have no rows and so no access, meaning
+`pipe create` would have to materialise too, and the table would grow
+with principals × pipes. Deriving keeps new pipes correct for free.
+
+The tab does not attempt a full principals × pipes matrix — that is
+O(principals × pipes) per page load. It lists principals with a summary
+("12 pipes: 3 admin, 9 read"), computing the expansion on demand, the
+same shape the `access` tab uses.
+
+### CLI parity
+
+```
+ppz acl enforce            # report this org's enforcement state
+ppz acl enforce on|off     # org admin only
+ppz acl preview            # what enabling would break, as above
+```
+
+Agents are as likely to drive this as humans, so all three take
+`--json`.
+
 ### Why the split is free
 
 `read` and `write` are independent in NATS terms, which is why the
@@ -782,6 +899,9 @@ session — `handlers_channel.go`, `handlers_terminal.go`, `handlers_chat.go`
 
 ### Behaviour changes to announce
 
+These land **only for an org that has switched enforcement on**, which is
+what the preview exists to make deliberate rather than surprising.
+
 - **Terminal sharing becomes opt-in.** Any org member can currently watch a `ppz terminal share` session; afterwards only the handle owner can, until they grant `read` on `stdout`. Intended, but visible.
 - Non-creators can no longer destroy or repurpose another principal's collared pipes.
 - Existing e2e fixtures that rely on cross-member access need explicit grants.
@@ -796,6 +916,24 @@ session — `handlers_channel.go`, `handlers_terminal.go`, `handlers_chat.go`
 - `TestCompile_PicksSmallerOfAllowOrDenyList`
 - `BenchmarkCompile_CredentialSize` — 10 / 100 / 500 pipes.
 
+**Unit — the opt-in gate**
+- `TestEnforcement_OffMintsUnrestrictedCredential` — an org with `acl_enforced=false` still gets `pub: >`, `sub: >`. The upgrade-safety property; if this breaks, every existing org breaks on deploy.
+- `TestEnforcement_OnMintsCompiledCredential`
+- `TestEnforcement_ToggleBumpsACLGeneration` — both directions, so live daemons re-exchange.
+- `TestEnforcement_DisableIsNonDestructive` — grant rows survive, so toggling back on restores the prior configuration.
+
+**Unit — the preview**
+- `TestPreview_ListsOrphanedHandles` — a source whose creator left the org. The case that locks people out with no obvious cause, so it is pinned first.
+- `TestPreview_ListsPlaceholderOwnedOrg`
+- `TestPreview_ListsSharedTerminals` — every pty source's stdio.
+- `TestPreview_ListsInboxReadLoss`
+- `TestPreview_OmitsUncollaredPipes` — they are unaffected; listing them would bury the signal.
+- `TestPreview_EmptyWhenNothingChanges`
+
+**Unit — surfaces report enforcement state**
+- `TestWhoami_ReportsNotEnforced` — the guard against a control that lies. An unenforced answer must be labelled as such in both text and JSON.
+- `TestRoster_ReportsEnforcementState`
+
 **Integration (embedded NATS, real credentials)**
 - `TestNATS_WriteOnlyPrincipal_CanPublish`
 - `TestNATS_WriteOnlyPrincipal_CannotCreateConsumer` — the enforcement claim, proven against a real server.
@@ -805,6 +943,11 @@ session — `handlers_channel.go`, `handlers_terminal.go`, `handlers_chat.go`
 - `TestNATS_RevokeReachesLiveConnection` — revoke, assert the `_system.acl` nudge lands and the next read fails.
 
 **E2E**
+- `tests/acl/enforce-off-by-default` — a fresh org enforces nothing; every existing flow keeps working.
+- `tests/acl/enforce-preview-lists-shared-terminal`
+- `tests/acl/enforce-toggle-takes-effect-without-restart`
+- `tests/acl/enforce-disable-restores-access`
+- `tests/acl/whoami-says-not-enforced-when-off`
 - `tests/acl/inbox-write-allowed-read-denied` — the drop-box, end to end.
 - `tests/acl/stdout-not-readable-without-grant`
 - `tests/acl/stdout-readable-after-grant`
