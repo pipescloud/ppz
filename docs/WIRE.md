@@ -645,13 +645,19 @@ namespace is deliberately distinct from `PPZ_SESSION=<handle>` — which the hos
 exports into the wrapped child — so that an agent reading its own `.stdin`
 cannot advance the host's watermark past commands the host has not delivered.
 
-A host with **no stored watermark** treats the pipe as caught up rather than
-empty, and stamps the cursor at the pipe's last sequence before it starts. So
+A host with **no stored watermark** falls back to a wall-clock floor: the moment
+it started following. Anything older is a backlog the agent has already run, so
 the first share on a handle — after an upgrade, a wiped `PPZ_HOME`, on a new
 machine, or on a brand-new handle — starts listening instead of replaying a
-retained window of commands that have already run. The trade: a command issued
-to a handle that has never been shared from this daemon is dropped rather than
-executed late.
+retained window of commands. Anything newer is owed to it, including a send that
+lands in the window between the pipe being provisioned and the follow being
+established (`ppz terminal share agent & ppz command agent …`). The floor is the
+host's start, not each dial's, so a mid-process loss of the watermark — `ppz
+daemon logout` removes `<PPZ_HOME>/cursors` — doesn't discard what arrived while
+the host was reconnecting; the in-process dedupe ring covers the redelivery.
+
+The trade that remains: a command issued to a handle before any host existed for
+it is dropped rather than executed late.
 
 Both properties are at-most-once by design. `.stdin` messages are commands that
 execute on arrival, so a message dropped by a host that died mid-delivery is

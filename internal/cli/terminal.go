@@ -751,14 +751,20 @@ func publishWinsize(handle string, ptmx *os.File) {
 // and the daemon otherwise attributes it to State.Current(session), which
 // is empty for a pty source.
 //
-// SeedLatest covers what a watermark structurally cannot: its own absence.
-// The first share on a handle has no stored cursor — after an upgrade, a
-// wiped PPZ_HOME, a new machine, or on a brand-new handle — and would
-// otherwise drain the pipe's whole 24h retention into the child. It means
-// "no cursor = caught up", so a share starts listening rather than
-// replaying. The trade is deliberate: a command issued to a handle that
-// has never been shared on this machine is dropped rather than executed
-// late, which is the same at-most-once bet the rest of this path makes.
+// SeedSinceUnixMS covers what a watermark structurally cannot: its own
+// absence. The first share on a handle has no stored cursor — after an
+// upgrade, a wiped PPZ_HOME, a new machine, or on a brand-new handle — and
+// would otherwise drain the pipe's whole 24h retention into the child. The
+// floor is the moment this host started following, so anything older is
+// treated as a backlog the agent has already run.
+//
+// A time rather than "skip to whatever is latest": the pipe is provisioned
+// before we dial, so a send can legitimately land before the follow is up —
+// `ppz terminal share agent & ppz command agent ...` is exactly that shape.
+// Those messages are newer than the host, so the floor keeps them. The
+// trade that remains is deliberate: a command issued BEFORE the host
+// existed is dropped rather than executed late, which is the same
+// at-most-once bet the rest of this path makes.
 //
 // Before this the Read passed NoAdvance=true and the only thing standing
 // between the retained window and the child was seenIDRing — in-memory,
@@ -794,12 +800,21 @@ func ptyHostCursorSession(handle string) string { return handle + ".ptyhost" }
 
 func forwardStdin(ctx context.Context, handle string, master io.Writer, lease *leaseState) {
 	seen := newSeenIDRing(1024)
+	// Captured ONCE, not per redial: it is the floor used when the daemon
+	// has no cursor for us, and "when this host started" is the honest
+	// answer every time we reconnect. Re-stamping it on each dial would
+	// discard anything sent while we were away — `ppz daemon logout` wipes
+	// <PPZ_HOME>/cursors mid-process, so that path is reached with the pipe
+	// live and messages genuinely owed to the child. Redelivery back to the
+	// host's start is safe because seen (same process) suppresses whatever
+	// already reached the PTY.
+	hostStart := time.Now()
 
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		streamForwardStdinOnce(ctx, handle, master, seen, lease)
+		streamForwardStdinOnce(ctx, handle, master, seen, lease, hostStart)
 		if ctx.Err() != nil {
 			return
 		}
@@ -814,7 +829,7 @@ func forwardStdin(ctx context.Context, handle string, master io.Writer, lease *l
 	}
 }
 
-func streamForwardStdinOnce(ctx context.Context, handle string, master io.Writer, seen *seenIDRing, lease *leaseState) {
+func streamForwardStdinOnce(ctx context.Context, handle string, master io.Writer, seen *seenIDRing, lease *leaseState, hostStart time.Time) {
 	conn, err := net.Dial("unix", ipcSocket())
 	if err != nil {
 		return
@@ -822,12 +837,12 @@ func streamForwardStdinOnce(ctx context.Context, handle string, master io.Writer
 	defer conn.Close()
 
 	body, _ := json.Marshal(cliproto.ReadRequest{
-		Handle:     handle,
-		Channel:    "stdin",
-		Follow:     true,
-		Session:    ptyHostCursorSession(handle),
-		Sender:     handle,
-		SeedLatest: true,
+		Handle:          handle,
+		Channel:         "stdin",
+		Follow:          true,
+		Session:         ptyHostCursorSession(handle),
+		Sender:          handle,
+		SeedSinceUnixMS: hostStart.UnixMilli(),
 	})
 	if err := json.NewEncoder(conn).Encode(map[string]any{"method": cliproto.IPCRead, "params": json.RawMessage(body)}); err != nil {
 		return

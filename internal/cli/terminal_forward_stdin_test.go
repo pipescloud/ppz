@@ -121,23 +121,29 @@ func TestForwardStdinRequestIsolatesHostCursor(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 
-	gotReq := make(chan cliproto.ReadRequest, 1)
+	// Accept repeatedly and hang up immediately, so forwardStdin's redial
+	// loop runs and we can compare successive requests.
+	gotReq := make(chan cliproto.ReadRequest, 4)
 	go func() {
-		conn, aerr := ln.Accept()
-		if aerr != nil {
-			return
+		for {
+			conn, aerr := ln.Accept()
+			if aerr != nil {
+				return
+			}
+			var env struct {
+				Method string          `json:"method"`
+				Params json.RawMessage `json:"params"`
+			}
+			if json.NewDecoder(conn).Decode(&env) == nil {
+				var req cliproto.ReadRequest
+				_ = json.Unmarshal(env.Params, &req)
+				select {
+				case gotReq <- req:
+				default:
+				}
+			}
+			_ = conn.Close()
 		}
-		defer conn.Close()
-		var env struct {
-			Method string          `json:"method"`
-			Params json.RawMessage `json:"params"`
-		}
-		if json.NewDecoder(conn).Decode(&env) != nil {
-			return
-		}
-		var req cliproto.ReadRequest
-		_ = json.Unmarshal(env.Params, &req)
-		gotReq <- req
 	}()
 
 	r, w, err := os.Pipe()
@@ -147,8 +153,9 @@ func TestForwardStdinRequestIsolatesHostCursor(t *testing.T) {
 	defer r.Close()
 	defer w.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
+	before := time.Now()
 	go forwardStdin(ctx, handle, w, newLeaseState())
 
 	var req cliproto.ReadRequest
@@ -169,5 +176,28 @@ func TestForwardStdinRequestIsolatesHostCursor(t *testing.T) {
 	}
 	if req.Sender != handle {
 		t.Errorf("follow Sender = %q, want %q — ack:read for .stdin is attributed to whatever State.Current resolves to instead of the agent", req.Sender, handle)
+	}
+
+	// The cursor-less floor must be the host's own start, so a pipe with a
+	// 24h retention doesn't dump its backlog into a child that never asked
+	// for it.
+	if req.SeedSinceUnixMS < before.UnixMilli() || req.SeedSinceUnixMS > time.Now().UnixMilli() {
+		t.Errorf("follow SeedSinceUnixMS = %d, want the host's start time (~%d) — without it a first share drains the pipe's whole retained window", req.SeedSinceUnixMS, before.UnixMilli())
+	}
+
+	// And it must be captured ONCE, not re-stamped per dial. `ppz daemon
+	// logout` does RemoveAll(<home>/cursors) while the host keeps running,
+	// so the next dial has no watermark and falls back to this floor. A
+	// floor of "now" would silently discard everything sent during the
+	// outage; the host's start keeps it, and seenIDRing suppresses the
+	// redelivery of what already reached the PTY.
+	var second cliproto.ReadRequest
+	select {
+	case second = <-gotReq:
+	case <-time.After(2 * time.Second):
+		t.Fatal("forwardStdin never redialled after the connection dropped")
+	}
+	if second.SeedSinceUnixMS != req.SeedSinceUnixMS {
+		t.Errorf("redial re-stamped the floor: %d then %d — messages sent while the host was away are dropped", req.SeedSinceUnixMS, second.SeedSinceUnixMS)
 	}
 }

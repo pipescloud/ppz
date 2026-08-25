@@ -218,6 +218,10 @@ func (d *Daemon) handleRead(ctx context.Context, conn net.Conn, params json.RawM
 		retained    []cliproto.ReadMessage
 		lastSeqSeen uint64
 		moreUnread  int
+		// seedFrom is set only when there is no usable cursor and the
+		// caller supplied a wall-clock floor; it switches the follow
+		// consumer from sequence-based to time-based delivery.
+		seedFrom *time.Time
 	)
 	// Cursor-aware vs forensic mode. `read` (default) starts at cursor+1 so
 	// the agent only sees what's new since they last looked. `reread`
@@ -236,21 +240,32 @@ func (d *Daemon) handleRead(ctx context.Context, conn net.Conn, params json.RawM
 		// skipped past.
 		entry := d.Cursors.GetEntry(req.Session, cursorKey)
 		cursor := effectiveCursor(entry, createdNanos(info.Created), info.State.LastSeq)
-		// SeedLatest: no usable cursor means "caught up", not "start from
-		// the beginning". A watermark only protects a pipe once one has
-		// been written, so a first-ever read would otherwise drain the
-		// whole retained window — which for .stdin is a backlog of
-		// commands that execute on arrival and have already run once. Set
-		// by the pty host so the first share on a handle (post-upgrade,
+		// No usable cursor: fall back to a WALL-CLOCK floor if the caller
+		// gave one, rather than to the pipe's first retained message. A
+		// watermark only protects a pipe once one has been written, so a
+		// first-ever read would otherwise drain the whole retained window —
+		// which for .stdin is a backlog of commands that execute on arrival
+		// and have already run once. The pty host passes the moment it
+		// started following, so the first share on a handle (post-upgrade,
 		// wiped PPZ_HOME, new machine, brand-new handle) starts listening
-		// instead of replaying. Persisted immediately so a host that dies
-		// before delivering anything doesn't re-expose the backlog to its
-		// successor.
-		if cursor == 0 && req.SeedLatest {
-			cursor = info.State.LastSeq
-			_ = d.Cursors.Advance(req.Session, cursorKey, cursor, createdNanos(info.Created))
-		}
-		if cursor+1 > startSeq {
+		// instead of replaying.
+		//
+		// A time, not "skip to LastSeq": the pipe is provisioned before the
+		// host dials, so a send can legitimately land before the follow is
+		// established — on every ordinary share startup, and after a logout
+		// wipes the cursors directory mid-process. Skipping to the end
+		// discards those; a time floor keeps them, since they are newer than
+		// the host. Regressions pinned by lease/no-lease-stdin-passes-through
+		// and terminal/share-stdin-survives-share-daemon-logout.
+		//
+		// Delivery from here is time-based (see the follow consumer below),
+		// so the retained drain is skipped entirely: startSeq moves past
+		// LastSeq and the consumer seeks by timestamp instead.
+		if cursor == 0 && req.SeedSinceUnixMS > 0 {
+			t := time.UnixMilli(req.SeedSinceUnixMS).UTC()
+			seedFrom = &t
+			startSeq = info.State.LastSeq + 1
+		} else if cursor+1 > startSeq {
 			startSeq = cursor + 1
 		}
 	}
@@ -429,11 +444,21 @@ func (d *Daemon) handleRead(ctx context.Context, conn net.Conn, params json.RawM
 	// share-stdin-command-not-replayed-on-resume. Note the defect hid
 	// whenever anything newer than the cursor was outstanding, since that
 	// takes the drain path and sets lastSeqSeen correctly.
-	consumer, err := stream.OrderedConsumer(ctx, jetstream.OrderedConsumerConfig{
+	followCfg := jetstream.OrderedConsumerConfig{
 		FilterSubjects: []string{filterSubject},
 		DeliverPolicy:  jetstream.DeliverByStartSequencePolicy,
 		OptStartSeq:    max(lastSeqSeen+1, startSeq),
-	})
+	}
+	if seedFrom != nil {
+		// Cursor-less start with a wall-clock floor: let the server seek by
+		// timestamp. Everything published before the caller existed is
+		// backlog; everything after is owed to it, including whatever landed
+		// while it was still dialling.
+		followCfg.DeliverPolicy = jetstream.DeliverByStartTimePolicy
+		followCfg.OptStartTime = seedFrom
+		followCfg.OptStartSeq = 0
+	}
+	consumer, err := stream.OrderedConsumer(ctx, followCfg)
 	if err != nil {
 		return
 	}

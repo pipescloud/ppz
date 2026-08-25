@@ -60,56 +60,69 @@ func TestHandleRead_Follow_DoesNotReplayPastCursor(t *testing.T) {
 	}
 }
 
-// TestHandleRead_Follow_SeedLatest_SkipsBacklogOnFirstRead pins the upgrade
-// transition, which the cursor alone cannot cover: a watermark only starts
-// protecting a handle once one has been written.
+// TestHandleRead_Follow_SeedSince_DropsBacklogButNotTheConnectRace pins the
+// upgrade transition WITHOUT swallowing live input.
 //
-// The first `ppz terminal share` on a handle after upgrading to
-// cursor-advancing delivery has no stored entry, so it drains the entire
-// retained window into the child — up to 24h of commands the agent already
-// ran, which is precisely the field incident. Same for a wiped PPZ_HOME, a
-// different machine, or a brand-new handle that was sent commands before it
-// ever existed.
+// A watermark only protects a handle once one has been written, so the first
+// share on a handle — after an upgrade, a wiped PPZ_HOME, a new machine, a
+// brand-new handle — has no cursor and would drain the pipe's whole 24h
+// retention into the child. But "no cursor means caught up" (stamp the
+// cursor at LastSeq) over-corrects: it also discards anything published in
+// the window between the pipe being provisioned and the host actually
+// connecting, which is open on every ordinary share startup. That regressed
+// lease/no-lease-stdin-passes-through (a send racing `terminal share`) and
+// terminal/share-stdin-survives-share-daemon-logout (logout does
+// RemoveAll(<home>/cursors), so the host redials with no watermark).
 //
-// SeedLatest says "no stored cursor means caught up, not empty": treat
-// LastSeq as already consumed and persist it, so the host starts listening
-// rather than replaying. Only the pty host sets it — for `ppz read` a fresh
-// session SHOULD see retained history, which is the whole unread model.
+// The floor is therefore a TIME — when the host started following — not a
+// sequence. Older than that is a backlog the agent has already run; newer is
+// input someone issued to this host, whether or not it beat the connect.
 //
-// RED: the first follow drains the backlog.
-// GREEN: it delivers nothing, and a later live message still arrives.
-func TestHandleRead_Follow_SeedLatest_SkipsBacklogOnFirstRead(t *testing.T) {
+// RED: the connect-race message is dropped along with the backlog.
+// GREEN: only the backlog is dropped.
+func TestHandleRead_Follow_SeedSince_DropsBacklogButNotTheConnectRace(t *testing.T) {
 	sockPath, publish := newFollowCursorFixture(t)
 
-	// A backlog that predates any share process on this handle.
+	// A backlog that predates the host: commands issued to an earlier
+	// incarnation of this agent, which already ran them.
 	publish("STALE1", "\n", "STALE2", "\n")
+
+	// The host starts following here.
+	time.Sleep(50 * time.Millisecond)
+	hostStart := time.Now()
+	time.Sleep(50 * time.Millisecond)
+
+	// A command issued after the host started but before its follow is
+	// established — `ppz terminal share agent & ppz command agent ...`, or
+	// any send that beats the dial. This one is owed to the child.
+	publish("RACE")
 
 	follow := followCollector(t, sockPath)
 	got := follow(cliproto.ReadRequest{
-		BareTarget: "stdin",
-		Session:    "fresh-host",
-		Follow:     true,
-		SeedLatest: true,
+		BareTarget:      "stdin",
+		Session:         "fresh-host",
+		Follow:          true,
+		SeedSinceUnixMS: hostStart.UnixMilli(),
 	}, 700*time.Millisecond)
-	if len(got) != 0 {
-		t.Errorf("first follow drained %d backlog message(s) %q into the child — the upgrade transition replays the very incident the cursor is meant to stop", len(got), got)
+
+	if len(got) != 1 || got[0] != "RACE" {
+		t.Errorf("first follow delivered %q, want [RACE] — the backlog must be dropped and the connect-race message must not be", got)
 	}
 
-	// The seed must not deafen the host: a command issued after it starts
-	// still has to arrive.
+	// And it must still be listening afterwards.
 	done := make(chan []string, 1)
 	go func() {
 		done <- follow(cliproto.ReadRequest{
-			BareTarget: "stdin",
-			Session:    "fresh-host",
-			Follow:     true,
-			SeedLatest: true,
+			BareTarget:      "stdin",
+			Session:         "fresh-host",
+			Follow:          true,
+			SeedSinceUnixMS: hostStart.UnixMilli(),
 		}, 900*time.Millisecond)
 	}()
 	time.Sleep(250 * time.Millisecond)
 	publish("LIVE")
-	if live := <-done; len(live) != 1 || live[0] != "LIVE" {
-		t.Errorf("after seeding, live delivery got %q, want [LIVE]", live)
+	if live := <-done; len(live) == 0 || live[len(live)-1] != "LIVE" {
+		t.Errorf("after seeding, live delivery got %q, want it to end with LIVE", live)
 	}
 }
 

@@ -37,11 +37,21 @@ action most of a day later, on an agent nobody had asked.
 - **A first share no longer inherits a backlog.** A watermark only
   protects a handle once one has been written, so the first share after
   upgrading (or on a wiped `PPZ_HOME`, a new machine, or a brand-new
-  handle) would still have drained the full 24h window. The host now
-  declares "no cursor means caught up": the daemon stamps the cursor at
-  the pipe's last sequence and starts there. A command issued to a
-  handle never shared from this daemon is dropped rather than executed
-  late.
+  handle) would still have drained the full 24h window. With no cursor
+  the daemon now seeks by time, to the moment the host started
+  following: older is backlog the agent has already run, newer is owed
+  to it. A command issued to a handle before any host existed for it is
+  dropped rather than executed late.
+
+  The floor is a time rather than "skip to the latest sequence" because
+  the pipe is provisioned before the host dials, so a send can land
+  before the follow is established — `ppz terminal share agent & ppz
+  command agent …`, and every ordinary share startup. Skipping to the
+  end silently discarded those. It is stamped once per host, not per
+  dial: `ppz daemon logout` removes `<PPZ_HOME>/cursors` mid-process, so
+  a dial can find no watermark with the pipe live and messages genuinely
+  outstanding; redelivery back to the host's start is safe because the
+  in-process dedupe ring suppresses whatever already reached the PTY.
 - **The host's watermark is isolated from the agent's own reads.** The
   cursor namespace is deliberately not `<handle>`, which is what the
   host exports as `PPZ_SESSION` into the wrapped child: sharing it would
