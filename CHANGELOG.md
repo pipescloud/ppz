@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased — pipe ACLs, phase 3 (opt-in enforcement)
+
+ACLs now actually restrict access — **but only for an org that has switched
+enforcement on**, and enforcement is off for every org, existing and new.
+
+- **Per-org opt-in** (`accounts.acl_enforced`, default false). `/auth/exchange`
+  returns the same wide-open credential as today without touching the ACL
+  tables at all until an org opts in. ACL defaults are derived rather than
+  stored, so flipping enforcement globally would have made every shared
+  terminal private on upgrade morning with no warning.
+- **New Security tab** on the org page. Off: a preview of what enabling would
+  break, and an Enable button. On: the live rights table and Disable.
+  Disabling keeps grants, so switching back restores exactly the previous
+  configuration.
+- **The preview** is computed from the derived defaults, not from observed
+  traffic — traffic is wrong in both directions, silent on a collaboration
+  that happens to be idle and noisy about a one-off read months ago. It leads
+  with handles whose owner has left the org: those become reachable only by an
+  org owner or admin, and the nominal owner loses them too, which is the
+  failure that otherwise looks like nothing in particular.
+- **Credential compilation.** Reads compile to JetStream API entries, writes to
+  a bare subject publish — disjoint sets, which is what makes write-without-read
+  enforceable rather than merely declarable. Stream enumeration is denied
+  outright (`STREAM.LIST`/`NAMES` carry no stream token, so they cannot be
+  scoped per pipe), and stream lifecycle is denied even for admin, closing the
+  JS-API control-plane hole noted in `docs/AUTH-V2.md` §3.5.
+- **Every ACL surface reports whether it is enforced.** An answer that reads as
+  a guarantee while nothing upholds it would be worse than no answer.
+- **New verbs:** `ppz acl enforce [on|off]`, `ppz acl preview`, both with
+  `--json`.
+
 ## Unreleased — pipe ACLs, phases 1-2 (principals, grants, visibility)
 
 Builds on phase 0. Grants are stored and every surface can show them, but
