@@ -80,6 +80,7 @@ type RefreshLoop struct {
 	seed    string
 	expUnix int64
 	lastAt  time.Time
+	gen     uint64
 	cancel  context.CancelFunc
 }
 
@@ -136,6 +137,24 @@ func (r *RefreshLoop) LastRefreshAt() time.Time {
 // post-rotation-auth-violation pattern relies on this to correlate
 // disconnects with rotation timing. Safe for concurrent callers; nil-
 // receiver returns 0 so callers can pass r.JWTExp without nil-checking.
+// Generation counts successful refreshes. It exists because JWTExp is
+// unix SECONDS: two refreshes landing in the same second mint
+// credentials with an identical exp, and a caller coalescing on exp
+// alone concludes it is already on the current generation and skips the
+// redial. The freshly-minted credential is then held but never used.
+//
+// Harmless while every credential carries the same permissions; once
+// ACL enforcement (Phase 3) makes a refresh able to NARROW access, the
+// skipped redial means a principal keeps using access it no longer has.
+func (r *RefreshLoop) Generation() uint64 {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.gen
+}
+
 func (r *RefreshLoop) JWTExp() int64 {
 	if r == nil {
 		return 0
@@ -237,6 +256,7 @@ func (r *RefreshLoop) refreshNow(ctx context.Context) error {
 	r.jwt = newJWT
 	r.seed = newSeed
 	r.expUnix = newExp
+	r.gen++
 	r.lastAt = time.Now()
 	// Capture under lock; invoke without it so callers (the daemon's
 	// swapNC) can't deadlock with Current() / other RefreshLoop methods.
