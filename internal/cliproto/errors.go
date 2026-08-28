@@ -11,14 +11,14 @@ import "fmt"
 type Code string
 
 const (
-	ENotLoggedIn       Code = "E_NOT_LOGGED_IN"
-	EDaemonNotRunning  Code = "E_DAEMON_NOT_RUNNING"
+	ENotLoggedIn      Code = "E_NOT_LOGGED_IN"
+	EDaemonNotRunning Code = "E_DAEMON_NOT_RUNNING"
 	// EDaemonTimeout is returned by the CLI when the daemon accepted the
 	// IPC connection but did not reply within the client deadline. Per
 	// the send delivery contract clause 2, the CLI must never hang: a
 	// stalled daemon (e.g. mid-restart, before it serves IPC) bounds out
 	// to this error instead of blocking forever.
-	EDaemonTimeout Code = "E_DAEMON_TIMEOUT"
+	EDaemonTimeout     Code = "E_DAEMON_TIMEOUT"
 	EInvalidAPIKey     Code = "E_INVALID_API_KEY"
 	ESourceTaken       Code = "E_SOURCE_TAKEN"
 	ESourceNotFound    Code = "E_SOURCE_NOT_FOUND"
@@ -35,7 +35,7 @@ const (
 	// denial is terminal, so retrying or reconnecting cannot help, and
 	// labelling it "unreachable" sends the reader looking at the network
 	// instead of at their grants.
-	EPipeForbidden     Code = "E_PIPE_FORBIDDEN"
+	EPipeForbidden Code = "E_PIPE_FORBIDDEN"
 	// EInvalidSubject is returned when a caller (CLI flag parser or IPC
 	// client) tries to set a Subject value that violates the reserved-
 	// prefix invariant. Daemon-emitted protocol messages own the `ack:`
