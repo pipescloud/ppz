@@ -729,6 +729,16 @@ button. **Enabled state** — the rights table and a Disable button.
 Disabling is non-destructive: grant rows persist, so toggling back on
 restores exactly the previous configuration.
 
+![Security tab, enforcement off](images/acl/security-tab-disabled.png)
+
+![Security tab, enforcement on](images/acl/security-tab-enabled.png)
+
+The enabled view is the model in one screen: `foo` holds everything via
+`org role`; `bar` has write-but-not-read on `alice.inbox` and
+read-but-not-write on `alice.heartbeat` — the two duals — plus one row
+marked `grant` rather than `default`; and `builder-bot`, a service
+account, sits alongside the humans as an ordinary principal.
+
 ### The preview — what enabling would break
 
 Computed from the same derived default table, not from observed
