@@ -101,6 +101,17 @@ func TestCompile_AlwaysAllowsOwnInbox(t *testing.T) {
 	}
 }
 
+// Without JetStream account info a client cannot build a JS context at
+// all, so an enforced principal could not use even the access it holds:
+// a write-only inbox sender would fail to publish, and the daemon
+// thrashes on reconnects instead of receiving a clean per-stream denial.
+func TestCompile_AlwaysAllowsJetStreamAccountInfo(t *testing.T) {
+	perms := Compile(testAcct, nil)
+	if !hasEntry(perms.PubAllow, "$JS.API.INFO") {
+		t.Errorf("$JS.API.INFO must always be allowed: %v", perms.PubAllow)
+	}
+}
+
 // Presence and the invalidation channel are readable by every member —
 // `ppz who` depends on the first, credential refresh on the second.
 func TestCompile_AlwaysAllowsPresenceAndSystem(t *testing.T) {

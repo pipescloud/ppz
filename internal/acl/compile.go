@@ -62,6 +62,22 @@ var jsReadPatterns = []string{
 // the JS-API control-plane hole flagged in docs/AUTH-V2.md §Phase 3.5,
 // where a user JWT holding `pub $JS.API.>` could PURGE any stream in the
 // account.
+// alwaysAllowed is the floor every credential needs to function at all.
+//
+// $JS.API.INFO is how a client initialises its JetStream context
+// (jetstream.New asks for account info before anything else). Without
+// it an enforced principal cannot create a JS context, so it cannot use
+// even the access it DOES hold — a write-only inbox sender would fail
+// to publish, and the daemon thrashes on reconnects instead of
+// receiving a clean per-stream denial.
+//
+// It exposes account-level JetStream metadata (limits, stream count),
+// not any pipe's contents, so it is not per-pipe scopable and not worth
+// withholding.
+var alwaysAllowed = []string{
+	"$JS.API.INFO",
+}
+
 var alwaysDenied = []string{
 	"$JS.API.STREAM.LIST",
 	"$JS.API.STREAM.NAMES",
@@ -99,7 +115,8 @@ func Compile(accountID string, access []Access) Permissions {
 			accountID + "._presence.>",
 			accountID + "._system.>", // invalidation; see natsubj.SystemPrefix
 		},
-		PubDeny: append([]string(nil), alwaysDenied...),
+		PubAllow: append([]string(nil), alwaysAllowed...),
+		PubDeny:  append([]string(nil), alwaysDenied...),
 	}
 
 	var readable, excluded []PipeRef

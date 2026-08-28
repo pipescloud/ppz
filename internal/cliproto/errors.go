@@ -30,6 +30,12 @@ const (
 	EInvalidPipe       Code = "E_INVALID_PIPE"
 	EPipeTaken         Code = "E_PIPE_TAKEN"
 	EPipeNotFound      Code = "E_PIPE_NOT_FOUND"
+	// EPipeForbidden — the server refused the operation on ACL grounds
+	// (ACL Phase 3). Distinct from E_NATS_UNREACHABLE on purpose: a
+	// denial is terminal, so retrying or reconnecting cannot help, and
+	// labelling it "unreachable" sends the reader looking at the network
+	// instead of at their grants.
+	EPipeForbidden     Code = "E_PIPE_FORBIDDEN"
 	// EInvalidSubject is returned when a caller (CLI flag parser or IPC
 	// client) tries to set a Subject value that violates the reserved-
 	// prefix invariant. Daemon-emitted protocol messages own the `ack:`
@@ -131,6 +137,8 @@ func ExitCode(c Code) int {
 		return 27
 	case ELeaseNoHost:
 		return 28
+	case EPipeForbidden:
+		return 29
 	}
 	return 1
 }
@@ -173,6 +181,8 @@ func Message(c Code) string {
 		return "invalid pipe; check for typos, or for custom pipes run 'ppz pipe create <handle>.<name>' first"
 	case EPipeTaken:
 		return "pipe with this name already exists on this source"
+	case EPipeForbidden:
+		return "access denied by this org's pipe ACLs; run 'ppz acl whoami <pipe>' to see what you hold and who can grant more"
 	case EPipeNotFound:
 		return "pipe not found on this source"
 	case EInvalidSchedule:
