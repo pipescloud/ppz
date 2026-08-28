@@ -31,6 +31,8 @@
       <a data-tab="audit" href="/orgs/{{.Org.Name}}/audit"
          class="{{if eq .ActiveTab "audit"}}active{{end}}">Audit</a>
       {{end}}
+      <a data-tab="security" href="/orgs/{{.Org.Name}}/security"
+         class="{{if eq .ActiveTab "security"}}active{{end}}">Security</a>
     </nav>
 
     {{if eq .ActiveTab "pipes"}}
@@ -205,3 +207,86 @@
   </main>
 </body>
 </html>
+
+{{if eq .ActiveTab "security"}}
+<section id="security">
+  <h2>Pipe ACLs</h2>
+
+  {{if .ACLEnforced}}
+    <p data-acl-state="enforced">
+      <strong>ACLs are enforced in this org.</strong>
+      Access below is computed from each pipe&rsquo;s owner and name, with
+      grants layered on top &mdash; nothing is frozen, so pipes created from
+      now on get the right defaults automatically.
+    </p>
+    <form method="post" action="/orgs/{{.Org.Name}}/security/enforce">
+      <input type="hidden" name="enforced" value="false">
+      <button type="submit">Disable enforcement</button>
+      <span class="hint">Grants are kept, so re-enabling restores exactly this configuration.</span>
+    </form>
+
+    <div class="table-scroll">
+    <table id="acl-rights">
+      <thead><tr><th>Principal</th><th>Pipe</th><th>R</th><th>W</th><th>A</th><th>Via</th></tr></thead>
+      <tbody>
+      {{range .ACLRights}}
+        <tr data-principal="{{.Principal}}" data-pipe="{{.Pipe}}">
+          <td>{{.Principal}}</td><td>{{.Pipe}}</td>
+          <td>{{if .Read}}&#10003;{{else}}&middot;{{end}}</td>
+          <td>{{if .Write}}&#10003;{{else}}&middot;{{end}}</td>
+          <td>{{if .Admin}}&#10003;{{else}}&middot;{{end}}</td>
+          <td>{{.Via}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+  {{else}}
+    <p data-acl-state="off">
+      <strong>ACLs are not enforced in this org.</strong>
+      Every member can read and write every pipe. Turning enforcement on
+      applies per-pipe access derived from each pipe&rsquo;s owner and name.
+    </p>
+
+    <h3>What enabling would change</h3>
+    {{if .ACLPreviewEmpty}}
+      <p data-acl-preview="empty">Nothing &mdash; this org has no collared pipes to restrict.</p>
+    {{else}}
+      {{with .ACLPreview}}
+        {{if .OrphanedHandles}}
+          <div class="warn" data-acl-warn="orphaned">
+            <strong>Handles whose owner has left the org.</strong>
+            These become reachable only by an org owner or admin, and the
+            named owner loses them too.
+            <ul>{{range .OrphanedHandles}}<li>{{.Handle}}</li>{{end}}</ul>
+          </div>
+        {{end}}
+        {{if .PlaceholderOwnedOrg}}
+          <div class="warn" data-acl-warn="no-owner">
+            <strong>This org has no real owner</strong>, so nobody would hold
+            implicit admin over its pipes.
+          </div>
+        {{end}}
+        {{if .SharedTerminals}}
+          <p>Shared terminals that become private:</p>
+          <ul>{{range .SharedTerminals}}<li>{{.Handle}} &mdash; stays with {{.Owner}}</li>{{end}}</ul>
+        {{end}}
+        {{if .InboxReadLoss}}
+          <p>Inboxes others can no longer read (they can still send):</p>
+          <ul>{{range .InboxReadLoss}}<li>{{.Pipe}} &mdash; stays with {{.Owner}}</li>{{end}}</ul>
+        {{end}}
+        {{if .CollaredUserPipes}}
+          <p>Pipes that become owner-only:</p>
+          <ul>{{range .CollaredUserPipes}}<li>{{.Pipe}} &mdash; stays with {{.Owner}}</li>{{end}}</ul>
+        {{end}}
+      {{end}}
+    {{end}}
+
+    <form method="post" action="/orgs/{{.Org.Name}}/security/enforce">
+      <input type="hidden" name="enforced" value="on">
+      <button type="submit">Enable enforcement</button>
+      <span class="hint">Grant what is needed first &mdash; this takes effect immediately.</span>
+    </form>
+  {{end}}
+</section>
+{{end}}

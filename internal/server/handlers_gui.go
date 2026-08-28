@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pipescloud/ppz/internal/cliproto"
+	"github.com/pipescloud/ppz/internal/acl"
 	"github.com/pipescloud/ppz/internal/db"
 	"github.com/pipescloud/ppz/internal/envelope"
 	"github.com/pipescloud/ppz/internal/natsubj"
@@ -166,7 +167,7 @@ func (s *Server) handleGUIOrgRedirect(w http.ResponseWriter, r *http.Request) {
 // orgTabs lists the tab keys the GUI knows about. The router registers
 // one route per entry; the handler validates against this set so only
 // valid tabs render.
-var orgTabs = map[string]bool{"pipes": true, "users": true, "keys": true, "audit": true}
+var orgTabs = map[string]bool{"pipes": true, "users": true, "keys": true, "audit": true, "security": true}
 
 // handleGUIOrgTab dispatches the org page for a given tab. The tab
 // drives which section the template renders, but the same shared
@@ -389,6 +390,26 @@ func (s *Server) handleGUIOrgTab(w http.ResponseWriter, r *http.Request) {
 	data["IsOwner"] = isOwner
 	data["AuditRows"] = auditRows
 	data["ActiveTab"] = tab
+
+	// ACL Phase 3 — the Security tab owns the per-org opt-in switch.
+	// Computed only for that tab: the preview walks every source and
+	// pipe in the account, which is not worth doing on every page load.
+	if tab == "security" {
+		enforced, err := db.ACLEnforced(ctx, s.Pool, org.ID)
+		if err != nil {
+			http.Error(w, "acl state: "+err.Error(), 500)
+			return
+		}
+		data["ACLEnforced"] = enforced
+		if in, err := s.previewInput(ctx, org); err == nil {
+			p := acl.BuildPreview(in)
+			data["ACLPreview"] = p
+			data["ACLPreviewEmpty"] = p.IsEmpty()
+		}
+		if enforced {
+			data["ACLRights"] = s.securityRights(ctx, org)
+		}
+	}
 	if err := tmpl.ExecuteTemplate(w, "org.html", data); err != nil {
 		http.Error(w, err.Error(), 500)
 	}

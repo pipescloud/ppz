@@ -26,6 +26,10 @@ type aclMutation struct {
 	Perm      string `json:"perm"`
 }
 
+type enforceBody struct {
+	Enforced bool `json:"enforced"`
+}
+
 func mutationBody(req cliproto.ACLRequest) aclMutation {
 	return aclMutation{Pipe: req.Pipe, Principal: req.Principal, Perm: req.Perm}
 }
@@ -50,6 +54,14 @@ func (d *Daemon) handleACL(ctx context.Context, conn net.Conn, params json.RawMe
 		e = d.callServer(ctx, "POST", "/api/v1/acl/grant", mutationBody(req), &body)
 	case cliproto.ACLActionRevoke:
 		e = d.callServer(ctx, "POST", "/api/v1/acl/revoke", mutationBody(req), &body)
+	case cliproto.ACLActionEnforceGet:
+		e = d.callServer(ctx, "GET", "/api/v1/acl/enforce", nil, &body)
+	case cliproto.ACLActionEnforceOn:
+		e = d.callServer(ctx, "POST", "/api/v1/acl/enforce", enforceBody{Enforced: true}, &body)
+	case cliproto.ACLActionEnforceOff:
+		e = d.callServer(ctx, "POST", "/api/v1/acl/enforce", enforceBody{Enforced: false}, &body)
+	case cliproto.ACLActionPreview:
+		e = d.callServer(ctx, "GET", "/api/v1/acl/preview", nil, &body)
 	default:
 		writeIPCErr(conn, cliproto.New(cliproto.EInvalidPipe))
 		return

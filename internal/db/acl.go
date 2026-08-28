@@ -181,3 +181,26 @@ func ResolvePrincipal(ctx context.Context, p *Pool, accountID uuid.UUID, orgName
 	}
 	return u, nil
 }
+
+// ACLEnforced reports whether the org enforces ACLs. False for every
+// org until an admin opts in.
+func ACLEnforced(ctx context.Context, p *Pool, accountID uuid.UUID) (bool, error) {
+	var on bool
+	err := p.QueryRow(ctx,
+		`SELECT acl_enforced FROM accounts WHERE id = $1`, accountID).Scan(&on)
+	return on, err
+}
+
+// SetACLEnforced flips the switch and bumps the generation counter, so
+// live daemons re-exchange and pick up (or drop) compiled credentials
+// without a restart — the same invalidation path a revoke uses.
+//
+// Non-destructive in both directions: grant rows are untouched, so
+// disabling and re-enabling restores the previous configuration exactly.
+func SetACLEnforced(ctx context.Context, p *Pool, accountID uuid.UUID, on bool) error {
+	if _, err := p.Exec(ctx,
+		`UPDATE accounts SET acl_enforced = $2 WHERE id = $1`, accountID, on); err != nil {
+		return err
+	}
+	return BumpACLGeneration(ctx, p, accountID)
+}

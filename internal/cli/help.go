@@ -450,10 +450,16 @@ Most access has no stored grant behind it: defaults come from the pipe's collar 
 
 PRINCIPAL is a username, a service-account name, or @everyone. The roster is visible to anyone holding any access on the pipe — including write-only, so an inbox sender can see who to ask.`,
 
-	"acl": `usage: ppz acl {whoami|ls} ...
+	"acl": `usage: ppz acl {whoami|ls|enforce|preview} ...
 
   ppz acl whoami PIPE [--json]        what you can do here, and why not
   ppz acl ls --principal NAME [--json] what that principal can reach
+  ppz acl enforce [on|off] [--json]   report or set this org's enforcement
+  ppz acl preview [--json]            what enabling enforcement would break
+
+ACLs are enforced per org and are OFF until an admin turns them on. While
+off, these surfaces describe what WOULD apply and say so — an answer that
+looks like a guarantee but is not would be worse than no answer.
 
 'whoami' on a pipe you cannot reach prints the exact command that would grant you access and the principals able to run it — so an agent can ask over that principal's inbox instead of failing opaquely.
 
@@ -462,6 +468,33 @@ PRINCIPAL is a username, a service-account name, or @everyone. The roster is vis
 	"acl whoami": `usage: ppz acl whoami PIPE [--json]
 
 Report your own read/write/admin standing on PIPE, with the reason for each — held or not. When something is missing, prints the grant command that would fix it and who can run it.`,
+
+	"acl enforce": `usage: ppz acl enforce [on|off] [--json]
+
+With no argument, report whether this org enforces ACLs. With on/off, set
+it — org admin only.
+
+Enforcement is off for every org until someone turns it on, because ACL
+defaults are derived rather than stored: flipping it globally would make
+every shared terminal private with no warning. Run 'ppz acl preview'
+first.
+
+Toggling takes effect without restarting anything, and disabling is
+non-destructive — grants persist, so switching back on restores exactly
+what you had.`,
+
+	"acl preview": `usage: ppz acl preview [--json]
+
+Report what enabling enforcement would take away, computed from the
+derived defaults rather than from recent traffic (traffic is wrong in
+both directions: silent on an idle collaboration, noisy about a one-off
+read months ago).
+
+Leads with handles whose owner has left the org — those become reachable
+only by org owner/admin, and the nominal owner loses their own handles,
+which is the failure that looks like nothing in particular. Then shared
+terminals, inboxes non-owners can no longer read, and collared pipes that
+become owner-only. Uncollared pipes are unaffected and are not listed.`,
 
 	"acl ls": `usage: ppz acl ls --principal NAME [--json]
 

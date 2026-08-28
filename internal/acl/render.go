@@ -39,8 +39,21 @@ type Remediation struct {
 	RunnableBy []string
 }
 
+// Roster is a pipe's access list plus whether it is enforced. The two
+// travel together so a call site cannot render the rows and forget the
+// caveat.
+type Roster struct {
+	Rows     []RosterRow
+	Enforced bool
+}
+
 // WhoamiView is the self-service explanation for one pipe.
 type WhoamiView struct {
+	// Enforced is whether this org actually enforces ACLs. A view
+	// saying "you cannot read this" while the read demonstrably
+	// succeeds is worse than no view — it is a control that lies, and
+	// it lies most convincingly to whoever is checking they are safe.
+	Enforced    bool
 	Pipe        string
 	Principal   string
 	Decision    Decision
@@ -78,8 +91,8 @@ func via(d Decision) string {
 	return ""
 }
 
-// viaLabel is the short provenance token for --json.
-func viaLabel(d Decision) string {
+// ViaLabel is the short provenance token used by --json and the GUI.
+func ViaLabel(d Decision) string {
 	for _, p := range []Perm{Admin, Write, Read} {
 		if d.Has(p) {
 			return d.Reason(p).Label()
@@ -95,7 +108,11 @@ func newTable(w io.Writer) *tabwriter.Writer {
 // RenderPipeRoster prints who can reach a pipe. Principals holding
 // nothing are omitted — an org of 200 would otherwise render 198 empty
 // rows.
-func RenderPipeRoster(w io.Writer, pipe string, rows []RosterRow) {
+func RenderPipeRoster(w io.Writer, pipe string, r Roster) {
+	if !r.Enforced {
+		fmt.Fprintln(w, notEnforcedNotice)
+	}
+	rows := r.Rows
 	tw := newTable(w)
 	fmt.Fprintln(tw, "PRINCIPAL\tR\tW\tA\tVIA")
 	for _, r := range rows {
@@ -133,6 +150,9 @@ func RenderPrincipalGrants(w io.Writer, principal string, rows []PrincipalRow) {
 // reason for every capability — held or not — and, when something is
 // missing, how to get it.
 func RenderWhoami(w io.Writer, v WhoamiView) {
+	if !v.Enforced {
+		fmt.Fprintln(w, notEnforcedNotice)
+	}
 	fmt.Fprintf(w, "%s — you are %q\n", v.Pipe, v.Principal)
 	for _, c := range []struct {
 		p    Perm
@@ -157,6 +177,11 @@ func RenderWhoami(w io.Writer, v WhoamiView) {
 // Agents are the primary consumer of these surfaces; a table scraped by
 // regex is a bug waiting to happen. The shapes are pinned by test.
 
+// notEnforcedNotice heads every surface for an org that has not turned
+// enforcement on. Without it the surfaces describe access that nothing
+// upholds.
+const notEnforcedNotice = "note: ACLs are NOT ENFORCED in this org — this is what would apply once enabled (ppz acl enforce on)"
+
 type permsJSON struct {
 	Read  bool `json:"read"`
 	Write bool `json:"write"`
@@ -172,7 +197,7 @@ func (r RosterRow) MarshalJSON() ([]byte, error) {
 		Principal string `json:"principal"`
 		permsJSON
 		Via string `json:"via"`
-	}{r.Principal, perms(r.Decision), viaLabel(r.Decision)})
+	}{r.Principal, perms(r.Decision), ViaLabel(r.Decision)})
 }
 
 func (r PrincipalRow) MarshalJSON() ([]byte, error) {
@@ -180,7 +205,7 @@ func (r PrincipalRow) MarshalJSON() ([]byte, error) {
 		Pipe string `json:"pipe"`
 		permsJSON
 		Via string `json:"via"`
-	}{r.Pipe, perms(r.Decision), viaLabel(r.Decision)})
+	}{r.Pipe, perms(r.Decision), ViaLabel(r.Decision)})
 }
 
 func (v WhoamiView) MarshalJSON() ([]byte, error) {
@@ -203,7 +228,8 @@ func (v WhoamiView) MarshalJSON() ([]byte, error) {
 		Pipe      string `json:"pipe"`
 		Principal string `json:"principal"`
 		permsJSON
+		Enforced    bool              `json:"enforced"`
 		Why         map[string]string `json:"why"`
 		Remediation *remJSON          `json:"remediation,omitempty"`
-	}{v.Pipe, v.Principal, perms(v.Decision), why, rem})
+	}{v.Pipe, v.Principal, perms(v.Decision), v.Enforced, why, rem})
 }

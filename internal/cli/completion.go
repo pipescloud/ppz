@@ -113,7 +113,7 @@ var subverbs = map[string][]string{
 	"agent":    {"create"},
 	"daemon":   {"start", "stop", "restart", "login", "logout"},
 	"pipe":     {"create", "set", "destroy", "acl"},
-	"acl":      {"ls", "whoami"},
+	"acl":      {"ls", "whoami", "enforce", "preview"},
 	"source":   {"create", "destroy"},
 	"schedule": {"ls", "rm"},
 	"subs":     {"ls", "add", "rm", "wait", "read"},

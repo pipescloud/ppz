@@ -250,7 +250,14 @@ func (s *Server) handleAPIACLWhoami(w http.ResponseWriter, r *http.Request) {
 	}
 	d := acl.Evaluate(me, subj, applicable)
 
-	view := acl.WhoamiView{Pipe: pipe, Principal: me.Name, Decision: d}
+	// Without this an unenforced answer reads as a guarantee. See the
+	// notEnforcedNotice comment in internal/acl/render.go.
+	enforced, err := db.ACLEnforced(r.Context(), s.Pool, org.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	view := acl.WhoamiView{Pipe: pipe, Principal: me.Name, Decision: d, Enforced: enforced}
 	if rem := s.remediationFor(r, org, subj, me, d); rem != nil {
 		view.Remediation = rem
 	}

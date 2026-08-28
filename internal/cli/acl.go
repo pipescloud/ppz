@@ -44,12 +44,19 @@ type aclWhoami struct {
 	Read        bool              `json:"read"`
 	Write       bool              `json:"write"`
 	Admin       bool              `json:"admin"`
+	Enforced    bool              `json:"enforced"`
 	Why         map[string]string `json:"why"`
 	Remediation *struct {
 		Command    string   `json:"command"`
 		RunnableBy []string `json:"runnable_by"`
 	} `json:"remediation,omitempty"`
 }
+
+// notEnforcedNotice heads every answer for an org that has not turned
+// enforcement on. Without it these surfaces describe access that nothing
+// upholds — a control that lies, most convincingly to whoever is
+// checking they are safe.
+const notEnforcedNotice = "note: ACLs are NOT ENFORCED in this org — this is what would apply once enabled (ppz acl enforce on)"
 
 func aclCall(req cliproto.ACLRequest) (json.RawMessage, error) {
 	var reply cliproto.ACLReply
@@ -176,6 +183,50 @@ func cmdACLGroup(args []string) error {
 		}
 		return printWhoami(body)
 
+	case "enforce":
+		action := cliproto.ACLActionEnforceGet
+		if len(rest) == 1 {
+			switch rest[0] {
+			case "on":
+				action = cliproto.ACLActionEnforceOn
+			case "off":
+				action = cliproto.ACLActionEnforceOff
+			default:
+				usageExit("acl enforce")
+			}
+		}
+		body, err := aclCall(cliproto.ACLRequest{Action: action})
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			fmt.Println(strings.TrimSpace(string(body)))
+			return nil
+		}
+		var st struct {
+			Enforced bool `json:"enforced"`
+		}
+		if err := json.Unmarshal(body, &st); err != nil {
+			return err
+		}
+		if st.Enforced {
+			fmt.Println("ACLs are ENFORCED in this org")
+		} else {
+			fmt.Println("ACLs are NOT enforced in this org")
+		}
+		return nil
+
+	case "preview":
+		body, err := aclCall(cliproto.ACLRequest{Action: cliproto.ACLActionPreview})
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			fmt.Println(strings.TrimSpace(string(body)))
+			return nil
+		}
+		return printPreview(body)
+
 	case "ls":
 		principal := ""
 		for i := 0; i < len(rest); i++ {
@@ -210,6 +261,9 @@ func printWhoami(body json.RawMessage) error {
 	if err := json.Unmarshal(body, &v); err != nil {
 		return err
 	}
+	if !v.Enforced {
+		fmt.Println(notEnforcedNotice)
+	}
 	fmt.Printf("%s — you are %q\n", v.Pipe, v.Principal)
 	for _, c := range []struct {
 		name string
@@ -227,5 +281,55 @@ func printWhoami(body json.RawMessage) error {
 			fmt.Printf("  runnable by:  %s\n", strings.Join(v.Remediation.RunnableBy, ", "))
 		}
 	}
+	return nil
+}
+
+// printPreview renders what enabling enforcement would take away.
+// Orphaned handles lead: Evaluate returns nothing for a non-member
+// before it checks handle ownership, so a source whose creator has left
+// the org becomes reachable only by org admins while its nominal owner
+// loses it — the case that locks people out with no obvious cause.
+func printPreview(body json.RawMessage) error {
+	var p struct {
+		PlaceholderOwnedOrg bool                `json:"placeholder_owned_org"`
+		OrphanedHandles     []map[string]string `json:"orphaned_handles"`
+		SharedTerminals     []map[string]string `json:"shared_terminals"`
+		InboxReadLoss       []map[string]string `json:"inbox_read_loss"`
+		CollaredUserPipes   []map[string]string `json:"collared_user_pipes"`
+		Empty               bool                `json:"empty"`
+	}
+	if err := json.Unmarshal(body, &p); err != nil {
+		return err
+	}
+	if p.Empty {
+		fmt.Println("enabling enforcement would change nothing in this org")
+		return nil
+	}
+	if len(p.OrphanedHandles) > 0 {
+		fmt.Println("WARNING — handles whose owner has left the org:")
+		fmt.Println("  these become reachable only by org owner/admin.")
+		for _, o := range p.OrphanedHandles {
+			fmt.Printf("  %s (owner %q)\n", o["handle"], o["owner"])
+		}
+		fmt.Println()
+	}
+	if p.PlaceholderOwnedOrg {
+		fmt.Println("WARNING — this org has no real owner, so nobody would hold implicit admin.")
+		fmt.Println()
+	}
+	section := func(title, k string, rows []map[string]string) {
+		if len(rows) == 0 {
+			return
+		}
+		fmt.Println(title)
+		for _, r := range rows {
+			fmt.Printf("  %s (stays with %q)\n", r[k], r["owner"])
+		}
+		fmt.Println()
+	}
+	section("shared terminals that become private:", "handle", p.SharedTerminals)
+	section("inboxes non-owners can no longer read:", "pipe", p.InboxReadLoss)
+	section("collared pipes that become owner-only:", "pipe", p.CollaredUserPipes)
+	fmt.Println("grant what is needed, then: ppz acl enforce on")
 	return nil
 }

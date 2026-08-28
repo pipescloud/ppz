@@ -49,6 +49,10 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/acl/whoami", s.requireBearer(s.handleAPIACLWhoami))
 	mux.HandleFunc("POST /api/v1/acl/grant", s.requireBearer(s.handleAPIACLGrant))
 	mux.HandleFunc("POST /api/v1/acl/revoke", s.requireBearer(s.handleAPIACLRevoke))
+	// ACL Phase 3 — the per-org opt-in switch and its preview.
+	mux.HandleFunc("GET /api/v1/acl/enforce", s.requireBearer(s.handleAPIACLEnforce))
+	mux.HandleFunc("POST /api/v1/acl/enforce", s.requireBearer(s.handleAPIACLEnforce))
+	mux.HandleFunc("GET /api/v1/acl/preview", s.requireBearer(s.handleAPIACLPreview))
 
 	// ACL Phase 1 — service accounts (agent principals) + org roles.
 	mux.HandleFunc("POST /api/v1/svc", s.requireBearer(s.handleAPICreateService))
@@ -112,6 +116,7 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /orgs/{id}/members", s.requireSession(s.handleAddMember))
 	mux.HandleFunc("POST /orgs/{id}/members/{uid}/remove", s.requireSession(s.handleRemoveMember))
 	mux.HandleFunc("POST /orgs/{id}/members/{uid}/role", s.requireSession(s.handleGUISetMemberRole))
+	mux.HandleFunc("POST /orgs/{id}/security/enforce", s.requireSession(s.handleGUISetACLEnforce))
 	mux.HandleFunc("POST /orgs/{id}/invites", s.requireSession(s.handleGUICreateInvite))
 	mux.HandleFunc("POST /orgs/{id}/invites/{iid}/revoke", s.requireSession(s.handleGUIRevokeInvite))
 	mux.HandleFunc("POST /invites/{id}/accept", s.requireSession(s.handleGUIAcceptInvite))

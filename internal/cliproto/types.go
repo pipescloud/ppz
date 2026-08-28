@@ -936,6 +936,11 @@ const (
 	ACLActionWhoami    = "whoami"    // what can I do here, and why not
 	ACLActionGrant     = "grant"
 	ACLActionRevoke    = "revoke"
+	// ACL Phase 3 — the per-org opt-in switch and its preview.
+	ACLActionEnforceGet = "enforce-get"
+	ACLActionEnforceOn  = "enforce-on"
+	ACLActionEnforceOff = "enforce-off"
+	ACLActionPreview    = "preview"
 )
 
 // ACLRequest is the IPC body for every ACL verb.

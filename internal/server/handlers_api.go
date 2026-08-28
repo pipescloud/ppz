@@ -34,6 +34,9 @@ func (s *Server) handleAuthExchange(w http.ResponseWriter, r *http.Request) {
 	//                    must match (or be empty) — API keys are
 	//                    org-scoped at issuance.
 	var accountID uuid.UUID
+	// The principal the credential is minted for — the subject ACL
+	// grants name, not whoever minted the key.
+	var callerPrincipal uuid.UUID
 	if strings.HasPrefix(req.APIKey, bearerPrefixOAuth) {
 		tok, err := db.LookupBearerToken(ctx, s.Pool, req.APIKey)
 		if err != nil {
@@ -51,6 +54,7 @@ func (s *Server) handleAuthExchange(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			accountID = parsed
+			callerPrincipal = tok.UserID
 		} else {
 			defaultOrg, err := db.DefaultAccountFor(ctx, s.Pool, tok.UserID)
 			if err != nil {
@@ -58,6 +62,7 @@ func (s *Server) handleAuthExchange(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			accountID = defaultOrg.ID
+			callerPrincipal = tok.UserID
 		}
 	} else {
 		key, err := db.LookupAPIKey(ctx, s.Pool, req.APIKey)
@@ -66,6 +71,7 @@ func (s *Server) handleAuthExchange(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		accountID = key.AccountID
+		callerPrincipal = key.Actor()
 		if req.AccountID != "" && req.AccountID != accountID.String() {
 			writeErr(w, &cliproto.Error{Code: "E_INVALID_ORG", Message: "api key is not for this org"})
 			return
@@ -115,10 +121,19 @@ func (s *Server) handleAuthExchange(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: "provision org account: " + err.Error()})
 		return
 	}
-	natsJWT, natsSeed, err := natsauth.MintUserJWTInAccount(
+	// ACL Phase 3: the credential is compiled from the caller's
+	// effective access only when the org has opted in. Every org ships
+	// with acl_enforced=false, so this keeps returning the wide-open
+	// credential until an admin turns it on.
+	perms, err := s.natsPermissionsFor(ctx, accountID, callerPrincipal)
+	if err != nil {
+		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: "resolve acl: " + err.Error()})
+		return
+	}
+	natsJWT, natsSeed, err := natsauth.MintUserJWTWithPermissions(
 		oa.AccountPub, oa.SigningKP,
 		"ppz-user-"+accountID.String(),
-		[]string{">"}, []string{">"},
+		perms,
 		clock.Now().Add(natsUserJWTTTL).Unix(),
 	)
 	if err != nil {

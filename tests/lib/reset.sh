@@ -53,8 +53,10 @@ TRUNCATE TABLE audit_events;
 -- grants access leaves the row behind and the next scenario's "before the
 -- grant" assertions see it. Same failure mode as the invites bleed below.
 DELETE FROM acl_grants;
--- Reset the invalidation counter with them so assertions on it are stable.
-UPDATE accounts SET acl_generation = 0;
+-- Reset the invalidation counter with them so assertions on it are stable,
+-- and switch enforcement back off: it is opt-in per org, so a scenario
+-- that enables it must not leave the next one enforcing.
+UPDATE accounts SET acl_generation = 0, acl_enforced = false;
 -- Phase 4: invites are scenario-local; clear them so a prior run's
 -- declined/revoked rows don't bleed into the next scenario's count.
 DELETE FROM invites;

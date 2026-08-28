@@ -286,6 +286,19 @@ func Evaluate(p Principal, s Subject, grants []Grant) Decision {
 	return d
 }
 
+// Effective applies the one implication in the lattice — admin carries
+// read and write — returning a bitset with those bits actually set.
+//
+// Evaluate applies this while resolving; Compile needs it too, because
+// it is handed raw Perms and an admin-only bitset has neither the read
+// nor the write bit set.
+func (p Perm) Effective() Perm {
+	if p&Admin != 0 {
+		return Read | Write | Admin
+	}
+	return p
+}
+
 // expand applies the one implication in the lattice: admin carries read
 // and write. Read and write never imply each other.
 func expand(p Perm) []Perm {
