@@ -210,6 +210,7 @@ func (d *Daemon) rebuildNC(caller string) error {
 	d.swapNCLocked(caller, nc) // stamps d.ncExp and emits any transition event
 	if aid, perr := uuid.Parse(d.State.AccountID()); perr == nil {
 		_, _ = d.subscribePresence(aid)
+		_, _ = d.subscribeSystem(aid)
 	}
 	return nil
 }

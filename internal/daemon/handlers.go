@@ -373,6 +373,7 @@ func (d *Daemon) handleLogin(ctx context.Context, conn net.Conn, params json.Raw
 	if newNC != nil {
 		if aid, err := uuid.Parse(ex.AccountID); err == nil {
 			_, _ = d.subscribePresence(aid)
+		_, _ = d.subscribeSystem(aid)
 		}
 	} else {
 		// Best-effort dial failed: with no conn there is no "closed"

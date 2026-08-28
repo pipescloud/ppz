@@ -183,6 +183,7 @@ func (s *Server) handleAPIACLEnforce(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
+		s.notifyACLChanged(ctx, org.ID)
 		writeJSON(w, http.StatusOK, map[string]bool{"enforced": req.Enforced})
 		return
 	}
@@ -418,5 +419,27 @@ func (s *Server) handleGUISetACLEnforce(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	s.notifyACLChanged(r.Context(), org.ID)
 	browserSubmit(w, r)
+}
+
+// notifyACLChanged tells every daemon in the account to re-fetch its
+// credential.
+//
+// NATS evaluates permissions only at connect/credential load, so a
+// grant, a revoke or the enforcement switch does not reach a live
+// connection on its own — it would otherwise not land until the
+// credential expired, leaving a principal using access they no longer
+// have for up to a full refresh interval.
+//
+// Best-effort by design: the credential TTL is the backstop, so a failed
+// publish delays the change rather than losing it. Callers do not fail
+// the mutation over it.
+func (s *Server) notifyACLChanged(ctx context.Context, accountID uuid.UUID) {
+	oa, err := s.AccountPool.Get(ctx, accountID)
+	if err != nil || oa == nil || oa.NC == nil {
+		return
+	}
+	_ = oa.NC.Publish(natsubj.SystemACLSubject(accountID), nil)
+	_ = oa.NC.Flush()
 }

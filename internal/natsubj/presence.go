@@ -43,6 +43,36 @@ const PresenceSegment = "_presence"
 // still lists a source's heartbeat alongside its other pipes.
 const PresencePipe = "heartbeat"
 
+// SystemSegment carries control signals the server sends to every
+// daemon in an account — currently just "your access changed, re-fetch
+// your credential". Leads with an underscore, which HandleRegex forbids,
+// so no source, manifold or pipe can occupy it.
+const SystemSegment = "_system"
+
+// SystemPrefix is the subscription every daemon holds. Included in every
+// compiled credential's sub-allow list: a principal that could not hear
+// an invalidation would keep using a credential after its access changed.
+func SystemPrefix(accountID uuid.UUID) string {
+	return accountID.String() + "." + SystemSegment + ".>"
+}
+
+// SystemACLSubject is published when an account's access changes —
+// a grant, a revoke, or the enforcement switch being toggled.
+//
+// NATS evaluates permissions only at connect/credential load, so without
+// this a change would not reach a live connection until its credential
+// expired. This is what makes "takes effect without a restart" true.
+func SystemACLSubject(accountID uuid.UUID) string {
+	return accountID.String() + "." + SystemSegment + ".acl"
+}
+
+// IsSystemACLSubject reports whether a subject is the ACL invalidation
+// signal for any account.
+func IsSystemACLSubject(subject string) bool {
+	parts := strings.Split(subject, ".")
+	return len(parts) == 3 && parts[1] == SystemSegment && parts[2] == "acl"
+}
+
 // PresenceSubject builds <account>._presence.<manifold?>.<handle>.
 func PresenceSubject(accountID uuid.UUID, manifold, handle string) string {
 	var b strings.Builder

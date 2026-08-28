@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 
@@ -83,4 +84,49 @@ func (d *Daemon) stampPresence(accountID uuid.UUID, msg *nats.Msg) {
 		return
 	}
 	d.Heartbeats.Stamp(handle, accountID.String(), env.Payload, time.Now())
+}
+
+// subscribeSystem listens for the account's control signals. Currently
+// one: the server saying "access changed, re-fetch your credential".
+//
+// NATS evaluates permissions only at connect/credential load, so a
+// grant, a revoke, or the enforcement switch being toggled does not
+// reach a live connection on its own. Without this the change would not
+// land until the credential expired — up to a full refresh interval of
+// a principal using access they no longer have.
+//
+// Returns the subscription so tests can assert its scope.
+func (d *Daemon) subscribeSystem(accountID uuid.UUID) (*nats.Subscription, error) {
+	sub, err := d.NC.Subscribe(natsubj.SystemPrefix(accountID), func(msg *nats.Msg) {
+		if !natsubj.IsSystemACLSubject(msg.Subject) {
+			return
+		}
+		// Re-exchange out of band: the callback runs on the nats.go
+		// dispatcher, and ForceRefresh makes an HTTP round-trip and
+		// then rebuilds this very connection.
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := d.Refresh.ForceRefresh(ctx); err != nil {
+				d.recordNATSEvent(NATSEvent{
+					Type:   "warn",
+					At:     time.Now(),
+					Caller: "subscribeSystem",
+					NCID:   ncID(d.NC),
+					Reason: "acl invalidation refresh: " + err.Error(),
+				})
+			}
+		}()
+	})
+	if err != nil {
+		d.recordNATSEvent(NATSEvent{
+			Type:   "warn",
+			At:     time.Now(),
+			Caller: "subscribeSystem",
+			NCID:   ncID(d.NC),
+			Reason: err.Error(),
+		})
+		return nil, err
+	}
+	return sub, nil
 }

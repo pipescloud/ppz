@@ -97,7 +97,7 @@ func Compile(accountID string, access []Access) Permissions {
 		SubAllow: []string{
 			"_INBOX.>",
 			accountID + "._presence.>",
-			accountID + "._system.>",
+			accountID + "._system.>", // invalidation; see natsubj.SystemPrefix
 		},
 		PubDeny: append([]string(nil), alwaysDenied...),
 	}

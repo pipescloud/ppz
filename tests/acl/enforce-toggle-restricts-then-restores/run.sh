@@ -2,12 +2,16 @@
 # ACL Phase 3: toggling enforcement takes effect without a restart, and
 # disabling is non-destructive.
 #
-# Toggling bumps acl_generation and nudges <A>._system.acl, so live
-# daemons re-exchange and pick up (or drop) compiled credentials on the
-# spot — the same invalidation path a revoke uses. Grant rows survive a
-# disable, so toggling back restores the prior configuration exactly.
+# NATS evaluates permissions only at connect, so a toggle does not reach
+# a live connection on its own. The server publishes on
+# <account>._system.acl and every daemon re-exchanges and redials — that
+# path is what this scenario exercises. Propagation is asynchronous
+# (publish -> refresh -> HTTP -> reconnect), so the assertions are
+# bounded waits rather than immediate checks; the point being proven is
+# that it lands at all without anyone restarting a daemon.
 #
-# RED until Phase 3 lands.
+# Grant rows survive a disable, so toggling back on restores the prior
+# configuration exactly.
 . /tests/lib/common.sh
 
 ppz_a daemon login "$PPZ_SERVER_URL" -apikey "$(key_alpha)" >/dev/null
@@ -24,10 +28,15 @@ ppz_a acl enforce on >/dev/null
 ppz_a acl enforce --json | jq -r '.enforced'
 
 echo "--- on: bar is denied, without restarting anything ---"
-if ppz_b reread alice.notes --bare >/dev/null 2>&1; then echo "UNEXPECTED: read served"; else echo "denied"; fi
+if wait_for 50 "! ppz_b reread alice.notes >/dev/null 2>&1"; then
+  echo "denied"
+else
+  echo "UNEXPECTED: read still served after enforcement was enabled"
+fi
 
 echo "--- grant bar read, then it works ---"
 ppz_a pipe acl grant alice.notes bar read >/dev/null
+wait_for 50 "ppz_b reread alice.notes >/dev/null 2>&1" || echo "UNEXPECTED: grant never took effect"
 ppz_b reread alice.notes --bare
 
 echo "--- disable: grants persist ---"

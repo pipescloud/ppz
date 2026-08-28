@@ -370,6 +370,7 @@ func (s *Server) mutateACL(w http.ResponseWriter, r *http.Request, grant bool) {
 			return
 		}
 	}
+	s.notifyACLChanged(r.Context(), org.ID)
 	writeJSON(w, http.StatusOK, map[string]string{
 		"pipe": req.Pipe, "principal": target.DisplayName(), "perm": req.Perm,
 	})

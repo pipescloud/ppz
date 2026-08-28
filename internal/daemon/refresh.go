@@ -58,7 +58,7 @@ type OnRefreshedFn func(jwt, seed string, expUnix int64)
 // expiry. Concurrency: Current() may be called from any goroutine;
 // Start/Stop must be called from the same goroutine.
 type RefreshLoop struct {
-	AccountID          string
+	AccountID      string
 	Refresh        RefreshFn
 	OnUnauthorized func(accountID string)
 	OnRefreshed    OnRefreshedFn
@@ -201,6 +201,21 @@ func (r *RefreshLoop) run(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// ForceRefresh re-exchanges immediately, regardless of how much of the
+// credential's lifetime is left, and fires OnRefreshed so the caller
+// rebuilds its NATS connection.
+//
+// Used when the server signals that access changed (ACL Phase 3). NATS
+// evaluates permissions only at connect, so a grant, revoke or
+// enforcement toggle does not reach a live connection until it redials
+// with a freshly minted credential.
+func (r *RefreshLoop) ForceRefresh(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	return r.refreshNow(ctx)
 }
 
 func (r *RefreshLoop) refreshNow(ctx context.Context) error {
