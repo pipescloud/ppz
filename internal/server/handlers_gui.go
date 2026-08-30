@@ -12,8 +12,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/pipescloud/ppz/internal/cliproto"
 	"github.com/pipescloud/ppz/internal/acl"
+	"github.com/pipescloud/ppz/internal/cliproto"
 	"github.com/pipescloud/ppz/internal/db"
 	"github.com/pipescloud/ppz/internal/envelope"
 	"github.com/pipescloud/ppz/internal/natsubj"
@@ -359,6 +359,15 @@ func (s *Server) handleGUIOrgTab(w http.ResponseWriter, r *http.Request) {
 	// Owner-only flag for showing the invite-create form on the users
 	// tab. Non-owners see members but not the controls.
 	isOwner := UserIDFromCtx(r.Context()) == org.OwnerUserID
+	// Owner OR admin, for the surfaces the admin tier was added to
+	// manage (ACL Phase 1). The audit tab stays owner-only: its trail
+	// names people and the keys they acted through.
+	isOrgAdmin := isOwner
+	if !isOrgAdmin {
+		if role, rerr := s.RoleInOrg(ctx, UserIDFromCtx(r.Context()), org.ID); rerr == nil {
+			isOrgAdmin = role.CanAdministerOrg()
+		}
+	}
 
 	// The audit tab is owner-only: the trail names people and the API
 	// keys they acted through, which is owner information rather than
@@ -388,6 +397,7 @@ func (s *Server) handleGUIOrgTab(w http.ResponseWriter, r *http.Request) {
 	data["Members"] = members
 	data["PendingInvites"] = pendingInvites
 	data["IsOwner"] = isOwner
+	data["IsOrgAdmin"] = isOrgAdmin
 	data["AuditRows"] = auditRows
 	data["ActiveTab"] = tab
 
@@ -395,6 +405,16 @@ func (s *Server) handleGUIOrgTab(w http.ResponseWriter, r *http.Request) {
 	// Computed only for that tab: the preview walks every source and
 	// pipe in the account, which is not worth doing on every page load.
 	if tab == "security" {
+		// Org-admin territory, gated here rather than in the template
+		// for the same reason as the audit tab above: a non-admin
+		// should get a refusal, not a page with a silently empty
+		// section. It matters more here — the rights table enumerates
+		// every principal's access across the org, and the toggle
+		// changes the org's security posture.
+		if !isOrgAdmin {
+			http.Error(w, "org admin only", http.StatusForbidden)
+			return
+		}
 		enforced, err := db.ACLEnforced(ctx, s.Pool, org.ID)
 		if err != nil {
 			http.Error(w, "acl state: "+err.Error(), 500)
@@ -441,10 +461,10 @@ func (s *Server) handleGUICreateKey(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := tmpl.ExecuteTemplate(w, "key_created.html", map[string]any{
-		"AccountID":     org.ID.String(),
-		"AccountName":   org.Name,
-		"KeyID":     key.ID.String(),
-		"Plaintext": plaintext,
+		"AccountID":   org.ID.String(),
+		"AccountName": org.Name,
+		"KeyID":       key.ID.String(),
+		"Plaintext":   plaintext,
 	}); err != nil {
 		http.Error(w, err.Error(), 500)
 	}

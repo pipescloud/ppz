@@ -31,8 +31,10 @@
       <a data-tab="audit" href="/orgs/{{.Org.Name}}/audit"
          class="{{if eq .ActiveTab "audit"}}active{{end}}">Audit</a>
       {{end}}
+      {{if .IsOrgAdmin}}
       <a data-tab="security" href="/orgs/{{.Org.Name}}/security"
          class="{{if eq .ActiveTab "security"}}active{{end}}">Security</a>
+      {{end}}
     </nav>
 
     {{if eq .ActiveTab "pipes"}}
