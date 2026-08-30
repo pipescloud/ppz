@@ -85,7 +85,7 @@ func (d *Daemon) handleListWatch(ctx context.Context, conn net.Conn, params json
 	defer d.Watches.remove(entry)
 
 	// Initial snapshot.
-	reply, e := d.buildFilteredList(ctx, accountID, req.Session, req.Patterns)
+	reply, e := d.buildFilteredList(ctx, accountID, req.Session, req.Patterns, req.Long)
 	if e != nil {
 		writeIPCErr(conn, e)
 		return
@@ -107,7 +107,7 @@ func (d *Daemon) handleListWatch(ctx context.Context, conn net.Conn, params json
 
 	select {
 	case <-wakeup:
-		reply, e = d.buildFilteredList(ctx, accountID, req.Session, req.Patterns)
+		reply, e = d.buildFilteredList(ctx, accountID, req.Session, req.Patterns, req.Long)
 		if e != nil {
 			writeIPCErr(conn, e)
 			return
@@ -161,7 +161,7 @@ func (d *Daemon) jetStream() (jetstream.JetStream, *cliproto.Error) {
 // omitted entirely, so any pattern filter on an org with only
 // uncollared traffic returned an empty reply and the level-triggered
 // early-return at handleListWatch never fired.
-func (d *Daemon) buildFilteredList(ctx context.Context, accountID uuid.UUID, session string, patterns []string) (cliproto.ListReply, *cliproto.Error) {
+func (d *Daemon) buildFilteredList(ctx context.Context, accountID uuid.UUID, session string, patterns []string, long bool) (cliproto.ListReply, *cliproto.Error) {
 	var lr cliproto.ListSourcesReply
 	if e := d.callServer(ctx, "GET", "/api/v1/sources", nil, &lr); e != nil {
 		return cliproto.ListReply{}, e
@@ -173,7 +173,7 @@ func (d *Daemon) buildFilteredList(ctx context.Context, accountID uuid.UUID, ses
 		return cliproto.ListReply{}, e
 	}
 
-	enriched, err := enrichSourcesWithPipeInfo(ctx, js, lr.Sources, accountID, session, patterns, cursorSnapshot(d.Cursors, session))
+	enriched, err := enrichSourcesWithPipeInfo(ctx, js, lr.Sources, accountID, session, patterns, cursorSnapshot(d.Cursors, session), long)
 	if err != nil {
 		return cliproto.ListReply{}, cliproto.New(cliproto.ENATSUnreachable)
 	}
@@ -192,7 +192,7 @@ func (d *Daemon) buildFilteredList(ctx context.Context, accountID uuid.UUID, ses
 		if !matchAnyTarget("", dotted, patterns) {
 			continue
 		}
-		info := uncollaredPipeInfo(ctx, js, accountID, p.Manifold, p.Name, session, d.Cursors)
+		info := uncollaredPipeInfo(ctx, js, accountID, p.Manifold, p.Name, session, d.Cursors, long)
 		info.CreatedBy = p.CreatedBy
 		uncollared = append(uncollared, cliproto.UncollaredPipe{
 			Manifold: p.Manifold,

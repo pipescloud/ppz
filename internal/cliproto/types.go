@@ -454,6 +454,19 @@ type PipeInfo struct {
 	Preview   string     `json:"preview,omitempty"`    // truncated to 60 bytes for table view
 	Payload   string     `json:"payload,omitempty"`    // full untruncated payload for `ls --json`
 	CreatedBy string     `json:"created_by,omitempty"` // username; empty → inherit Source.CreatedBy
+	// Retention, populated ONLY when the request set Long (`ppz ls -l`).
+	// Read from the pipe's JetStream stream config, which is what
+	// actually enforces the caps — and unlike the `pipes` table it also
+	// covers auto-provisioned pipes, which have no row until someone
+	// runs `pipe set` on them.
+	//
+	// omitempty AND conditional population, deliberately: `ls --json` is
+	// an agent-parsed wire format, so its default output must stay
+	// byte-identical. -1 is JetStream's "unlimited" and is carried
+	// through rather than flattened.
+	TTLSeconds int   `json:"ttl_seconds,omitempty"`
+	MaxMsgs    int64 `json:"max_msgs,omitempty"`
+	MaxBytes   int64 `json:"max_bytes,omitempty"`
 	// MatchedBy is the `subs ls` attribution: the subscribed subject(s) that
 	// surfaced this pipe — the pattern(s) and/or literal that matched it.
 	// Set only on the subs snapshot path; empty (omitted) for plain `ppz ls`.
@@ -486,6 +499,10 @@ type Source struct {
 type ListRequest struct {
 	Session  string   `json:"session,omitempty"` // cursor key
 	Patterns []string `json:"patterns,omitempty"`
+	// Long asks the daemon to fill each PipeInfo's retention from the
+	// stream config (`ppz ls -l`). Gating the POPULATION rather than
+	// the rendering is what keeps plain `ls --json` unchanged.
+	Long bool `json:"long,omitempty"`
 }
 
 // ListWatchRequest is `ppz ls --watch`. The daemon returns the same shape
@@ -502,6 +519,9 @@ type ListRequest struct {
 type ListWatchRequest struct {
 	Session  string   `json:"session,omitempty"`
 	Patterns []string `json:"patterns,omitempty"`
+	// Long mirrors ListRequest.Long — `ls --watch -l` must render the
+	// same columns the snapshot form does.
+	Long bool `json:"long,omitempty"`
 }
 
 type ListReply struct {

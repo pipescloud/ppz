@@ -90,7 +90,7 @@ func TestPrintList_UncollaredRowAtRootShowsDashNamespace(t *testing.T) {
 		{Manifold: "", Name: "plaza", Info: PipeInfo{Total: 0, Unread: 0, CreatedBy: "foo"}},
 	}
 	var buf bytes.Buffer
-	PrintListWithUncollared(&buf, nil, uc, false)
+	PrintListWithUncollared(&buf, nil, uc, false, false)
 
 	row := dataRowContaining(t, buf.String(), "plaza")
 	if got, want := firstField(row), "-"; got != want {
@@ -104,7 +104,7 @@ func TestPrintList_UncollaredRowInManifoldShowsManifold(t *testing.T) {
 		{Manifold: "team1", Name: "room", Info: PipeInfo{Total: 0, Unread: 0, CreatedBy: "foo"}},
 	}
 	var buf bytes.Buffer
-	PrintListWithUncollared(&buf, nil, uc, false)
+	PrintListWithUncollared(&buf, nil, uc, false, false)
 
 	row := dataRowContaining(t, buf.String(), "room")
 	if got, want := firstField(row), "team1"; got != want {
@@ -144,7 +144,7 @@ func TestPrintList_PipeColumnDropsManifoldPrefix_Uncollared(t *testing.T) {
 		{Manifold: "team1", Name: "room", Info: PipeInfo{Total: 0, Unread: 0, CreatedBy: "foo"}},
 	}
 	var buf bytes.Buffer
-	PrintListWithUncollared(&buf, nil, uc, false)
+	PrintListWithUncollared(&buf, nil, uc, false, false)
 
 	out := buf.String()
 	if strings.Contains(out, "team1.room") {

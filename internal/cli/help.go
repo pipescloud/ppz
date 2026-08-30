@@ -212,13 +212,14 @@ var helpTopics = map[string]string{
 
 Print the daemon's state: whether it's logged in, its pid + version, last token refresh, server URL, account, current handle, and NATS connection state. The first stop when something looks wrong. See 'ppz help sessions' for how the current handle is scoped per shell session.`,
 
-	"ls": `usage: ppz ls [--json|--iso] [--watch] [PATTERN...]
+	"ls": `usage: ppz ls [-l|--long] [--json|--iso] [--watch] [PATTERN...]
 
 List handles × pipes. With no PATTERN, lists everything the daemon knows about; PATTERNs glob the full <handle>.<pipe> (e.g. '*.inbox', 'alice.*'). A literal that matches no pipe warns — use a glob ('*' quoted, or % unquoted).
 
   --watch    block until unread arrives on a matching pipe, print a snapshot, and exit. Non-destructive (does not advance any cursor), so it's the wake-signal primitive for an agent monitor loop. See 'ppz help globs' for pattern rules.
   --json     emit one JSON object per row.
-  --iso      render LAST as an RFC3339 timestamp instead of a relative age.`,
+  --iso      render LAST as an RFC3339 timestamp instead of a relative age.
+  -l, --long add the retention columns TTL / MAXMSGS / MAXBYTES — the caps bounding BUFFERED, as the pipe's stream actually enforces them. This is the read side of 'ppz pipe set'; auto-provisioned pipes (inbox, stdout, ...) report their defaults even though they have no stored override. Composes with --json, which is otherwise unchanged: retention keys appear only under -l.`,
 
 	"read": `usage: ppz read TGT [-l|--limit N --tail --json --tty --raw --bare]
 

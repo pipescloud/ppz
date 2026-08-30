@@ -1,0 +1,5 @@
+--- untouched auto-pipe reports the built-in defaults ---
+ttl=24h msgs=5000 bytes=16777216
+--- and tracks a set ---
+ttl=24h msgs=3 bytes=16777216
+exit=0

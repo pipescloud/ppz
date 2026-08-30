@@ -256,7 +256,9 @@ func (d *Daemon) subsSnapshot(ctx context.Context, sessionID string) (cliproto.L
 	// only the uncollared `room` pipe — not a collared `<handle>.room`. (To
 	// follow a collared pipe, subscribe to the explicit `<handle>.<pipe>` or
 	// a glob like `*.room`.)
-	reply, e := d.buildFilteredList(ctx, accountID, sessionID, subjects)
+	// long=false: `subs ls` answers "what am I subscribed to", not "how
+	// is this pipe configured".
+	reply, e := d.buildFilteredList(ctx, accountID, sessionID, subjects, false)
 	if e != nil {
 		return cliproto.ListReply{}, e
 	}

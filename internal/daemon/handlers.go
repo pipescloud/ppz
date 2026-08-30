@@ -1408,7 +1408,7 @@ func (d *Daemon) handleList(ctx context.Context, conn net.Conn, params json.RawM
 			writeIPCErr(conn, &cliproto.Error{Code: "E_INTERNAL", Message: "bad org id"})
 			return
 		}
-		reply, e := d.buildFilteredList(ctx, accountID, req.Session, req.Patterns)
+		reply, e := d.buildFilteredList(ctx, accountID, req.Session, req.Patterns, req.Long)
 		if e != nil {
 			writeIPCErr(conn, e)
 			return
@@ -1445,7 +1445,7 @@ func (d *Daemon) handleList(ctx context.Context, conn net.Conn, params json.RawM
 		return
 	}
 
-	enriched, err := enrichSourcesWithPipeInfo(ctx, js, lr.Sources, accountID, req.Session, nil, cursorSnapshot(d.Cursors, req.Session))
+	enriched, err := enrichSourcesWithPipeInfo(ctx, js, lr.Sources, accountID, req.Session, nil, cursorSnapshot(d.Cursors, req.Session), req.Long)
 	if err != nil {
 		writeIPCErr(conn, cliproto.New(cliproto.ENATSUnreachable))
 		return
@@ -1461,7 +1461,7 @@ func (d *Daemon) handleList(ctx context.Context, conn net.Conn, params json.RawM
 	}
 	uncollared := make([]cliproto.UncollaredPipe, 0, len(ucReply.Pipes))
 	for _, p := range ucReply.Pipes {
-		info := uncollaredPipeInfo(ctx, js, accountID, p.Manifold, p.Name, req.Session, d.Cursors)
+		info := uncollaredPipeInfo(ctx, js, accountID, p.Manifold, p.Name, req.Session, d.Cursors, req.Long)
 		info.CreatedBy = p.CreatedBy
 		uncollared = append(uncollared, cliproto.UncollaredPipe{
 			Manifold: p.Manifold,
@@ -1526,7 +1526,7 @@ func (d *Daemon) handleComplete(ctx context.Context, conn net.Conn, params json.
 // uncollaredPipeInfo gathers JetStream stats for one uncollared pipe.
 // Mirrors the per-pipe enrichment in enrichSourcesWithPipeInfo but
 // scoped to a sourceless stream. Phase 1.5.
-func uncollaredPipeInfo(ctx context.Context, js jetstream.JetStream, accountID uuid.UUID, manifold, name, session string, cursors *cursors) cliproto.PipeInfo {
+func uncollaredPipeInfo(ctx context.Context, js jetstream.JetStream, accountID uuid.UUID, manifold, name, session string, cursors *cursors, long bool) cliproto.PipeInfo {
 	info := cliproto.PipeInfo{Pipe: cliproto.FormatPipePath(manifold, "", name)}
 	stream, err := js.Stream(ctx, natsubj.BuildStreamName(accountID, manifold, "", name))
 	if err != nil {
@@ -1535,6 +1535,9 @@ func uncollaredPipeInfo(ctx context.Context, js jetstream.JetStream, accountID u
 	sInfo, err := stream.Info(ctx)
 	if err != nil {
 		return info
+	}
+	if long {
+		applyRetention(&info, sInfo.Config)
 	}
 	info.Total = sInfo.State.Msgs
 	info.LastSeq = sInfo.State.LastSeq

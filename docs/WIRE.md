@@ -724,6 +724,36 @@ username the table renders.
 
 Empty list: zero output, exit 0.
 
+#### `-l` / `--long` — retention columns
+
+`ppz ls -l` adds `TTL`, `MAXMSGS` and `MAXBYTES` between `BUFFERED` and
+`LAST`, so each cap sits beside the count it bounds. This is the read side of
+`ppz pipe set` (§5.6), which could otherwise change retention that nothing
+could report back.
+
+The values come from the pipe's **JetStream stream config**, not the `pipes`
+table. That is the thing actually enforcing the caps, and unlike the table it
+also covers auto-provisioned pipes — `inbox` / `stdout` have no row until
+someone runs `pipe set` on them, yet they are the pipes whose defaults bite
+first. No new endpoint and no extra round trip: the daemon already holds a
+`*jetstream.StreamInfo` per pipe, since `BUFFERED` and `LAST` come from its
+`State`.
+
+Rendering: `TTL` collapses whole hours/minutes (`24h`, `5m`); `0` (no age
+limit) renders `-`; JetStream's `-1` "unlimited" renders `∞`. `MAXMSGS` and
+`MAXBYTES` stay RAW integers — `pipe set --max-bytes` parses only integer
+mantissas, so a humanised `1.4MiB` would print a value that fails when pasted
+back into the command that set it.
+
+`--json` is **unchanged unless `-l` is given**. `ttl_seconds`, `max_msgs` and
+`max_bytes` are added to each row only under `-l`; the daemon does not
+populate them otherwise, so the default agent-facing row keeps exactly the
+eight keys above. `ListRequest.Long` / `ListWatchRequest.Long` carry the flag
+over IPC — the gate is on POPULATION, not rendering.
+
+`ppz subs ls` shares the table renderer but never sets long: it answers "what
+am I subscribed to", not "how is this pipe configured".
+
 ### `ppz terminal share HANDLE [-- CMD ...]`
 Wraps a shell (or `<cmd>`) in a PTY bound to source `HANDLE` (kind=pty;
 auto-creates the source on first use), with `PPZ_CURRENT_HANDLE=<handle>`

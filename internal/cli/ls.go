@@ -52,6 +52,11 @@ func cmdLs(args []string) error {
 	asJSON := fs.Bool("json", false, "emit one JSON object per row (agent-friendly, full payload)")
 	iso := fs.Bool("iso", false, "render last-message column as RFC3339 timestamp instead of relative duration")
 	watch := fs.Bool("watch", false, "block until matching pipes have unread messages, print, then exit")
+	// `-l` after `ls -l`: same rows, extra detail columns. Registered
+	// twice because Go's flag package has no alias mechanism; it treats
+	// one and two dashes identically, so this covers -l/--l/-long/--long.
+	long := fs.Bool("l", false, "long form: add TTL / MAXMSGS / MAXBYTES retention columns")
+	fs.BoolVar(long, "long", false, "alias for -l")
 
 	// Go's flag package stops at the first non-flag argument, so `ls PATTERN
 	// --json` would swallow --json into the pattern list. ls's flags are all
@@ -82,7 +87,7 @@ func cmdLs(args []string) error {
 	// watch on a not-yet-existent pipe still works.
 	var snap cliproto.ListReply
 	if err := daemon.Call(ipcSocket(), cliproto.IPCList,
-		cliproto.ListRequest{Session: sessionID(), Patterns: patterns}, &snap); err != nil {
+		cliproto.ListRequest{Session: sessionID(), Patterns: patterns, Long: *long}, &snap); err != nil {
 		return err
 	}
 	warnLiteralMisses(patterns, snap)
@@ -90,7 +95,7 @@ func cmdLs(args []string) error {
 	reply := snap
 	if *watch {
 		reply = cliproto.ListReply{}
-		req := cliproto.ListWatchRequest{Session: sessionID(), Patterns: patterns}
+		req := cliproto.ListWatchRequest{Session: sessionID(), Patterns: patterns, Long: *long}
 		if err := daemon.CallWait(ipcSocket(), cliproto.IPCListWatch, req, &reply); err != nil {
 			return err
 		}
@@ -99,7 +104,7 @@ func cmdLs(args []string) error {
 	if *asJSON {
 		cliproto.PrintListJSONWithUncollared(os.Stdout, reply.Sources, reply.UncollaredPipes)
 	} else {
-		cliproto.PrintListWithUncollared(os.Stdout, reply.Sources, reply.UncollaredPipes, *iso)
+		cliproto.PrintListWithUncollared(os.Stdout, reply.Sources, reply.UncollaredPipes, *iso, *long)
 	}
 	maybeNotifyUpdate()
 	return nil

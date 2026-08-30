@@ -205,7 +205,9 @@ func printSubsReply(reply cliproto.ListReply, asJSON, iso bool) {
 		cliproto.PrintListJSONWithUncollared(os.Stdout, reply.Sources, reply.UncollaredPipes)
 		return
 	}
-	cliproto.PrintListWithUncollared(os.Stdout, reply.Sources, reply.UncollaredPipes, iso)
+	// long=false: `subs ls` answers "what am I subscribed to", not
+	// "how is this pipe configured". Retention would be noise here.
+	cliproto.PrintListWithUncollared(os.Stdout, reply.Sources, reply.UncollaredPipes, iso, false)
 }
 
 // unreadTargets returns the subscribed pipe targets with unread > 0, sorted
