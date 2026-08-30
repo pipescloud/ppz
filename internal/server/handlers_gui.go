@@ -166,7 +166,7 @@ func (s *Server) handleGUIOrgRedirect(w http.ResponseWriter, r *http.Request) {
 // orgTabs lists the tab keys the GUI knows about. The router registers
 // one route per entry; the handler validates against this set so only
 // valid tabs render.
-var orgTabs = map[string]bool{"pipes": true, "users": true, "keys": true}
+var orgTabs = map[string]bool{"pipes": true, "users": true, "keys": true, "audit": true}
 
 // handleGUIOrgTab dispatches the org page for a given tab. The tab
 // drives which section the template renders, but the same shared
@@ -359,6 +359,25 @@ func (s *Server) handleGUIOrgTab(w http.ResponseWriter, r *http.Request) {
 	// tab. Non-owners see members but not the controls.
 	isOwner := UserIDFromCtx(r.Context()) == org.OwnerUserID
 
+	// The audit tab is owner-only: the trail names people and the API
+	// keys they acted through, which is owner information rather than
+	// something every member of the org should read. Gated here rather
+	// than in the template so a non-owner gets a 403 instead of a page
+	// with a silently empty section.
+	var auditRows []auditRow
+	if tab == "audit" {
+		if !isOwner {
+			http.Error(w, "owner only", http.StatusForbidden)
+			return
+		}
+		events, err := db.ListAuditEventsForAccount(ctx, s.Pool, org.ID, auditPageLimit)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		auditRows = buildAuditRows(ctx, s.Pool, events)
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	data := s.base()
 	data["Org"] = org
@@ -368,6 +387,7 @@ func (s *Server) handleGUIOrgTab(w http.ResponseWriter, r *http.Request) {
 	data["Members"] = members
 	data["PendingInvites"] = pendingInvites
 	data["IsOwner"] = isOwner
+	data["AuditRows"] = auditRows
 	data["ActiveTab"] = tab
 	if err := tmpl.ExecuteTemplate(w, "org.html", data); err != nil {
 		http.Error(w, err.Error(), 500)

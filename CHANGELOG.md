@@ -1,5 +1,109 @@
 # Changelog
 
+## Unreleased — `ppz ls -l` shows pipe retention
+
+**Retention became readable.** `ppz pipe set` could change a pipe's caps but
+nothing could report them back: they were echoed once in the reply line at the
+moment of the change and then invisible. `ppz ls -l` (`--long`, after `ls -l`)
+adds `TTL` / `MAXMSGS` / `MAXBYTES` between `BUFFERED` and `LAST`, so each cap
+sits beside the count it bounds.
+
+- **Values come from the JetStream stream config, not the `pipes` table** —
+  the thing actually enforcing the caps. That is also the only way to answer
+  for auto-provisioned pipes: `inbox` / `stdout` have no row until someone
+  runs `pipe set` on them, yet they are the pipes whose defaults bite first.
+- **No new endpoint and no extra round trip.** The daemon already holds a
+  `*jetstream.StreamInfo` per pipe — `BUFFERED` and `LAST` come from its
+  `State`, and the caps sit in its `Config`.
+- **`--json` is unchanged unless `-l` is given.** Agents parse that output, so
+  adding keys to its default form would be a wire change for every existing
+  consumer. `ttl_seconds` / `max_msgs` / `max_bytes` appear only under `-l`,
+  and the daemon does not populate them otherwise — the gate is on population,
+  not rendering.
+- **Caps render as raw integers**, because `pipe set --max-bytes` parses only
+  integer mantissas: a humanised `1.4MiB` would print a value that fails when
+  pasted back into the command that set it. `TTL` does collapse to `24h` /
+  `5m`, and JetStream's `-1` "unlimited" renders `∞`.
+- **Under `-l` the JSON schema is fixed**, including when a value is 0, so a
+  consumer can tell "long mode, no age limit" from "not long mode".
+- `ppz subs ls` keeps the short table — it answers "what am I subscribed to",
+  not "how is this pipe configured".
+- Note the deliberate flag collision: `-l` is `--long` on `ls` but `--limit`
+  on `read` / `reread`. The `ls -l` spelling is near-universal muscle memory
+  and worth the inconsistency.
+
+## Unreleased — configurable pipe retention (`ppz pipe set`) + audit trail
+
+**Retention is no longer fixed at create time.** `ppz pipe set [HANDLE.]NAME`
+changes an existing pipe's retention, with the same target grammar and the
+same flag names as `ppz pipe create` — one vocabulary, not two:
+
+```
+ppz pipe set chat.archive --max-msgs=500
+ppz pipe set chat.archive --ttl=168h --max-bytes=64MiB
+```
+
+- **Fields you don't name keep their value.** The server merges the request
+  onto the stored row, so `--ttl` doesn't quietly reset a previously
+  configured `--max-msgs` back to the default. Naming no flag at all is an
+  error rather than a silent no-op.
+- **Auto-provisioned pipes are now configurable.** `inbox`, and
+  `stdin`/`stdout`/`stdctrl`/`system`/`heartbeat` on terminals, have no
+  `pipes` row — which is why their caps were previously unreachable, despite
+  being the caps users hit first. `pipe set` materialises a row on first
+  override (stamped with the *source's* creator, so `ppz ls` CREATOR doesn't
+  get reassigned by a retention change).
+- **Lowering a cap discards immediately** — shrinking `--max-msgs` below the
+  retained count drops the oldest messages there and then.
+- The printed line states the pipe's complete retention afterwards, not just
+  what moved: `updated pipe=chat.archive retention=ttl=24h0m0s,msgs=500,bytes=16777216`.
+
+**Bug fix: stream config changes were silently dropped.** Stream provisioning
+called `CreateStream` and swallowed `ErrStreamNameAlreadyInUse`, so
+re-provisioning an existing stream with a different config did nothing. Any
+retention change to a live pipe was a no-op, and bumping the built-in defaults
+never reached streams already in existence. Now `CreateOrUpdateStream`.
+
+**Bug fix: re-provisioning silently reverted a `pipe set`.** The switch to
+`CreateOrUpdateStream` cuts both ways: any path that re-provisions at the
+*built-in defaults* now overwrites a tuned stream instead of no-opping on it.
+Bare `ppz terminal share` re-provisions the whole pty pipe set on every
+invocation, so a configured `chat.inbox` went back to 5000 messages while
+postgres went on reporting 3. Source creation, the pty promotion and account
+(re)open now share one override-aware provisioning helper, and the
+defaults-only one is gone rather than left around as a footgun.
+
+**Bug fix: `ppz pipe destroy '*'` could destroy a terminal's control plane.**
+The glob-expansion skip list was missing `system` and `heartbeat`, two names
+`Source.Pipes()` genuinely auto-provisions. Previously unreachable (nothing
+could put those names in the user-pipe list); `pipe set` made it reachable.
+
+**Retention resolution now lives in one place.** `resolveRetention` takes
+layers highest-precedence-first and resolves each field independently, so a
+pipe overriding only `max-msgs` still inherits the default TTL. This replaces
+three open-coded nil-check ladders, and makes org/account-level defaults a new
+layer rather than a rewrite at every call site.
+
+**New: audit trail, on an owner-only org tab.** `/orgs/<slug>/audit` shows a
+newest-first log of pipe lifecycle mutations — `pipe.create`, `pipe.set`,
+`pipe.destroy` — with the change rendered as a delta (`msgs 5000 → 5`) rather
+than a bare "something changed".
+
+- Backed by a generic `audit_events` table (migration `0006`): actor, action,
+  target, before/after jsonb. Pipe actions are its first writers; key revoke,
+  member removal and source destroy fit the same row shape.
+- **Actor attribution is honest about its limits.** On the API-key path the
+  server knows only the key's *creator*, not who typed the command, so a
+  shared org key attributes every change to whoever minted it. Rows record the
+  key id and render `via api-key` vs `via web` so they aren't read as stronger
+  evidence than they are.
+- Covers both the collared (`/sources/{handle}/pipes/...`) and the uncollared
+  (`/pipes`) endpoints, so an uncollared `pipe destroy` leaves a trail too.
+- **Known gaps:** audit writes are best-effort (a failed insert is logged, not
+  surfaced, because the mutation has already committed); the table has no
+  retention policy yet; and `via web` is not yet reachable, since retention is
+  currently only mutable from the CLI.
+
 ## Unreleased — once-only `.stdin` delivery (no command replay on resume)
 
 **Bug fix (`ppz terminal share`).** A `ppz command` that a pty session

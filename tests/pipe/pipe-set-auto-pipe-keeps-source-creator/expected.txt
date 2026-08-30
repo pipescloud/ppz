@@ -1,0 +1,2 @@
+{"handle":"chat","pipe":"inbox","creator":"foo"}
+exit=0

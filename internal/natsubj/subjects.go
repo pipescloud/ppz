@@ -51,14 +51,31 @@ var ValidPipes = map[string]bool{
 // AutoProvisionedPipes covers pipes the server creates automatically for
 // sources. Some are also allowed via user pipe creation (`stdin`, `stdout`,
 // `stdctrl` for terminal sharing); `inbox` remains reserved from manual
-// creation even though it is provisioned automatically. The set is here for
-// documentation + the daemon's ls dedupe.
+// creation even though it is provisioned automatically.
+//
+// MUST stay in sync with db.Source.Pipes(), which is the actual
+// provisioning truth. The consumer is `ppz pipe destroy` glob expansion,
+// which skips these names so a wildcard destroy can't decapitate a live
+// source — deleting a terminal's `system` (write-lease control plane) or
+// `stdout` leaves the source apparently alive but broken.
+//
+// `system` and `heartbeat` were missing here until `ppz pipe set` landed.
+// The gap was unreachable before: nothing could put those names in the
+// user-pipe list the glob walks, because `system` is reserved from
+// `pipe create`. `pipe set` materialises a pipes row for auto-pipes on
+// first retention override, which does surface them there.
+//
+// `broadcast` is retained though Phase 1 removed it (locked decision
+// #16) — old rows may still name it, and skipping a name that no longer
+// exists costs nothing.
 var AutoProvisionedPipes = map[string]bool{
 	"broadcast": true,
 	"inbox":     true,
 	"stdin":     true,
 	"stdout":    true,
 	"stdctrl":   true,
+	"system":    true,
+	"heartbeat": true,
 }
 
 // ReservedPipeNames are names blocked from user pipe creation. Reserved

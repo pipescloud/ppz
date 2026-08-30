@@ -35,10 +35,10 @@ func TestCmdLs_PatternsForwardToList(t *testing.T) {
 		t.Fatalf("cmdLs with pattern arg: %v (want filtered list, not error)", err)
 	}
 
-	if requests.count() != 1 {
-		t.Fatalf("IPCList request count = %d, want 1", requests.count())
+	if requests.lists.count() != 1 {
+		t.Fatalf("IPCList request count = %d, want 1", requests.lists.count())
 	}
-	got := requests.at(0)
+	got := requests.lists.at(0)
 	if len(got.Patterns) != 1 || got.Patterns[0] != "clancy%" {
 		t.Fatalf("ListRequest.Patterns = %v, want [clancy%%]", got.Patterns)
 	}
@@ -61,11 +61,11 @@ func TestCmdLs_NoArgsSendsEmptyPatterns(t *testing.T) {
 	if err := cmdLs(nil); err != nil {
 		t.Fatalf("cmdLs no args: %v", err)
 	}
-	if requests.count() != 1 {
-		t.Fatalf("IPCList request count = %d, want 1", requests.count())
+	if requests.lists.count() != 1 {
+		t.Fatalf("IPCList request count = %d, want 1", requests.lists.count())
 	}
-	if len(requests.at(0).Patterns) != 0 {
-		t.Fatalf("ListRequest.Patterns = %v, want empty", requests.at(0).Patterns)
+	if len(requests.lists.at(0).Patterns) != 0 {
+		t.Fatalf("ListRequest.Patterns = %v, want empty", requests.lists.at(0).Patterns)
 	}
 }
 
@@ -90,25 +90,34 @@ func TestCmdLs_FlagAfterPattern(t *testing.T) {
 		t.Fatalf("cmdLs pattern then flag: %v", err)
 	}
 
-	if requests.count() != 1 {
-		t.Fatalf("IPCList request count = %d, want 1", requests.count())
+	if requests.lists.count() != 1 {
+		t.Fatalf("IPCList request count = %d, want 1", requests.lists.count())
 	}
 	// The flag must not leak into the pattern list: only the glob is a
 	// pattern. If --json is present here, flag parsing stopped early.
-	got := requests.at(0)
+	got := requests.lists.at(0)
 	if len(got.Patterns) != 1 || got.Patterns[0] != "*.heartbeat" {
 		t.Fatalf("ListRequest.Patterns = %v, want [*.heartbeat] (flag leaked into patterns?)", got.Patterns)
 	}
 }
 
-func serveLsListDaemon(t *testing.T, sock string) *recorder[cliproto.ListRequest] {
+// lsDaemonRequests records both verbs `ppz ls` can issue: the snapshot
+// (IPCList) and, under --watch, the blocking form (IPCListWatch). They
+// carry the same flags and must not drift — a flag set on one and
+// forgotten on the other renders headers with no data behind them.
+type lsDaemonRequests struct {
+	lists   recorder[cliproto.ListRequest]
+	watches recorder[cliproto.ListWatchRequest]
+}
+
+func serveLsListDaemon(t *testing.T, sock string) *lsDaemonRequests {
 	t.Helper()
 	_ = os.Remove(sock)
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen fake daemon: %v", err)
 	}
-	listRequests := &recorder[cliproto.ListRequest]{}
+	requests := &lsDaemonRequests{}
 	done := make(chan struct{})
 	t.Cleanup(func() { <-done })
 	t.Cleanup(func() {
@@ -131,10 +140,18 @@ func serveLsListDaemon(t *testing.T, sock string) *recorder[cliproto.ListRequest
 				_ = conn.Close()
 				continue
 			}
-			if req.Method == cliproto.IPCList {
+			switch req.Method {
+			case cliproto.IPCList:
 				var lr cliproto.ListRequest
 				_ = json.Unmarshal(req.Params, &lr)
-				listRequests.add(lr)
+				requests.lists.add(lr)
+				_ = json.NewEncoder(conn).Encode(map[string]any{
+					"result": cliproto.ListReply{},
+				})
+			case cliproto.IPCListWatch:
+				var lw cliproto.ListWatchRequest
+				_ = json.Unmarshal(req.Params, &lw)
+				requests.watches.add(lw)
 				_ = json.NewEncoder(conn).Encode(map[string]any{
 					"result": cliproto.ListReply{},
 				})
@@ -143,5 +160,5 @@ func serveLsListDaemon(t *testing.T, sock string) *recorder[cliproto.ListRequest
 		}
 	}()
 
-	return listRequests
+	return requests
 }

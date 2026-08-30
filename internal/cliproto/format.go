@@ -321,6 +321,20 @@ func PrintPipeCreate(w io.Writer, r PipeCreateReply) {
 		FormatPipePath(r.Manifold, r.Handle, r.Name), dur.String(), r.MaxMsgs, r.MaxBytes)
 }
 
+// PrintPipeSet prints the pinned line:
+//
+//	updated pipe=<PATH> retention=ttl=<dur>,msgs=<n>,bytes=<b>
+//
+// Deliberately the same line as PrintPipeCreate with the verb swapped:
+// both commands answer "what does this pipe retain now?", so reading
+// either should take the same glance. The retention shown is the fully
+// resolved triple, not just the field the user changed.
+func PrintPipeSet(w io.Writer, r PipeSetReply) {
+	dur := time.Duration(r.TTLSeconds) * time.Second
+	fmt.Fprintf(w, "updated pipe=%s retention=ttl=%s,msgs=%d,bytes=%d\n",
+		FormatPipePath(r.Manifold, r.Handle, r.Name), dur.String(), r.MaxMsgs, r.MaxBytes)
+}
+
 // FormatPipePath renders the four-role pipe path for user display, with
 // empty slots omitted. Used by PrintPipeCreate, PrintPipeDestroy, and the
 // `to=` field of send output.
@@ -384,6 +398,50 @@ type listRow struct {
 	last       string // either RFC3339, relative duration, or "-"
 	payload    string // truncated preview (already includes "…" if cut)
 	creator    string // username; PipeInfo.CreatedBy ?? Source.CreatedBy
+	// Retention cells, rendered only in long mode (`ppz ls -l`) and
+	// empty otherwise. Pre-formatted here so writeListTable stays a
+	// pure layout function.
+	ttl      string
+	maxMsgs  string
+	maxBytes string
+}
+
+// formatTTLColumn renders a TTL for the table. time.Duration's own
+// String() gives "24h0m0s" — three columns of noise in a view whose
+// point is scanning caps at a glance — so whole hours/minutes collapse
+// to "24h" / "5m". 0 means no age limit and renders "-".
+func formatTTLColumn(secs int) string {
+	if secs <= 0 {
+		return "-"
+	}
+	d := time.Duration(secs) * time.Second
+	switch {
+	case d%time.Hour == 0:
+		return fmt.Sprintf("%dh", int64(d/time.Hour))
+	case d%time.Minute == 0:
+		return fmt.Sprintf("%dm", int64(d/time.Minute))
+	}
+	return d.String()
+}
+
+// formatCapColumn renders a message/byte cap. JetStream spells
+// "unlimited" as -1; showing that verbatim reads as a number in a column
+// of numbers, so it becomes "∞". Values stay RAW integers otherwise —
+// `pipe set --max-bytes` only parses integer mantissas, so a humanised
+// "1.4MiB" would print a value that fails when pasted back.
+func formatCapColumn(v int64) string {
+	if v < 0 {
+		return "∞"
+	}
+	if v == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%d", v)
+}
+
+// retentionCells lifts a PipeInfo's retention into its three cells.
+func retentionCells(p PipeInfo) (string, string, string) {
+	return formatTTLColumn(p.TTLSeconds), formatCapColumn(p.MaxMsgs), formatCapColumn(p.MaxBytes)
 }
 
 // namespaceColumn renders a manifold for the NAMESPACE column: empty
@@ -404,7 +462,7 @@ func namespaceColumn(manifold string) string {
 // trailing un-padded, but CREATOR now needs vertical alignment so PAYLOAD
 // pads to its widest preview — bounded at 60 chars by TruncatePayload).
 func PrintList(w io.Writer, sources []Source, iso bool) {
-	PrintListWithUncollared(w, sources, nil, iso)
+	PrintListWithUncollared(w, sources, nil, iso, false)
 }
 
 // PrintListWithUncollared renders the same table as PrintList but also
@@ -413,12 +471,15 @@ func PrintList(w io.Writer, sources []Source, iso bool) {
 // NAMESPACE owns the manifold for both row shapes; PIPE carries only
 // `<handle>.<pipe>` (collared) or `<pipe>` (uncollared) — the manifold
 // prefix never appears in PIPE.
-func PrintListWithUncollared(w io.Writer, sources []Source, uncollared []UncollaredPipe, iso bool) {
+// long=true adds the TTL / MAXMSGS / MAXBYTES detail columns, the
+// `ls -l` form. They sit immediately after BUFFERED so each cap is
+// beside the count it bounds.
+func PrintListWithUncollared(w io.Writer, sources []Source, uncollared []UncollaredPipe, iso bool, long bool) {
 	now := timeNow()
 	rows := make([]listRow, 0)
 	for _, s := range sources {
 		for _, p := range s.PipeInfos {
-			rows = append(rows, listRow{
+			row := listRow{
 				namespace:  namespaceColumn(s.Manifold),
 				pipeColumn: FormatPipePath("", s.Handle, p.Pipe),
 				unread:     p.Unread,
@@ -426,11 +487,15 @@ func PrintListWithUncollared(w io.Writer, sources []Source, uncollared []Uncolla
 				last:       lastColumn(p.LastAt, now, iso),
 				payload:    payloadColumn(p.Preview),
 				creator:    humanColumn(p.CreatedBy, s.CreatedBy),
-			})
+			}
+			if long {
+				row.ttl, row.maxMsgs, row.maxBytes = retentionCells(p)
+			}
+			rows = append(rows, row)
 		}
 	}
 	for _, p := range uncollared {
-		rows = append(rows, listRow{
+		row := listRow{
 			namespace:  namespaceColumn(p.Manifold),
 			pipeColumn: FormatPipePath("", "", p.Name),
 			unread:     p.Info.Unread,
@@ -438,9 +503,13 @@ func PrintListWithUncollared(w io.Writer, sources []Source, uncollared []Uncolla
 			last:       lastColumn(p.Info.LastAt, now, iso),
 			payload:    payloadColumn(p.Info.Preview),
 			creator:    p.Info.CreatedBy,
-		})
+		}
+		if long {
+			row.ttl, row.maxMsgs, row.maxBytes = retentionCells(p.Info)
+		}
+		rows = append(rows, row)
 	}
-	writeListTable(w, rows)
+	writeListTable(w, rows, long)
 }
 
 // PrintListJSON emits one JSON object per (source, pipe) row in the same
@@ -451,7 +520,7 @@ func PrintListWithUncollared(w io.Writer, sources []Source, uncollared []Uncolla
 // `creator` carries the same username the table shows: pipe-level if set,
 // otherwise the source's creator (auto-pipe inheritance).
 func PrintListJSON(w io.Writer, sources []Source) {
-	PrintListJSONWithUncollared(w, sources, nil)
+	PrintListJSONWithUncollared(w, sources, nil, false)
 }
 
 // PrintListJSONWithUncollared is the JSON variant including uncollared
@@ -459,7 +528,28 @@ func PrintListJSON(w io.Writer, sources []Source) {
 // (empty string for root) and mirrors the NAMESPACE table column —
 // present on every row shape so JSON consumers don't have to special-
 // case collared vs uncollared.
-func PrintListJSONWithUncollared(w io.Writer, sources []Source, uncollared []UncollaredPipe) {
+// addRetentionJSON adds the retention keys to a `ls --json` row.
+//
+// All three or none, keyed off `long` rather than off whether each value
+// happens to be non-zero. Gating per-field would make the schema depend
+// on the DATA: a pipe with no age limit (TTL 0) would silently drop
+// `ttl_seconds`, leaving a consumer unable to tell "long mode, no age
+// limit" from "not long mode". Under -l the schema is fixed, which is
+// what makes it parseable; without it the keys are absent entirely, so
+// the default agent-facing row is unchanged.
+func addRetentionJSON(obj map[string]any, p PipeInfo, long bool) {
+	if !long {
+		return
+	}
+	obj["ttl_seconds"] = p.TTLSeconds
+	obj["max_msgs"] = p.MaxMsgs
+	obj["max_bytes"] = p.MaxBytes
+}
+
+// long=true adds ttl_seconds / max_msgs / max_bytes to every row. Absent
+// it, the row keeps exactly the keys it had before retention existed —
+// agents parse this output, so its default form is a fixed contract.
+func PrintListJSONWithUncollared(w io.Writer, sources []Source, uncollared []UncollaredPipe, long bool) {
 	for _, s := range sources {
 		for _, p := range s.PipeInfos {
 			obj := map[string]any{
@@ -471,6 +561,7 @@ func PrintListJSONWithUncollared(w io.Writer, sources []Source, uncollared []Unc
 				"payload":   p.Payload,
 				"creator":   humanColumn(p.CreatedBy, s.CreatedBy),
 			}
+			addRetentionJSON(obj, p, long)
 			if p.LastAt != nil {
 				obj["last_at"] = p.LastAt.UTC().Format(time.RFC3339)
 			} else {
@@ -490,6 +581,7 @@ func PrintListJSONWithUncollared(w io.Writer, sources []Source, uncollared []Unc
 			"payload":   p.Info.Payload,
 			"creator":   p.Info.CreatedBy,
 		}
+		addRetentionJSON(obj, p.Info, long)
 		if p.Info.LastAt != nil {
 			obj["last_at"] = p.Info.LastAt.UTC().Format(time.RFC3339)
 		} else {
@@ -792,43 +884,61 @@ func truncateForColumn(s string, maxCols int) string {
 //
 // Empty input → empty output (no orphan header). Matches the convention
 // where `ls` for an empty namespace just prints nothing.
-func writeListTable(w io.Writer, rows []listRow) {
+// writeListTable lays out the rows. Column set is data-driven rather
+// than hardcoded so the long form's three extra columns reuse the same
+// width budgeting: every column sizes to its widest cell, LAST carries an
+// anti-drift minimum, PAYLOAD is the elastic one that absorbs whatever
+// the terminal has left, and CREATOR is rightmost and un-padded.
+func writeListTable(w io.Writer, rows []listRow, long bool) {
 	if len(rows) == 0 {
 		return
 	}
-	headers := []string{"NAMESPACE", "PIPE", "UNREAD", "BUFFERED", "LAST", "PAYLOAD", "CREATOR"}
-	// widths covers the 6 padded columns: NAMESPACE, PIPE, UNREAD,
-	// BUFFERED, LAST, PAYLOAD. CREATOR is the rightmost (un-padded)
-	// column and gets sized separately for the width-budget math.
-	widths := []int{len(headers[0]), len(headers[1]), len(headers[2]), len(headers[3]), len(headers[4]), len(headers[5])}
-	unreads := make([]string, len(rows))
-	buffereds := make([]string, len(rows))
-	creatorMax := len(headers[6])
+	headers := []string{"NAMESPACE", "PIPE", "UNREAD", "BUFFERED"}
+	if long {
+		headers = append(headers, "TTL", "MAXMSGS", "MAXBYTES")
+	}
+	headers = append(headers, "LAST", "PAYLOAD", "CREATOR")
+
+	cells := make([][]string, len(rows))
 	for i, r := range rows {
-		unreads[i] = fmt.Sprintf("%d", r.unread)
-		buffereds[i] = fmt.Sprintf("%d", r.buffered)
-		if w := dispWidth(r.namespace); w > widths[0] {
-			widths[0] = w
+		c := []string{r.namespace, r.pipeColumn, fmt.Sprintf("%d", r.unread), fmt.Sprintf("%d", r.buffered)}
+		if long {
+			c = append(c, r.ttl, r.maxMsgs, r.maxBytes)
 		}
-		if w := dispWidth(r.pipeColumn); w > widths[1] {
-			widths[1] = w
-		}
-		if w := dispWidth(unreads[i]); w > widths[2] {
-			widths[2] = w
-		}
-		if w := dispWidth(buffereds[i]); w > widths[3] {
-			widths[3] = w
-		}
-		if w := dispWidth(r.last); w > widths[4] {
-			widths[4] = w
-		}
-		if w := dispWidth(r.payload); w > widths[5] {
-			widths[5] = w
-		}
-		if w := dispWidth(r.creator); w > creatorMax {
-			creatorMax = w
+		cells[i] = append(c, r.last, r.payload, r.creator)
+	}
+
+	// The three trailing columns are positional, not fixed indices: the
+	// long form shifts them right by three.
+	n := len(headers)
+	lastIdx, payloadIdx, creatorIdx := n-3, n-2, n-1
+
+	widths := make([]int, n)
+	for i, h := range headers {
+		widths[i] = len(h)
+	}
+	for _, c := range cells {
+		for i, v := range c {
+			if dw := dispWidth(v); dw > widths[i] {
+				widths[i] = dw
+			}
 		}
 	}
+
+	const sep = 2
+	separators := sep * (n - 1)
+	// totalExcept sums every column width but one, substituting `sub`
+	// for the excluded column.
+	totalExcept := func(idx, sub int) int {
+		total := separators + sub
+		for i, wd := range widths {
+			if i != idx {
+				total += wd
+			}
+		}
+		return total
+	}
+
 	// Pin a minimum LAST width so common relative-time rollovers
 	// ("9 minutes ago" → "10 minutes ago", "1 hour ago" → "2 hours ago")
 	// don't visibly drift PAYLOAD/CREATOR rightward between successive
@@ -840,16 +950,10 @@ func writeListTable(w io.Writer, rows []listRow) {
 	// width — anti-drift is a "nice to have" that shouldn't push rows
 	// off-screen on small windows.
 	const lastMinWidth = 14
-	// fixed overhead: sum of all padded column widths + 6 two-char
-	// separators between the 7 columns = +12.
-	const sep = 2
-	separators := sep * (len(headers) - 1)
-	if widths[4] < lastMinWidth {
-		proposed := widths[0] + widths[1] + widths[2] + widths[3] + lastMinWidth + widths[5] + creatorMax + separators
-		if proposed <= TerminalWidth() {
-			widths[4] = lastMinWidth
-		}
+	if widths[lastIdx] < lastMinWidth && totalExcept(lastIdx, lastMinWidth) <= TerminalWidth() {
+		widths[lastIdx] = lastMinWidth
 	}
+
 	// Cap the PAYLOAD column to fit the caller's terminal width. The
 	// other columns are sized to their data — payload is the elastic
 	// one. Anything left over after the fixed-width columns + separators
@@ -857,32 +961,25 @@ func writeListTable(w io.Writer, rows []listRow) {
 	// terminal vs wide handles), leave payload at its natural width —
 	// the row will overflow rather than corrupting alignment of the
 	// inner columns.
-	fixedOverhead := widths[0] + widths[1] + widths[2] + widths[3] + widths[4] + creatorMax + separators
-	if budget := TerminalWidth() - fixedOverhead; budget > 0 && budget < widths[5] {
-		widths[5] = budget
-		for i := range rows {
-			rows[i].payload = truncateForColumn(rows[i].payload, budget)
+	if budget := TerminalWidth() - totalExcept(payloadIdx, 0); budget > 0 && budget < widths[payloadIdx] {
+		widths[payloadIdx] = budget
+		for i := range cells {
+			cells[i][payloadIdx] = truncateForColumn(cells[i][payloadIdx], budget)
 		}
 	}
-	fmt.Fprintf(w, "%s  %s  %s  %s  %s  %s  %s\n",
-		padRightDisp(headers[0], widths[0]),
-		padRightDisp(headers[1], widths[1]),
-		padRightDisp(headers[2], widths[2]),
-		padRightDisp(headers[3], widths[3]),
-		padRightDisp(headers[4], widths[4]),
-		padRightDisp(headers[5], widths[5]),
-		headers[6],
-	)
-	for i, r := range rows {
-		fmt.Fprintf(w, "%s  %s  %s  %s  %s  %s  %s\n",
-			padRightDisp(r.namespace, widths[0]),
-			padRightDisp(r.pipeColumn, widths[1]),
-			padRightDisp(unreads[i], widths[2]),
-			padRightDisp(buffereds[i], widths[3]),
-			padRightDisp(r.last, widths[4]),
-			padRightDisp(r.payload, widths[5]),
-			r.creator,
-		)
+
+	writeRow := func(cells []string) {
+		for i, v := range cells {
+			if i == creatorIdx {
+				fmt.Fprintf(w, "%s\n", v)
+				continue
+			}
+			fmt.Fprintf(w, "%s  ", padRightDisp(v, widths[i]))
+		}
+	}
+	writeRow(headers)
+	for _, c := range cells {
+		writeRow(c)
 	}
 }
 

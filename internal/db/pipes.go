@@ -26,10 +26,14 @@ type Pipe struct {
 	SourceID        *uuid.UUID // nil for uncollared (sourceless) pipes
 	CreatedByUserID uuid.UUID  // user that created the pipe (NOT NULL)
 	Name            string
-	TTLSeconds      *int   // nil = use server default (86400 s)
-	MaxMsgs         *int   // nil = use server default (1000)
-	MaxBytes        *int64 // nil = use server default (64 MiB)
-	CreatedAt       time.Time
+	// Retention overrides. nil = no opinion at this layer; the server
+	// resolves the field from the next layer down (account default, then
+	// the built-in default) — see resolveRetention in internal/server.
+	// Concrete defaults live there, not here, so they can't drift.
+	TTLSeconds *int
+	MaxMsgs    *int
+	MaxBytes   *int64
+	CreatedAt  time.Time
 }
 
 // ErrPipeNameTaken — uniqueness collision on insert. The partial UNIQUE
@@ -102,6 +106,112 @@ func GetPipeByName(ctx context.Context, p *Pool, sourceID uuid.UUID, name string
 		return Pipe{}, ErrNotFound
 	}
 	return pipe, err
+}
+
+// GetUncollaredPipeByName returns one sourceless pipe row addressed the
+// uncollared way — (account, manifold, name) — or ErrNotFound.
+// GetPipeByName only covers the collared shape (keyed on source_id),
+// which uncollared pipes don't have.
+func GetUncollaredPipeByName(ctx context.Context, p *Pool, accountID uuid.UUID, manifold, name string) (Pipe, error) {
+	var pipe Pipe
+	err := p.QueryRow(ctx,
+		`SELECT id, account_id, manifold, source_id, created_by_user_id, name, ttl_seconds, max_msgs, max_bytes, created_at
+		   FROM pipes WHERE account_id = $1 AND manifold = $2 AND name = $3 AND source_id IS NULL`,
+		accountID, manifold, name).
+		Scan(&pipe.ID, &pipe.AccountID, &pipe.Manifold, &pipe.SourceID, &pipe.CreatedByUserID, &pipe.Name,
+			&pipe.TTLSeconds, &pipe.MaxMsgs, &pipe.MaxBytes, &pipe.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Pipe{}, ErrNotFound
+	}
+	return pipe, err
+}
+
+// UpdatePipeRetention writes the retention triple for an existing row.
+//
+// It takes the FULL triple, not a partial patch: a nil arg stores NULL
+// (i.e. drops the field back to the default layer), it does not mean
+// "leave the column alone". Merging a partial request onto the stored
+// row belongs to the caller — the caller needs the old row anyway to
+// echo the resolved retention back, and keeping the merge out of SQL
+// means exactly one place decides precedence.
+func UpdatePipeRetention(ctx context.Context, p *Pool, id uuid.UUID, ttl *int, maxMsgs *int, maxBytes *int64) error {
+	tag, err := p.Exec(ctx,
+		`UPDATE pipes SET ttl_seconds = $2, max_msgs = $3, max_bytes = $4 WHERE id = $1`,
+		id, ttl, maxMsgs, maxBytes)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpsertPipeRetention stores retention for a pipe that may not have a
+// row yet. This is what makes AUTO-PROVISIONED pipes (inbox, and
+// stdin/stdout/stdctrl/system/heartbeat on pty sources) configurable:
+// they're JetStream-only by design, so there was previously nowhere to
+// persist an override — and they're precisely the pipes whose default
+// caps users hit first.
+//
+// Materialising a row rather than adding a parallel overrides table
+// keeps one resolution path (nil column = default), and every reader
+// already unions auto-pipe names with table rows through a set, so a
+// materialised row does not double-list in `ppz ls` or the org page.
+//
+// Distinct from InsertPipe because it must be reachable for reserved
+// names, which InsertPipe's callers gate on. It is NOT a create path:
+// callers verify the pipe exists (as a row or as an auto-pipe of the
+// source) before calling.
+func UpsertPipeRetention(ctx context.Context, p *Pool, accountID uuid.UUID, manifold string, sourceID *uuid.UUID, createdBy uuid.UUID, name string, ttl *int, maxMsgs *int, maxBytes *int64) (Pipe, error) {
+	pipe := Pipe{
+		ID:              uuid.New(),
+		AccountID:       accountID,
+		Manifold:        manifold,
+		SourceID:        sourceID,
+		CreatedByUserID: createdBy,
+		Name:            name,
+		TTLSeconds:      ttl,
+		MaxMsgs:         maxMsgs,
+		MaxBytes:        maxBytes,
+		CreatedAt:       time.Now().UTC(),
+	}
+	// The uniqueness constraints are partial indexes split by shape
+	// (collared vs uncollared), so there is no single ON CONFLICT target
+	// that covers both. Try the update first, insert when it matches
+	// nothing.
+	var tag pgconn.CommandTag
+	var err error
+	if sourceID != nil {
+		tag, err = p.Exec(ctx,
+			`UPDATE pipes SET ttl_seconds = $3, max_msgs = $4, max_bytes = $5
+			   WHERE source_id = $1 AND name = $2`,
+			*sourceID, name, ttl, maxMsgs, maxBytes)
+	} else {
+		tag, err = p.Exec(ctx,
+			`UPDATE pipes SET ttl_seconds = $4, max_msgs = $5, max_bytes = $6
+			   WHERE account_id = $1 AND manifold = $2 AND name = $3 AND source_id IS NULL`,
+			accountID, manifold, name, ttl, maxMsgs, maxBytes)
+	}
+	if err != nil {
+		return Pipe{}, err
+	}
+	if tag.RowsAffected() > 0 {
+		if sourceID != nil {
+			return GetPipeByName(ctx, p, *sourceID, name)
+		}
+		return GetUncollaredPipeByName(ctx, p, accountID, manifold, name)
+	}
+
+	_, err = p.Exec(ctx,
+		`INSERT INTO pipes (id, account_id, manifold, source_id, created_by_user_id, name, ttl_seconds, max_msgs, max_bytes, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		pipe.ID, pipe.AccountID, pipe.Manifold, pipe.SourceID, pipe.CreatedByUserID, pipe.Name,
+		pipe.TTLSeconds, pipe.MaxMsgs, pipe.MaxBytes, pipe.CreatedAt)
+	if err != nil {
+		return Pipe{}, err
+	}
+	return pipe, nil
 }
 
 // DeletePipe removes the row. Returns ErrNotFound when (source, name) doesn't

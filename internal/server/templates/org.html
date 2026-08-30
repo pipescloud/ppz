@@ -27,6 +27,10 @@
          class="{{if eq .ActiveTab "users"}}active{{end}}">Users</a>
       <a data-tab="keys"  href="/orgs/{{.Org.Name}}/keys"
          class="{{if eq .ActiveTab "keys"}}active{{end}}">API keys</a>
+      {{if .IsOwner}}
+      <a data-tab="audit" href="/orgs/{{.Org.Name}}/audit"
+         class="{{if eq .ActiveTab "audit"}}active{{end}}">Audit</a>
+      {{end}}
     </nav>
 
     {{if eq .ActiveTab "pipes"}}
@@ -161,6 +165,41 @@
         <label>Label <input name="label" required></label>
         <button type="submit">Create key</button>
       </form>
+    </section>
+    {{end}}
+
+    {{if eq .ActiveTab "audit"}}
+    <section id="section-audit">
+      {{if .AuditRows}}
+      <div class="table-scroll">
+      <table id="audit">
+        <thead>
+          <tr><th>when</th><th>action</th><th>target</th><th>change</th><th>actor</th></tr>
+        </thead>
+        <tbody>
+          {{range .AuditRows}}
+          <tr data-audit-action="{{.Action}}"
+              data-audit-target="{{.Target}}"
+              data-audit-actor="{{.Actor}}"
+              data-audit-via="{{.Via}}"
+              data-audit-delta="{{.Delta}}">
+            <td data-cell="when" class="cell-nowrap"><small>{{.When}}</small></td>
+            <td data-cell="action" class="cell-nowrap"><code>{{.Action}}</code></td>
+            <td data-cell="target" class="cell-nowrap"><code>{{.Target}}</code></td>
+            <td data-cell="delta">{{if .Delta}}{{.Delta}}{{else}}<span class="empty">—</span>{{end}}</td>
+            <td data-cell="actor" class="cell-nowrap">
+              {{.Actor}}
+              <small>· via {{.Via}}</small>
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      </div>
+      <p class="empty"><small>Actions taken with an API key are attributed to the key&#39;s creator — the server cannot know who typed the command, so a shared key names whoever minted it.</small></p>
+      {{else}}
+      <p class="empty">No audited actions yet.</p>
+      {{end}}
     </section>
     {{end}}
   </main>

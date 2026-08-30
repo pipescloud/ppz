@@ -774,6 +774,62 @@ func (d *Daemon) handlePipeCreate(ctx context.Context, conn net.Conn, params jso
 	writeIPC(conn, reply)
 }
 
+// handlePipeSet proxies `ppz pipe set` to the server.
+//
+// Makes the same collared/uncollared routing decision as handlePipeCreate
+// — the request SHAPE decides, not a parsed path string — and stamps the
+// session's current namespace onto an unset Manifold so `ppz set
+// namespace` applies here exactly as it does to create.
+func (d *Daemon) handlePipeSet(ctx context.Context, conn net.Conn, params json.RawMessage) {
+	var req cliproto.PipeSetRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		writeIPCErr(conn, &cliproto.Error{Code: "E_PROTOCOL", Message: err.Error()})
+		return
+	}
+	if _, ok := d.State.Credentials(); !ok {
+		writeIPCErr(conn, cliproto.New(cliproto.ENotLoggedIn))
+		return
+	}
+	// Regex-only: unlike create, `pipe set` legitimately targets reserved
+	// auto-pipes (inbox, stdout) — they are the ones whose default caps
+	// users hit first, and they can never be reached through create.
+	if err := natsubj.ValidatePipe(req.Name); err != nil {
+		writeIPCErr(conn, cliproto.NewInvalidPipeName(req.Name))
+		return
+	}
+
+	collared := req.Handle != "" || (req.SourceHandle != nil && *req.SourceHandle != "")
+
+	if req.Manifold == "" {
+		req.Manifold = d.State.CurrentNamespace(req.Session)
+	}
+	// Don't leak the session field to the server — it's daemon-side only.
+	req.Session = ""
+
+	var reply cliproto.PipeSetReply
+	if collared {
+		handle := req.Handle
+		if req.SourceHandle != nil && *req.SourceHandle != "" {
+			handle = *req.SourceHandle
+		}
+		if err := natsubj.ValidateHandle(handle); err != nil {
+			writeIPCErr(conn, cliproto.New(cliproto.EInvalidHandle))
+			return
+		}
+		req.Handle = handle
+		if e := d.callServer(ctx, "PATCH", "/api/v1/sources/"+handle+"/pipes/"+req.Name, req, &reply); e != nil {
+			writeIPCErr(conn, e)
+			return
+		}
+	} else {
+		if e := d.callServer(ctx, "PATCH", "/api/v1/pipes", req, &reply); e != nil {
+			writeIPCErr(conn, e)
+			return
+		}
+	}
+	writeIPC(conn, reply)
+}
+
 // handleSourceDestroy proxies `ppz source destroy HANDLE` to the server.
 // On success it clears every session whose current equals the destroyed
 // handle and removes it from the known-pipes cache.
@@ -1352,7 +1408,7 @@ func (d *Daemon) handleList(ctx context.Context, conn net.Conn, params json.RawM
 			writeIPCErr(conn, &cliproto.Error{Code: "E_INTERNAL", Message: "bad org id"})
 			return
 		}
-		reply, e := d.buildFilteredList(ctx, accountID, req.Session, req.Patterns)
+		reply, e := d.buildFilteredList(ctx, accountID, req.Session, req.Patterns, req.Long)
 		if e != nil {
 			writeIPCErr(conn, e)
 			return
@@ -1389,7 +1445,7 @@ func (d *Daemon) handleList(ctx context.Context, conn net.Conn, params json.RawM
 		return
 	}
 
-	enriched, err := enrichSourcesWithPipeInfo(ctx, js, lr.Sources, accountID, req.Session, nil, cursorSnapshot(d.Cursors, req.Session))
+	enriched, err := enrichSourcesWithPipeInfo(ctx, js, lr.Sources, accountID, req.Session, nil, cursorSnapshot(d.Cursors, req.Session), req.Long)
 	if err != nil {
 		writeIPCErr(conn, cliproto.New(cliproto.ENATSUnreachable))
 		return
@@ -1405,7 +1461,7 @@ func (d *Daemon) handleList(ctx context.Context, conn net.Conn, params json.RawM
 	}
 	uncollared := make([]cliproto.UncollaredPipe, 0, len(ucReply.Pipes))
 	for _, p := range ucReply.Pipes {
-		info := uncollaredPipeInfo(ctx, js, accountID, p.Manifold, p.Name, req.Session, d.Cursors)
+		info := uncollaredPipeInfo(ctx, js, accountID, p.Manifold, p.Name, req.Session, d.Cursors, req.Long)
 		info.CreatedBy = p.CreatedBy
 		uncollared = append(uncollared, cliproto.UncollaredPipe{
 			Manifold: p.Manifold,
@@ -1470,7 +1526,7 @@ func (d *Daemon) handleComplete(ctx context.Context, conn net.Conn, params json.
 // uncollaredPipeInfo gathers JetStream stats for one uncollared pipe.
 // Mirrors the per-pipe enrichment in enrichSourcesWithPipeInfo but
 // scoped to a sourceless stream. Phase 1.5.
-func uncollaredPipeInfo(ctx context.Context, js jetstream.JetStream, accountID uuid.UUID, manifold, name, session string, cursors *cursors) cliproto.PipeInfo {
+func uncollaredPipeInfo(ctx context.Context, js jetstream.JetStream, accountID uuid.UUID, manifold, name, session string, cursors *cursors, long bool) cliproto.PipeInfo {
 	info := cliproto.PipeInfo{Pipe: cliproto.FormatPipePath(manifold, "", name)}
 	stream, err := js.Stream(ctx, natsubj.BuildStreamName(accountID, manifold, "", name))
 	if err != nil {
@@ -1479,6 +1535,9 @@ func uncollaredPipeInfo(ctx context.Context, js jetstream.JetStream, accountID u
 	sInfo, err := stream.Info(ctx)
 	if err != nil {
 		return info
+	}
+	if long {
+		applyRetention(&info, sInfo.Config)
 	}
 	info.Total = sInfo.State.Msgs
 	info.LastSeq = sInfo.State.LastSeq

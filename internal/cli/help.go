@@ -84,6 +84,7 @@ var topLevelGroups = []helpGroup{
 	}},
 	{"PIPES", []helpRow{
 		{"ppz pipe create [H.]NAME", "create a custom pipe"},
+		{"ppz pipe set [H.]NAME", "change an existing pipe's retention"},
 		{"ppz pipe destroy [H.]NAME", "destroy a pipe (--recursive for a tree)"},
 	}},
 	{"OTHER", []helpRow{
@@ -211,13 +212,14 @@ var helpTopics = map[string]string{
 
 Print the daemon's state: whether it's logged in, its pid + version, last token refresh, server URL, account, current handle, and NATS connection state. The first stop when something looks wrong. See 'ppz help sessions' for how the current handle is scoped per shell session.`,
 
-	"ls": `usage: ppz ls [--json|--iso] [--watch] [PATTERN...]
+	"ls": `usage: ppz ls [-l|--long] [--json|--iso] [--watch] [PATTERN...]
 
 List handles × pipes. With no PATTERN, lists everything the daemon knows about; PATTERNs glob the full <handle>.<pipe> (e.g. '*.inbox', 'alice.*'). A literal that matches no pipe warns — use a glob ('*' quoted, or % unquoted).
 
   --watch    block until unread arrives on a matching pipe, print a snapshot, and exit. Non-destructive (does not advance any cursor), so it's the wake-signal primitive for an agent monitor loop. See 'ppz help globs' for pattern rules.
   --json     emit one JSON object per row.
-  --iso      render LAST as an RFC3339 timestamp instead of a relative age.`,
+  --iso      render LAST as an RFC3339 timestamp instead of a relative age.
+  -l, --long add the retention columns TTL / MAXMSGS / MAXBYTES — the caps bounding BUFFERED, as the pipe's stream actually enforces them. This is the read side of 'ppz pipe set'; auto-provisioned pipes (inbox, stdout, ...) report their defaults even though they have no stored override. Composes with --json and --watch, both otherwise unchanged: retention keys appear only under -l. (Note -l is --long here but --limit on read/reread.)`,
 
 	"read": `usage: ppz read TGT [-l|--limit N --tail --json --tty --raw --bare]
 
@@ -422,9 +424,10 @@ Top-level shortcut for 'ppz daemon login' (matches the gh/kubectl/az login muscl
 Print the current handle to stdout. Exits 1 with empty output when no current handle is set, so $(ppz get handle) can detect "not set" via the return code.`,
 
 	// ---- Pipes -----------------------------------------------------------
-	"pipe": `usage: ppz pipe {create|destroy} ...
+	"pipe": `usage: ppz pipe {create|set|destroy} ...
 
   ppz pipe create [HANDLE.]NAME [--ttl=DUR --max-msgs=N --max-bytes=B]
+  ppz pipe set [HANDLE.]NAME [--ttl=DUR --max-msgs=N --max-bytes=B]
   ppz pipe destroy [HANDLE.]NAME [--recursive]
 
 A bare NAME is created under the current namespace; prefix HANDLE. to collar it to a source.`,
@@ -436,6 +439,20 @@ Create a custom pipe. A bare NAME is created under the session's current namespa
   --ttl=DUR        retain messages for at most DUR (e.g. 24h, 30m).
   --max-msgs=N     cap retained messages at N.
   --max-bytes=B    cap retained bytes at B (accepts sizes like 64MiB, 1GB).`,
+
+	"pipe set": `usage: ppz pipe set [HANDLE.]NAME [--ttl=DUR --max-msgs=N --max-bytes=B]
+
+Change the retention of an existing pipe. Same target grammar and flags as 'pipe create': a bare NAME addresses an uncollared pipe under the session's current namespace; prefix HANDLE. for a pipe collared to a source.
+
+  --ttl=DUR        retain messages for at most DUR (e.g. 24h, 30m).
+  --max-msgs=N     cap retained messages at N.
+  --max-bytes=B    cap retained bytes at B (accepts sizes like 64MiB, 1GB).
+
+Name at least one flag. Fields you don't name keep their current value. The printed line states the pipe's complete retention afterwards, not just what moved.
+
+Unlike 'pipe create', this reaches auto-provisioned pipes (inbox, and stdin/stdout/stdctrl on terminals) — those are the pipes whose default caps you hit first, and create can't name them.
+
+Lowering a cap discards immediately: shrinking --max-msgs on a pipe holding more than that drops the oldest messages there and then.`,
 
 	"pipe destroy": `usage: ppz pipe destroy [HANDLE.]NAME [--recursive]
 

@@ -1,0 +1,7 @@
+--- GET audit tab as bar (member, not owner) ---
+status=403
+--- bar can still reach the pipes tab ---
+status=200
+--- GET audit tab as foo (owner) ---
+status=200
+exit=0

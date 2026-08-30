@@ -111,7 +111,7 @@ var topLevelVerbs = []string{
 var subverbs = map[string][]string{
 	"agent":    {"create"},
 	"daemon":   {"start", "stop", "restart", "login", "logout"},
-	"pipe":     {"create", "destroy"},
+	"pipe":     {"create", "set", "destroy"},
 	"source":   {"create", "destroy"},
 	"schedule": {"ls", "rm"},
 	"subs":     {"ls", "add", "rm", "wait", "read"},
@@ -140,11 +140,12 @@ var terminalHandleSubverbs = map[string]bool{
 }
 
 // pipeSubverbsTakingTargets: subverbs of `ppz pipe` whose first
-// positional is an existing <handle>.<pipe> — currently just destroy.
-// `create` is excluded (it names a NEW pipe, no existing target to
+// positional is an existing <handle>.<pipe> — destroy and set. `create`
+// is excluded (it names a NEW pipe, so there's no existing target to
 // complete against).
 var pipeSubverbsTakingTargets = map[string]bool{
 	"destroy": true,
+	"set":     true,
 }
 
 // sourceSubverbsTakingPatterns: subverbs of `ppz source` whose first

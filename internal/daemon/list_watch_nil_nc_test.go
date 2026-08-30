@@ -52,7 +52,7 @@ func TestBuildFilteredList_NilNC_ReturnsErrorNotPanic(t *testing.T) {
 		}
 	}()
 
-	_, e := d.buildFilteredList(context.Background(), uuid.New(), "test-session", []string{"foo"})
+	_, e := d.buildFilteredList(context.Background(), uuid.New(), "test-session", []string{"foo"}, false)
 	if e == nil {
 		t.Fatalf("buildFilteredList returned nil error with nil d.NC; want E_NATS_UNREACHABLE")
 	}

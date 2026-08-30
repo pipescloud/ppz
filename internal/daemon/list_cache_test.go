@@ -50,7 +50,7 @@ func TestBuildFilteredList_RefreshesHandleManifoldCache(t *testing.T) {
 		t.Fatalf("pre-state: HandleManifold(foo) = %q, want empty (cold start)", got)
 	}
 
-	if _, e := d.buildFilteredList(context.Background(), uuid.New(), "test-session", []string{"foo"}); e != nil {
+	if _, e := d.buildFilteredList(context.Background(), uuid.New(), "test-session", []string{"foo"}, false); e != nil {
 		t.Fatalf("buildFilteredList: %v", e)
 	}
 

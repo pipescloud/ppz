@@ -1,0 +1,8 @@
+--- short form is unchanged (no retention columns) ---
+NAMESPACE PIPE UNREAD BUFFERED LAST PAYLOAD CREATOR
+--- long form ---
+NAMESPACE PIPE UNREAD BUFFERED TTL MAXMSGS MAXBYTES LAST PAYLOAD CREATOR
+ttl=1h msgs=500 bytes=1048576
+--- --long is the same flag ---
+ttl=1h msgs=500 bytes=1048576
+exit=0

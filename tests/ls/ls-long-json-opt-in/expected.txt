@@ -1,0 +1,5 @@
+--- default --json carries no retention keys ---
+[false,false,false]
+--- --json -l opts in ---
+{"ttl_seconds":86400,"max_msgs":500,"max_bytes":16777216}
+exit=0

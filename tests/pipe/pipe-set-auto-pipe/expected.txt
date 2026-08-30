@@ -1,0 +1,5 @@
+create refused (reserved), as expected
+updated pipe=chat.inbox retention=ttl=24h0m0s,msgs=3,bytes=16777216
+buffered=3
+rows=1
+exit=0

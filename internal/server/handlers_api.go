@@ -244,11 +244,9 @@ func (s *Server) handleCreateSource(w http.ResponseWriter, r *http.Request, key 
 	// pre-1.5.1 case) the stream name is `pipe_<orgshort>_<handle>_<pipe>`
 	// — a wire-format change from the legacy `source_…` prefix that
 	// requires a Reset Database cutover.
-	for _, p := range src.Pipes() {
-		if err := ensurePipeStream(ctx, js, key.AccountID, src.Manifold, src.Handle, p); err != nil {
-			writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
-			return
-		}
+	if err := ensureSourceStreams(ctx, s.Pool, js, key.AccountID, src); err != nil {
+		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
+		return
 	}
 	subject := natsubj.BuildSubject(key.AccountID, src.Manifold, src.Handle, "inbox")
 
@@ -334,8 +332,9 @@ func (s *Server) handleListSources(w http.ResponseWriter, r *http.Request, key d
 // `connect`). Sharing a source declares it a terminal, so this endpoint flips
 // its kind to pty and provisions the COMPLETE pty pipe set — including the
 // reserved `system` (write-lease) and `inbox` pipes that the user pipe-create
-// path refuses. Provisioning goes through ensurePipeStream (trusted, no
-// reserved-name gate), the same primitive source-creation uses.
+// path refuses. Provisioning goes through ensureSourceStreams (trusted, no
+// reserved-name gate), the same primitive source-creation uses — which also
+// means a `ppz pipe set` on an auto-pipe survives the re-provision.
 //
 // Idempotent in both directions: a source already pty is left as-is (kind
 // UPDATE is a harmless no-op change) and every stream ensure is
@@ -371,17 +370,17 @@ func (s *Server) handleEnsurePTY(w http.ResponseWriter, r *http.Request, key db.
 
 	// Provision the full pty pipe set via the trusted primitive (bypasses the
 	// reserved-name gate, so `system`/`inbox` get created). Idempotent per
-	// pipe.
+	// pipe, and override-aware: bare `ppz terminal share` runs this on every
+	// invocation, so a defaults-only re-provision here would silently revert
+	// any `pipe set` the user had made on those pipes.
 	js, err := s.JSFor(ctx, key.AccountID)
 	if err != nil {
 		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: "org account: " + err.Error()})
 		return
 	}
-	for _, p := range src.Pipes() {
-		if err := ensurePipeStream(ctx, js, key.AccountID, src.Manifold, src.Handle, p); err != nil {
-			writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
-			return
-		}
+	if err := ensureSourceStreams(ctx, s.Pool, js, key.AccountID, src); err != nil {
+		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
+		return
 	}
 
 	writeJSON(w, http.StatusOK, cliproto.CreateSourceReply{
@@ -448,19 +447,7 @@ func (s *Server) handleCreatePipe(w http.ResponseWriter, r *http.Request, key db
 		return
 	}
 
-	// Resolve retention with defaults filled in for any nil fields.
-	maxAge := defaultStreamMaxAge
-	if pipe.TTLSeconds != nil {
-		maxAge = time.Duration(*pipe.TTLSeconds) * time.Second
-	}
-	maxMsgs := defaultStreamMaxMsgs
-	if pipe.MaxMsgs != nil {
-		maxMsgs = *pipe.MaxMsgs
-	}
-	maxBytes := int64(defaultStreamMaxBytes)
-	if pipe.MaxBytes != nil {
-		maxBytes = *pipe.MaxBytes
-	}
+	maxAge, maxMsgs, maxBytes := resolveRetention(pipeLayer(pipe))
 
 	js, err := s.JSFor(ctx, key.AccountID)
 	if err != nil {
@@ -472,6 +459,10 @@ func (s *Server) handleCreatePipe(w http.ResponseWriter, r *http.Request, key db
 		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
 		return
 	}
+
+	s.auditPipe(ctx, key, db.AuditActionPipeCreate,
+		cliproto.FormatPipePath(src.Manifold, src.Handle, pipe.Name),
+		nil, snapshotRetention(maxAge, maxMsgs, maxBytes).mustJSON())
 
 	writeJSON(w, http.StatusCreated, cliproto.PipeCreateReply{
 		Handle:     src.Handle,
@@ -566,18 +557,7 @@ func (s *Server) handleCreatePipeFullPath(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	maxAge := defaultStreamMaxAge
-	if pipe.TTLSeconds != nil {
-		maxAge = time.Duration(*pipe.TTLSeconds) * time.Second
-	}
-	maxMsgs := defaultStreamMaxMsgs
-	if pipe.MaxMsgs != nil {
-		maxMsgs = *pipe.MaxMsgs
-	}
-	maxBytes := int64(defaultStreamMaxBytes)
-	if pipe.MaxBytes != nil {
-		maxBytes = *pipe.MaxBytes
-	}
+	maxAge, maxMsgs, maxBytes := resolveRetention(pipeLayer(pipe))
 
 	js, err := s.JSFor(ctx, key.AccountID)
 	if err != nil {
@@ -588,6 +568,10 @@ func (s *Server) handleCreatePipeFullPath(w http.ResponseWriter, r *http.Request
 		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
 		return
 	}
+
+	s.auditPipe(ctx, key, db.AuditActionPipeCreate,
+		cliproto.FormatPipePath(req.Manifold, "", pipe.Name),
+		nil, snapshotRetention(maxAge, maxMsgs, maxBytes).mustJSON())
 
 	writeJSON(w, http.StatusCreated, cliproto.PipeCreateReply{
 		Handle:     "",
@@ -664,6 +648,13 @@ func (s *Server) handleDestroyUncollaredPipe(w http.ResponseWriter, r *http.Requ
 	}
 	ctx, cancel := withTimeout(r)
 	defer cancel()
+
+	// Read the row before deleting it — the audit entry's `before` is the
+	// retention that was lost, and after the DELETE there is nothing left
+	// to read it from. Best-effort: a missing row here just means the
+	// delete below reports the not-found.
+	prev, _ := db.GetUncollaredPipeByName(ctx, s.Pool, key.AccountID, manifold, name)
+
 	if err := db.DeleteUncollaredPipe(ctx, s.Pool, key.AccountID, manifold, name); err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			writeErr(w, cliproto.NewUncollaredPipeNotFound(name, manifold))
@@ -681,6 +672,12 @@ func (s *Server) handleDestroyUncollaredPipe(w http.ResponseWriter, r *http.Requ
 		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
 		return
 	}
+
+	prevAge, prevMsgs, prevBytes := pipeRetention(prev)
+	s.auditPipe(ctx, key, db.AuditActionPipeDestroy,
+		cliproto.FormatPipePath(manifold, "", name),
+		snapshotRetention(prevAge, prevMsgs, prevBytes).mustJSON(), nil)
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -762,6 +759,11 @@ func (s *Server) handleDestroyPipe(w http.ResponseWriter, r *http.Request, key d
 		return
 	}
 
+	// Snapshot the row before it goes, so the audit trail can state what
+	// the pipe retained. Missing row = an auto-pipe with no override;
+	// the zero Pipe resolves to the defaults, which is the truth.
+	prev, _ := db.GetPipeByName(ctx, s.Pool, src.ID, name)
+
 	if err := db.DeletePipe(ctx, s.Pool, src.ID, name); err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			// Auto-provisioned pipes (broadcast, inbox, etc.) are
@@ -787,6 +789,15 @@ func (s *Server) handleDestroyPipe(w http.ResponseWriter, r *http.Request, key d
 		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
 		return
 	}
+
+	// A destroy has no "after". `before` is the retention the pipe had —
+	// resolved, so the row states what was actually lost rather than
+	// which columns happened to be non-NULL.
+	prevAge, prevMsgs, prevBytes := pipeRetention(prev)
+	s.auditPipe(ctx, key, db.AuditActionPipeDestroy,
+		cliproto.FormatPipePath(src.Manifold, src.Handle, name),
+		snapshotRetention(prevAge, prevMsgs, prevBytes).mustJSON(), nil)
+
 	w.WriteHeader(http.StatusNoContent)
 }
 

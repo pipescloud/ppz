@@ -181,9 +181,8 @@ func isAuthViolation(err error) bool {
 
 // ensureStreamsForOrg creates any missing JetStream streams for the
 // org's existing sources + user pipes, in the currently-active account
-// namespace. Idempotent — `ensurePipeStream` swallows
-// ErrStreamNameAlreadyInUse so repeat calls are cheap when streams
-// already exist.
+// namespace. Idempotent — ensureSourceStreams re-asserts each stream's
+// stored config, so repeat calls converge rather than error.
 //
 // Called from Get after the account has been (re-)opened. Together with
 // the auth-violation retry above, this is what makes account
@@ -195,46 +194,32 @@ func (p *AccountPool) ensureStreamsForOrg(ctx context.Context, oa *OrgAccount) e
 		return fmt.Errorf("list sources: %w", err)
 	}
 	for _, src := range sources {
-		// Auto-provisioned pipes (kind-derived: broadcast / stdin /
-		// stdout / stdctrl).
-		for _, pipe := range src.Pipes() {
-			if err := ensurePipeStream(ctx, oa.JS, oa.AccountID, src.Manifold, src.Handle, pipe); err != nil {
-				return fmt.Errorf("ensure auto stream %s.%s: %w", src.Handle, pipe, err)
-			}
-		}
-		// User-created pipes (from the `pipes` table, with stored
-		// retention overrides).
-		userPipes, err := db.ListPipesForSource(ctx, p.server.Pool, src.ID)
-		if err != nil {
-			return fmt.Errorf("list pipes for %s: %w", src.Handle, err)
-		}
-		for _, up := range userPipes {
-			age, msgs, bytes := pipeRetention(up)
-			if err := ensurePipeStreamWithRetention(ctx, oa.JS, oa.AccountID, up.Manifold, src.Handle, up.Name, age, msgs, bytes); err != nil {
-				return fmt.Errorf("ensure user stream %s.%s: %w", src.Handle, up.Name, err)
-			}
+		// Auto-provisioned pipes (kind-derived: stdin / stdout /
+		// stdctrl / …) and user-created `pipes` rows, each with its
+		// stored retention override applied.
+		if err := ensureSourceStreams(ctx, p.server.Pool, oa.JS, oa.AccountID, src); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// pipeRetention resolves a Pipe row's stored retention overrides into
-// concrete (maxAge, maxMsgs, maxBytes) values, falling back to the
-// stream defaults for any nil pointer.
+// pipeRetention resolves a Pipe row's stored overrides into concrete
+// (maxAge, maxMsgs, maxBytes) values. A thin wrapper over
+// resolveRetention so this path and the HTTP handlers can't disagree
+// about precedence.
 func pipeRetention(pipe db.Pipe) (time.Duration, int, int64) {
-	age := defaultStreamMaxAge
-	if pipe.TTLSeconds != nil {
-		age = time.Duration(*pipe.TTLSeconds) * time.Second
+	return resolveRetention(pipeLayer(pipe))
+}
+
+// pipeLayer lifts a stored row into the highest-precedence retention
+// layer.
+func pipeLayer(pipe db.Pipe) retentionOverride {
+	return retentionOverride{
+		TTLSeconds: pipe.TTLSeconds,
+		MaxMsgs:    pipe.MaxMsgs,
+		MaxBytes:   pipe.MaxBytes,
 	}
-	msgs := defaultStreamMaxMsgs
-	if pipe.MaxMsgs != nil {
-		msgs = *pipe.MaxMsgs
-	}
-	bytes := int64(defaultStreamMaxBytes)
-	if pipe.MaxBytes != nil {
-		bytes = *pipe.MaxBytes
-	}
-	return age, msgs, bytes
 }
 
 // provisionAccount mints + registers + persists a brand-new account

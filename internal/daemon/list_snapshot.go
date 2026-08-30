@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
@@ -45,7 +46,28 @@ type listPreviewResult struct {
 	payload   string
 }
 
-func enrichSourcesWithPipeInfo(ctx context.Context, js jetstream.JetStream, sources []cliproto.Source, accountID uuid.UUID, session string, patterns []string, cursors map[string]cursorEntry) ([]cliproto.Source, error) {
+// applyRetention copies a stream's configured caps onto the PipeInfo.
+//
+// This costs nothing extra: the daemon already holds a *StreamInfo per
+// pipe (BUFFERED and LAST come from its State), and Config carries the
+// caps alongside. So `ls -l` needs no new endpoint and no second round
+// trip.
+//
+// Reading from JetStream rather than the `pipes` table is also the only
+// way to answer for auto-provisioned pipes: `inbox` and `stdout` have no
+// row until someone runs `pipe set` on them, yet they are exactly the
+// pipes whose defaults users hit first. The stream config is what does
+// the enforcing, so it is the honest source.
+//
+// -1 is JetStream's "unlimited" and is carried through rather than
+// flattened to 0 — the formatter needs to tell the two apart.
+func applyRetention(info *cliproto.PipeInfo, cfg jetstream.StreamConfig) {
+	info.TTLSeconds = int(cfg.MaxAge / time.Second)
+	info.MaxMsgs = cfg.MaxMsgs
+	info.MaxBytes = cfg.MaxBytes
+}
+
+func enrichSourcesWithPipeInfo(ctx context.Context, js jetstream.JetStream, sources []cliproto.Source, accountID uuid.UUID, session string, patterns []string, cursors map[string]cursorEntry, long bool) ([]cliproto.Source, error) {
 	streamInfos, err := streamInfoByName(ctx, js, accountID)
 	if err != nil {
 		return nil, err
@@ -77,6 +99,9 @@ func enrichSourcesWithPipeInfo(ctx context.Context, js jetstream.JetStream, sour
 			info := cliproto.PipeInfo{Pipe: p, CreatedBy: pipeCreator[p]}
 			streamName := natsubj.BuildStreamName(accountID, s.Manifold, s.Handle, p)
 			if si := streamInfos[streamName]; si != nil {
+				if long {
+					applyRetention(&info, si.Config)
+				}
 				info.Total = si.State.Msgs
 				info.LastSeq = si.State.LastSeq
 				if !si.State.LastTime.IsZero() {
