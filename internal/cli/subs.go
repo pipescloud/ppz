@@ -202,7 +202,7 @@ func cmdSubsRead(args []string) error {
 
 func printSubsReply(reply cliproto.ListReply, asJSON, iso bool) {
 	if asJSON {
-		cliproto.PrintListJSONWithUncollared(os.Stdout, reply.Sources, reply.UncollaredPipes)
+		cliproto.PrintListJSONWithUncollared(os.Stdout, reply.Sources, reply.UncollaredPipes, false)
 		return
 	}
 	// long=false: `subs ls` answers "what am I subscribed to", not

@@ -749,7 +749,19 @@ back into the command that set it.
 `max_bytes` are added to each row only under `-l`; the daemon does not
 populate them otherwise, so the default agent-facing row keeps exactly the
 eight keys above. `ListRequest.Long` / `ListWatchRequest.Long` carry the flag
-over IPC — the gate is on POPULATION, not rendering.
+over IPC — the gate is on POPULATION, not rendering. Both request types carry
+it: `ls --watch -l` must render the same columns the snapshot form does, and
+a flag set on one and forgotten on the other prints long headers over columns
+the daemon never filled.
+
+Under `-l` the three keys are **always present**, including when a value is 0.
+The schema is fixed rather than data-dependent, so a consumer can tell "long
+mode, no age limit" from "not long mode" — gating each key on non-zero would
+make those two cases identical on the wire.
+
+Note the deliberate collision: `-l` is `--long` on `ls` but `--limit` on
+`read` / `reread`. `ls -l` is near-universal muscle memory and worth the
+inconsistency, but the two verbs do teach opposite things.
 
 `ppz subs ls` shares the table renderer but never sets long: it answers "what
 am I subscribed to", not "how is this pipe configured".

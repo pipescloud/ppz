@@ -42,10 +42,10 @@ func TestCmdLs_LongFlagReachesDaemon(t *testing.T) {
 			if err := cmdLs([]string{spelling}); err != nil {
 				t.Fatalf("cmdLs %s: %v", spelling, err)
 			}
-			if requests.count() != 1 {
-				t.Fatalf("list request count = %d, want 1", requests.count())
+			if requests.lists.count() != 1 {
+				t.Fatalf("list request count = %d, want 1", requests.lists.count())
 			}
-			if !requests.at(0).Long {
+			if !requests.lists.at(0).Long {
 				t.Errorf("cmdLs %s did not set Long on the ListRequest — the daemon would never populate retention", spelling)
 			}
 		})
@@ -62,7 +62,7 @@ func TestCmdLs_WithoutLongLeavesRequestUnchanged(t *testing.T) {
 	if err := cmdLs(nil); err != nil {
 		t.Fatalf("cmdLs: %v", err)
 	}
-	if requests.at(0).Long {
+	if requests.lists.at(0).Long {
 		t.Error("plain `ppz ls` set Long — default output must not change")
 	}
 }
@@ -77,7 +77,7 @@ func TestCmdLs_LongComposesWithJSON(t *testing.T) {
 	if err := cmdLs([]string{"--json", "-l"}); err != nil {
 		t.Fatalf("cmdLs --json -l: %v", err)
 	}
-	if !requests.at(0).Long {
+	if !requests.lists.at(0).Long {
 		t.Error("`ls --json -l` did not request Long")
 	}
 }
@@ -93,12 +93,55 @@ func TestCmdLs_LongSurvivesPatternOrdering(t *testing.T) {
 		if err := cmdLs(args); err != nil {
 			t.Fatalf("cmdLs %v: %v", args, err)
 		}
-		got := requests.at(0)
+		got := requests.lists.at(0)
 		if !got.Long {
 			t.Errorf("cmdLs %v did not set Long", args)
 		}
 		if len(got.Patterns) != 1 || got.Patterns[0] != "chat*" {
 			t.Errorf("cmdLs %v patterns = %v, want [chat*]", args, got.Patterns)
 		}
+	}
+}
+
+// GAP CLOSED: --watch takes a DIFFERENT request type, and nothing tied
+// the two together. Dropping `Long: *long` from the ListWatchRequest
+// left every test green, because cmdLs renders using its own local
+// *long regardless of what came back — so `ls --watch -l` would print
+// the long headers over three columns of "-", which reads as "this pipe
+// has no caps" rather than "nobody asked for the data".
+//
+// --watch is the documented wake-signal primitive for agent monitor
+// loops, so that is a bad place for a silently-wrong answer.
+func TestCmdLs_LongReachesTheWatchRequestToo(t *testing.T) {
+	t.Setenv("PPZ_SESSION", "ls-long-test")
+	sock := lsLongSocket(t)
+	requests := serveLsListDaemon(t, sock)
+
+	if err := cmdLs([]string{"--watch", "-l"}); err != nil {
+		t.Fatalf("cmdLs --watch -l: %v", err)
+	}
+	if requests.watches.count() != 1 {
+		t.Fatalf("ListWatch request count = %d, want 1", requests.watches.count())
+	}
+	if !requests.watches.at(0).Long {
+		t.Error("`ls --watch -l` did not set Long on the ListWatchRequest — the CLI would render long headers the daemon never filled")
+	}
+	// And the snapshot preflight carries it too: cmdLs issues both.
+	if !requests.lists.at(0).Long {
+		t.Error("`ls --watch -l` did not set Long on the snapshot ListRequest")
+	}
+}
+
+// The negative half, mirroring the snapshot guard: no flag, no Long.
+func TestCmdLs_WatchWithoutLongLeavesRequestUnchanged(t *testing.T) {
+	t.Setenv("PPZ_SESSION", "ls-long-test")
+	sock := lsLongSocket(t)
+	requests := serveLsListDaemon(t, sock)
+
+	if err := cmdLs([]string{"--watch"}); err != nil {
+		t.Fatalf("cmdLs --watch: %v", err)
+	}
+	if requests.watches.at(0).Long {
+		t.Error("plain `ls --watch` set Long — default output must not change")
 	}
 }

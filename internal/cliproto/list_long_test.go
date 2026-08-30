@@ -26,7 +26,7 @@ func TestPrintListJSON_DefaultCarriesNoRetentionKeys(t *testing.T) {
 		PipeInfos: []PipeInfo{{Pipe: "inbox", Total: 3, Unread: 1}},
 	}}
 	var buf bytes.Buffer
-	PrintListJSONWithUncollared(&buf, sources, nil)
+	PrintListJSONWithUncollared(&buf, sources, nil, false)
 
 	for _, key := range []string{"ttl_seconds", "max_msgs", "max_bytes"} {
 		if strings.Contains(buf.String(), key) {
@@ -42,7 +42,7 @@ func TestPrintListJSON_LongCarriesRetentionKeys(t *testing.T) {
 		PipeInfos: []PipeInfo{{Pipe: "inbox", Total: 3, TTLSeconds: 3600, MaxMsgs: 500, MaxBytes: 1048576}},
 	}}
 	var buf bytes.Buffer
-	PrintListJSONWithUncollared(&buf, sources, nil)
+	PrintListJSONWithUncollared(&buf, sources, nil, true)
 
 	var row map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &row); err != nil {
@@ -141,5 +141,79 @@ func TestFormatTTLColumn(t *testing.T) {
 		if got := formatTTLColumn(tc.secs); got != tc.want {
 			t.Errorf("formatTTLColumn(%d) = %q, want %q", tc.secs, got, tc.want)
 		}
+	}
+}
+
+// GAP CLOSED: the sentinels had nothing holding them. Replacing
+// formatCapColumn's body with a bare Sprintf("%d") — dropping both ∞ and
+// "-" — left every Go test green, and no expected.txt anywhere contains
+// ∞. Its sibling formatTTLColumn had a table test including the 0 case;
+// this one was simply missed.
+//
+// The distinction matters because JetStream spells "unlimited" as -1.
+// Rendered verbatim it reads as a number in a column of numbers, and a
+// negative cap is nonsense — so it becomes ∞, while 0 ("not set")
+// becomes "-", the same as an absent TTL.
+func TestFormatCapColumn(t *testing.T) {
+	for _, tc := range []struct {
+		v    int64
+		want string
+	}{
+		{5000, "5000"},
+		{16777216, "16777216"},
+		{-1, "∞"},
+		{0, "-"},
+	} {
+		if got := formatCapColumn(tc.v); got != tc.want {
+			t.Errorf("formatCapColumn(%d) = %q, want %q", tc.v, got, tc.want)
+		}
+	}
+}
+
+// The unlimited sentinel has to survive the whole render path, not just
+// the cell formatter — that is the journey the daemon's
+// TestApplyRetention_PreservesUnlimitedSentinel hands off to.
+func TestPrintList_LongRendersUnlimitedCaps(t *testing.T) {
+	sources := []Source{{
+		Handle:    "chat",
+		CreatedBy: "foo",
+		PipeInfos: []PipeInfo{{Pipe: "inbox", TTLSeconds: 0, MaxMsgs: -1, MaxBytes: -1}},
+	}}
+	var buf bytes.Buffer
+	PrintListWithUncollared(&buf, sources, nil, false, true)
+
+	row := strings.SplitN(buf.String(), "\n", 3)[1]
+	if strings.Contains(row, "-1") {
+		t.Errorf("row rendered the raw -1 sentinel instead of ∞: %s", row)
+	}
+	if strings.Count(row, "∞") != 2 {
+		t.Errorf("want two ∞ cells (msgs + bytes), got: %s", row)
+	}
+}
+
+// The schema under -l is fixed, not data-dependent: a pipe with no age
+// limit still carries ttl_seconds (as 0), so a consumer can tell "long
+// mode, no age limit" apart from "not long mode". Gating each key on
+// non-zero would have made the two indistinguishable.
+func TestPrintListJSON_LongSchemaIsFixedRegardlessOfValues(t *testing.T) {
+	sources := []Source{{
+		Handle:    "chat",
+		CreatedBy: "foo",
+		PipeInfos: []PipeInfo{{Pipe: "inbox", TTLSeconds: 0, MaxMsgs: -1, MaxBytes: 0}},
+	}}
+	var buf bytes.Buffer
+	PrintListJSONWithUncollared(&buf, sources, nil, true)
+
+	var row map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &row); err != nil {
+		t.Fatalf("unmarshal: %v (%s)", err, buf.String())
+	}
+	for _, key := range []string{"ttl_seconds", "max_msgs", "max_bytes"} {
+		if _, ok := row[key]; !ok {
+			t.Errorf("long row dropped %q because its value was zero — the -l schema must not depend on the data: %s", key, buf.String())
+		}
+	}
+	if row["max_msgs"] != float64(-1) {
+		t.Errorf("max_msgs = %v, want -1 (unlimited carried through to JSON verbatim)", row["max_msgs"])
 	}
 }

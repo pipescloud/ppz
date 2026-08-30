@@ -219,7 +219,7 @@ List handles × pipes. With no PATTERN, lists everything the daemon knows about;
   --watch    block until unread arrives on a matching pipe, print a snapshot, and exit. Non-destructive (does not advance any cursor), so it's the wake-signal primitive for an agent monitor loop. See 'ppz help globs' for pattern rules.
   --json     emit one JSON object per row.
   --iso      render LAST as an RFC3339 timestamp instead of a relative age.
-  -l, --long add the retention columns TTL / MAXMSGS / MAXBYTES — the caps bounding BUFFERED, as the pipe's stream actually enforces them. This is the read side of 'ppz pipe set'; auto-provisioned pipes (inbox, stdout, ...) report their defaults even though they have no stored override. Composes with --json, which is otherwise unchanged: retention keys appear only under -l.`,
+  -l, --long add the retention columns TTL / MAXMSGS / MAXBYTES — the caps bounding BUFFERED, as the pipe's stream actually enforces them. This is the read side of 'ppz pipe set'; auto-provisioned pipes (inbox, stdout, ...) report their defaults even though they have no stored override. Composes with --json and --watch, both otherwise unchanged: retention keys appear only under -l. (Note -l is --long here but --limit on read/reread.)`,
 
 	"read": `usage: ppz read TGT [-l|--limit N --tail --json --tty --raw --bare]
 

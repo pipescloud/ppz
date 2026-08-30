@@ -24,8 +24,13 @@ sits beside the count it bounds.
   integer mantissas: a humanised `1.4MiB` would print a value that fails when
   pasted back into the command that set it. `TTL` does collapse to `24h` /
   `5m`, and JetStream's `-1` "unlimited" renders `∞`.
+- **Under `-l` the JSON schema is fixed**, including when a value is 0, so a
+  consumer can tell "long mode, no age limit" from "not long mode".
 - `ppz subs ls` keeps the short table — it answers "what am I subscribed to",
   not "how is this pipe configured".
+- Note the deliberate flag collision: `-l` is `--long` on `ls` but `--limit`
+  on `read` / `reread`. The `ls -l` spelling is near-universal muscle memory
+  and worth the inconsistency.
 
 ## Unreleased — configurable pipe retention (`ppz pipe set`) + audit trail
 

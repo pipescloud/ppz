@@ -520,7 +520,7 @@ func PrintListWithUncollared(w io.Writer, sources []Source, uncollared []Uncolla
 // `creator` carries the same username the table shows: pipe-level if set,
 // otherwise the source's creator (auto-pipe inheritance).
 func PrintListJSON(w io.Writer, sources []Source) {
-	PrintListJSONWithUncollared(w, sources, nil)
+	PrintListJSONWithUncollared(w, sources, nil, false)
 }
 
 // PrintListJSONWithUncollared is the JSON variant including uncollared
@@ -528,24 +528,28 @@ func PrintListJSON(w io.Writer, sources []Source) {
 // (empty string for root) and mirrors the NAMESPACE table column —
 // present on every row shape so JSON consumers don't have to special-
 // case collared vs uncollared.
-// addRetentionJSON adds the retention keys to a `ls --json` row, but
-// only when they are populated — which the daemon does only when the
-// request set Long. That keeps the default JSON row byte-identical for
-// the agents that parse it, without the printer needing to know about
-// the flag.
-func addRetentionJSON(obj map[string]any, p PipeInfo) {
-	if p.TTLSeconds != 0 {
-		obj["ttl_seconds"] = p.TTLSeconds
+// addRetentionJSON adds the retention keys to a `ls --json` row.
+//
+// All three or none, keyed off `long` rather than off whether each value
+// happens to be non-zero. Gating per-field would make the schema depend
+// on the DATA: a pipe with no age limit (TTL 0) would silently drop
+// `ttl_seconds`, leaving a consumer unable to tell "long mode, no age
+// limit" from "not long mode". Under -l the schema is fixed, which is
+// what makes it parseable; without it the keys are absent entirely, so
+// the default agent-facing row is unchanged.
+func addRetentionJSON(obj map[string]any, p PipeInfo, long bool) {
+	if !long {
+		return
 	}
-	if p.MaxMsgs != 0 {
-		obj["max_msgs"] = p.MaxMsgs
-	}
-	if p.MaxBytes != 0 {
-		obj["max_bytes"] = p.MaxBytes
-	}
+	obj["ttl_seconds"] = p.TTLSeconds
+	obj["max_msgs"] = p.MaxMsgs
+	obj["max_bytes"] = p.MaxBytes
 }
 
-func PrintListJSONWithUncollared(w io.Writer, sources []Source, uncollared []UncollaredPipe) {
+// long=true adds ttl_seconds / max_msgs / max_bytes to every row. Absent
+// it, the row keeps exactly the keys it had before retention existed —
+// agents parse this output, so its default form is a fixed contract.
+func PrintListJSONWithUncollared(w io.Writer, sources []Source, uncollared []UncollaredPipe, long bool) {
 	for _, s := range sources {
 		for _, p := range s.PipeInfos {
 			obj := map[string]any{
@@ -557,7 +561,7 @@ func PrintListJSONWithUncollared(w io.Writer, sources []Source, uncollared []Unc
 				"payload":   p.Payload,
 				"creator":   humanColumn(p.CreatedBy, s.CreatedBy),
 			}
-			addRetentionJSON(obj, p)
+			addRetentionJSON(obj, p, long)
 			if p.LastAt != nil {
 				obj["last_at"] = p.LastAt.UTC().Format(time.RFC3339)
 			} else {
@@ -577,7 +581,7 @@ func PrintListJSONWithUncollared(w io.Writer, sources []Source, uncollared []Unc
 			"payload":   p.Info.Payload,
 			"creator":   p.Info.CreatedBy,
 		}
-		addRetentionJSON(obj, p.Info)
+		addRetentionJSON(obj, p.Info, long)
 		if p.Info.LastAt != nil {
 			obj["last_at"] = p.Info.LastAt.UTC().Format(time.RFC3339)
 		} else {

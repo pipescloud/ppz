@@ -102,7 +102,7 @@ func cmdLs(args []string) error {
 	}
 
 	if *asJSON {
-		cliproto.PrintListJSONWithUncollared(os.Stdout, reply.Sources, reply.UncollaredPipes)
+		cliproto.PrintListJSONWithUncollared(os.Stdout, reply.Sources, reply.UncollaredPipes, *long)
 	} else {
 		cliproto.PrintListWithUncollared(os.Stdout, reply.Sources, reply.UncollaredPipes, *iso, *long)
 	}

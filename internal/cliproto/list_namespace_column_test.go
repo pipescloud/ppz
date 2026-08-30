@@ -210,7 +210,7 @@ func TestPrintListJSON_UncollaredRowCarriesNamespace(t *testing.T) {
 		{Manifold: "", Name: "plaza", Info: PipeInfo{Total: 0, Unread: 0, CreatedBy: "foo"}},
 	}
 	var buf bytes.Buffer
-	PrintListJSONWithUncollared(&buf, nil, uc)
+	PrintListJSONWithUncollared(&buf, nil, uc, false)
 
 	wantNamespace := map[string]string{
 		"room":  "team1",
