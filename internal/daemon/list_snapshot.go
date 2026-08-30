@@ -67,6 +67,61 @@ func isEnumerationDenied(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "permission")
 }
 
+// perStreamFallbackTimeout bounds each probe in the fallback below.
+//
+// A refused stream never answers — the reply simply does not come — so
+// the probe can only end in a timeout. At the full JS API deadline, and
+// run serially, that made `ppz ls` take 15s for a principal with no read
+// access: far worse than the missing counts it was added to fix. The
+// probes are therefore concurrent AND short, since for this purpose a
+// slow answer is worth no more than a refusal.
+const perStreamFallbackTimeout = 2 * time.Second
+
+// perStreamInfo asks about each pipe individually, skipping the ones the
+// caller is refused. Used when account-wide enumeration is denied.
+func perStreamInfo(ctx context.Context, js jetstream.JetStream, accountID uuid.UUID, sources []cliproto.Source) map[string]*jetstream.StreamInfo {
+	names := make([]string, 0, len(sources)*4)
+	seen := map[string]bool{}
+	for _, s := range sources {
+		for _, p := range pipesForSource(s) {
+			name := natsubj.BuildStreamName(accountID, s.Manifold, s.Handle, p)
+			if !seen[name] {
+				seen[name] = true
+				names = append(names, name)
+			}
+		}
+	}
+
+	var mu sync.Mutex
+	out := map[string]*jetstream.StreamInfo{}
+	sem := make(chan struct{}, listPreviewFetchConcurrency)
+	var wg sync.WaitGroup
+	for _, name := range names {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			pctx, cancel := context.WithTimeout(ctx, perStreamFallbackTimeout)
+			defer cancel()
+			stream, err := js.Stream(pctx, name)
+			if err != nil {
+				return // refused, gone, or too slow — leave it unknown
+			}
+			info, err := stream.Info(pctx)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			out[name] = info
+			mu.Unlock()
+		}(name)
+	}
+	wg.Wait()
+	return out
+}
+
 type listPreviewTarget struct {
 	streamName string
 	seq        uint64
@@ -103,9 +158,28 @@ func applyRetention(info *cliproto.PipeInfo, cfg jetstream.StreamConfig) {
 }
 
 func enrichSourcesWithPipeInfo(ctx context.Context, js jetstream.JetStream, sources []cliproto.Source, accountID uuid.UUID, session string, patterns []string, cursors map[string]cursorEntry, long bool, aclEnforced bool) ([]cliproto.Source, error) {
-	streamInfos, err := streamInfoByName(ctx, js, accountID, aclEnforced)
-	if err != nil {
-		return nil, err
+	// Under enforcement, account-wide enumeration is ALWAYS denied —
+	// $JS.API.STREAM.LIST carries no stream token, so it cannot be
+	// scoped per pipe and is refused for every principal including the
+	// org owner. Attempting it anyway costs a full JS API timeout before
+	// the reply that never comes gives up, which made `ppz ls` take six
+	// seconds for everyone. Go straight to the per-stream path.
+	//
+	// That path matters for correctness too: with no stream info every
+	// collared pipe renders as 0/0, which reads as "empty" rather than
+	// "unknown" — `ppz ls` under-reporting a pipe that has messages, to
+	// its own owner. Per-stream INFO *is* grantable, so the caller gets
+	// real counts for what it may read and nothing for the rest, which
+	// is the honest answer.
+	var streamInfos map[string]*jetstream.StreamInfo
+	if aclEnforced {
+		streamInfos = perStreamInfo(ctx, js, accountID, sources)
+	} else {
+		var err error
+		streamInfos, err = streamInfoByName(ctx, js, accountID, aclEnforced)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	enriched := make([]cliproto.Source, 0, len(sources))

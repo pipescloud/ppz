@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/url"
 	"strings"
 	"time"
 
@@ -54,6 +55,7 @@ func (d *Daemon) handleRead(ctx context.Context, conn net.Conn, params json.RawM
 	// the CLI saw a bare name with no dot; resolve as uncollared at
 	// current_namespace. Otherwise: today's collared (handle.pipe) flow.
 	uncollared := req.BareTarget != ""
+	aclEnforced := d.aclEnforced.Load()
 	if uncollared {
 		if err := natsubj.ValidatePipe(req.BareTarget); err != nil {
 			writeReadErr(conn, cliproto.New(cliproto.EInvalidPipe))
@@ -170,6 +172,22 @@ func (d *Daemon) handleRead(ctx context.Context, conn net.Conn, params json.RawM
 				writeReadErr(conn, cliproto.NewUncollaredPipeNotFound(req.BareTarget, manifold))
 			} else {
 				writeReadErr(conn, cliproto.NewPipeNotFound(req.Channel, req.Handle))
+			}
+		case isPermissionErr(err):
+			writeReadErr(conn, cliproto.New(cliproto.EPipeForbidden))
+		case aclEnforced && isJSTransportErr(err):
+			// Under enforcement a refusal and an outage look identical
+			// from here: the reply to a denied JS API request simply
+			// never arrives, so it surfaces as a timeout. Ask the
+			// server which it was rather than guessing — reporting
+			// "nats unreachable" for what is actually a missing grant
+			// sends the reader to debug the network instead of their
+			// access, and that is the single most common interaction
+			// once an org opts in.
+			if d.deniedByACL(ctx, readTargetPath(req, uncollared)) {
+				writeReadErr(conn, cliproto.New(cliproto.EPipeForbidden))
+			} else {
+				writeReadErr(conn, cliproto.New(cliproto.ENATSUnreachable))
 			}
 		case isJSTransportErr(err):
 			writeReadErr(conn, cliproto.New(cliproto.ENATSUnreachable))
@@ -598,4 +616,39 @@ func latestStdctrlResize(ctx context.Context, js jetstream.JetStream, accountID 
 		rs.Rows = 1000
 	}
 	return rs.Cols, rs.Rows, true
+}
+
+// readTargetPath renders the pipe the read was aimed at, in the same
+// dotted form ACL selectors and `ppz acl whoami` use.
+func readTargetPath(req cliproto.ReadRequest, uncollared bool) string {
+	if uncollared {
+		return req.BareTarget
+	}
+	if req.Handle == "" {
+		return req.Channel
+	}
+	return req.Handle + "." + req.Channel
+}
+
+// deniedByACL asks the server whether this caller actually lacks read on
+// the pipe. Only consulted on the error path, where a refusal and an
+// outage are indistinguishable locally — one round-trip buys a correct
+// answer instead of a guess. On any doubt it returns false, so a genuine
+// outage is never mislabelled as a permissions problem.
+func (d *Daemon) deniedByACL(ctx context.Context, path string) bool {
+	if path == "" {
+		return false
+	}
+	var body json.RawMessage
+	if e := d.callServer(ctx, "GET", "/api/v1/acl/whoami?pipe="+url.QueryEscape(path), nil, &body); e != nil {
+		return false
+	}
+	var v struct {
+		Read     bool `json:"read"`
+		Enforced bool `json:"enforced"`
+	}
+	if err := json.Unmarshal(body, &v); err != nil {
+		return false
+	}
+	return v.Enforced && !v.Read
 }

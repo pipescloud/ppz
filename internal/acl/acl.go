@@ -357,5 +357,5 @@ func denialDetail(s Subject, p Perm) string {
 	case p == Admin:
 		return "not the handle owner, not an org admin"
 	}
-	return "no grant; default for <handle>." + s.Name + " is owner-only"
+	return "no grant; pipes under a handle are owner-only by default"
 }

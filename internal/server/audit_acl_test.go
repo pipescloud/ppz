@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -62,5 +63,50 @@ func TestAuditActor_FallsBackWhenPrincipalUnset(t *testing.T) {
 
 	if actor, _ := auditActorFromKey(key); actor != human {
 		t.Errorf("actor = %v, want the creator %v as fallback", actor, human)
+	}
+}
+
+// The payload shape is per-action, and running one action's payload
+// through another's formatter does not fail — it silently reads missing
+// fields as zero. Before formatAuditDelta existed, `acl.grant` rendered
+// as "ttl=0s, msgs=0, bytes=0": the trail claimed a grant had reset the
+// pipe's retention. A misleading audit line is worse than a blank one.
+func TestAuditDelta_ACLActionsDoNotRenderAsRetention(t *testing.T) {
+	grant := []byte(`{"principal":"bar","perm":"read"}`)
+
+	got := formatAuditDelta(db.AuditActionACLGrant, nil, grant)
+	if strings.Contains(got, "ttl=") || strings.Contains(got, "bytes=") {
+		t.Errorf("grant rendered as a retention change: %q", got)
+	}
+	if !strings.Contains(got, "bar") || !strings.Contains(got, "read") {
+		t.Errorf("grant delta should name the principal and permission, got %q", got)
+	}
+
+	got = formatAuditDelta(db.AuditActionACLRevoke, grant, nil)
+	if !strings.Contains(got, "bar") || !strings.Contains(got, "read") {
+		t.Errorf("revoke delta should name the principal and permission, got %q", got)
+	}
+	if got == formatAuditDelta(db.AuditActionACLGrant, nil, grant) {
+		t.Error("grant and revoke must be distinguishable in the trail")
+	}
+}
+
+// The enforcement toggle is the one row where the direction is the whole
+// story, so it must not render blank.
+func TestAuditDelta_EnforceShowsDirection(t *testing.T) {
+	got := formatAuditDelta(db.AuditActionACLEnforce,
+		[]byte(`{"enforced":false}`), []byte(`{"enforced":true}`))
+	if !strings.Contains(got, "off") || !strings.Contains(got, "on") {
+		t.Errorf("enforce delta should show the transition, got %q", got)
+	}
+}
+
+// Pipe events keep the retention renderer.
+func TestAuditDelta_PipeActionsStillRenderRetention(t *testing.T) {
+	got := formatAuditDelta(db.AuditActionPipeSet,
+		[]byte(`{"ttl_seconds":3600,"max_msgs":10,"max_bytes":20}`),
+		[]byte(`{"ttl_seconds":7200,"max_msgs":10,"max_bytes":20}`))
+	if got == "" {
+		t.Error("pipe.set must still render a retention delta")
 	}
 }

@@ -99,6 +99,63 @@ func (s *Server) auditPipe(ctx context.Context, key db.APIKey, action, target st
 	})
 }
 
+// formatAuditDelta picks the renderer that matches the action.
+//
+// The payload shape is per-action: a pipe event carries a retention
+// snapshot, an ACL event carries a principal and a permission. Running
+// one through the other's formatter does not fail — it silently reads
+// missing fields as zero — so before this existed, `acl.grant` rendered
+// as "ttl=0s, msgs=0, bytes=0", i.e. the trail claimed a grant had reset
+// the pipe's retention. A misleading audit line is worse than none.
+func formatAuditDelta(action string, before, after []byte) string {
+	switch action {
+	case db.AuditActionACLGrant, db.AuditActionACLRevoke:
+		return formatACLGrantDelta(action, before, after)
+	case db.AuditActionACLEnforce:
+		return formatACLEnforceDelta(before, after)
+	default:
+		return formatRetentionDelta(before, after)
+	}
+}
+
+// formatACLGrantDelta renders "+read for bar" / "-read for bar".
+func formatACLGrantDelta(action string, before, after []byte) string {
+	payload := after
+	sign := "+"
+	if action == db.AuditActionACLRevoke {
+		payload, sign = before, "−"
+	}
+	var v struct {
+		Principal string `json:"principal"`
+		Perm      string `json:"perm"`
+	}
+	if len(payload) == 0 || json.Unmarshal(payload, &v) != nil || v.Principal == "" {
+		return ""
+	}
+	perm := v.Perm
+	if perm == "" || perm == "all" {
+		perm = "all permissions"
+	}
+	return sign + perm + " for " + v.Principal
+}
+
+// formatACLEnforceDelta renders "off → on".
+func formatACLEnforceDelta(before, after []byte) string {
+	state := func(b []byte) string {
+		var v struct {
+			Enforced bool `json:"enforced"`
+		}
+		if len(b) == 0 || json.Unmarshal(b, &v) != nil {
+			return "?"
+		}
+		if v.Enforced {
+			return "on"
+		}
+		return "off"
+	}
+	return state(before) + " → " + state(after)
+}
+
 // formatRetentionDelta renders the human line the audit tab shows.
 //
 // Only fields that MOVED appear: a `pipe set --ttl` row that also recites
@@ -203,7 +260,7 @@ func buildAuditRows(ctx context.Context, pool *db.Pool, events []db.AuditEvent) 
 			Target: ev.Target,
 			Actor:  usernames[ev.ActorUserID],
 			Via:    "web",
-			Delta:  formatRetentionDelta(ev.Before, ev.After),
+			Delta:  formatAuditDelta(ev.Action, ev.Before, ev.After),
 			When:   ev.CreatedAt.UTC().Format(time.RFC3339),
 		}
 		if row.Actor == "" {

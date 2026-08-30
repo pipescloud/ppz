@@ -309,7 +309,7 @@ func printPreview(body json.RawMessage) error {
 		fmt.Println("WARNING — handles whose owner has left the org:")
 		fmt.Println("  these become reachable only by org owner/admin.")
 		for _, o := range p.OrphanedHandles {
-			fmt.Printf("  %s (owner %q)\n", o["handle"], o["owner"])
+			fmt.Printf("  %s — owner %s has left the org\n", o["handle"], o["owner"])
 		}
 		fmt.Println()
 	}
@@ -323,7 +323,7 @@ func printPreview(body json.RawMessage) error {
 		}
 		fmt.Println(title)
 		for _, r := range rows {
-			fmt.Printf("  %s (stays with %q)\n", r[k], r["owner"])
+			fmt.Printf("  %s — stays with %s\n", r[k], r["owner"])
 		}
 		fmt.Println()
 	}

@@ -200,7 +200,7 @@
         </tbody>
       </table>
       </div>
-      <p class="empty"><small>Actions taken with an API key are attributed to the key&#39;s creator — the server cannot know who typed the command, so a shared key names whoever minted it.</small></p>
+      <p class="empty"><small>Actions taken with an API key are attributed to the identity the key acts as — its creator for an ordinary key, or the service account for an agent&#39;s key. The server cannot know who typed the command, so a shared human key names whoever minted it.</small></p>
       {{else}}
       <p class="empty">No audited actions yet.</p>
       {{end}}
