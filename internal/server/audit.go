@@ -44,13 +44,22 @@ func (r retentionSnapshot) mustJSON() []byte {
 
 // auditActorFromKey resolves the actor pair for an API-key request.
 //
-// The user is the key's CREATOR — the server genuinely cannot know who
-// typed the command, so with a shared org key every change attributes to
-// whoever minted the key. Returning the key id alongside is what lets the
-// GUI render "via key" rather than implying a person was at a keyboard.
+// The actor is the key's PRINCIPAL — who the key acts as. For an
+// ordinary key that is its creator, preserving the original reasoning:
+// the server cannot know who typed the command, so a shared org key
+// attributes to whoever minted it.
+//
+// For a service-account key (ACL Phase 1) principal and creator differ,
+// and the principal is the right answer — nobody typed anything, the bot
+// genuinely IS the actor. Attributing its work to the human who minted
+// its key would make the trail misleading exactly where it matters most:
+// the reader sees a person taking an action they never took.
+//
+// Returning the key id alongside is what lets the GUI render "via key"
+// rather than implying a person was at a keyboard.
 func auditActorFromKey(key db.APIKey) (uuid.UUID, *uuid.UUID) {
 	id := key.ID
-	return key.CreatedByUserID, &id
+	return key.Actor(), &id
 }
 
 // recordAudit appends one row, best-effort.
@@ -207,4 +216,50 @@ func buildAuditRows(ctx context.Context, pool *db.Pool, events []db.AuditEvent) 
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// auditACL records one access-control change.
+//
+// Unlike auditPipe this takes the AuthedCaller rather than a db.APIKey,
+// because the ACL routes are mounted on requireBearer: the caller may
+// have arrived on a session token with no key at all, in which case
+// ActorAPIKeyID stays nil and the GUI renders it as a person rather than
+// "via key".
+func (s *Server) auditACL(ctx context.Context, accountID uuid.UUID, caller AuthedCaller, action, targetType, target string, before, after []byte) {
+	var keyID *uuid.UUID
+	if caller.APIKey != nil {
+		id := caller.APIKey.ID
+		keyID = &id
+	}
+	s.recordAudit(ctx, db.AuditEvent{
+		AccountID:     accountID,
+		ActorUserID:   caller.Principal(),
+		ActorAPIKeyID: keyID,
+		Action:        action,
+		TargetType:    targetType,
+		Target:        target,
+		Before:        before,
+		After:         after,
+	})
+}
+
+// aclGrantDelta is the before/after payload for a grant or revoke: who
+// was named and what they were given. Kept minimal on purpose — the
+// trail records the change, not a snapshot of everything the principal
+// could reach, which is derived and would be stale the moment a pipe is
+// created.
+func aclGrantDelta(principal, perm string) []byte {
+	b, err := json.Marshal(map[string]string{"principal": principal, "perm": perm})
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+func aclEnforceDelta(on bool) []byte {
+	b, err := json.Marshal(map[string]bool{"enforced": on})
+	if err != nil {
+		return nil
+	}
+	return b
 }

@@ -85,6 +85,10 @@ func (s *Server) handleSetPipe(w http.ResponseWriter, r *http.Request, key db.AP
 		writeErr(w, cliproto.NewInvalidPipeName(name))
 		return
 	}
+	if err := s.requirePipeAdmin(r.Context(), key, handle+"."+name); err != nil {
+		writeErr(w, cliproto.New(cliproto.EPipeForbidden))
+		return
+	}
 	if namesNoRetention(req) {
 		writeErr(w, &cliproto.Error{Code: cliproto.EInvalidPipe,
 			Message: "pipe set: name at least one of --ttl, --max-msgs, --max-bytes"})
@@ -189,6 +193,14 @@ func (s *Server) handleSetPipeFullPath(w http.ResponseWriter, r *http.Request, k
 				return
 			}
 		}
+	}
+	uncollaredPath := req.Name
+	if req.Manifold != "" {
+		uncollaredPath = req.Manifold + "." + req.Name
+	}
+	if err := s.requirePipeAdmin(r.Context(), key, uncollaredPath); err != nil {
+		writeErr(w, cliproto.New(cliproto.EPipeForbidden))
+		return
 	}
 	if namesNoRetention(req) {
 		writeErr(w, &cliproto.Error{Code: cliproto.EInvalidPipe,

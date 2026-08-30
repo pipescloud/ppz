@@ -349,6 +349,7 @@ func (s *Server) mutateACL(w http.ResponseWriter, r *http.Request, grant bool) {
 		return
 	}
 
+	me2 := CallerFromCtx(r.Context())
 	target, err := db.ResolvePrincipal(r.Context(), s.Pool, org.ID, org.Name, req.Principal)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such principal: " + req.Principal})
@@ -370,6 +371,14 @@ func (s *Server) mutateACL(w http.ResponseWriter, r *http.Request, grant bool) {
 			return
 		}
 	}
+	// An access-control change is the edit most worth auditing: its whole
+	// purpose is to alter who can see what.
+	action, before, after := db.AuditActionACLGrant, []byte(nil), aclGrantDelta(target.DisplayName(), req.Perm)
+	if !grant {
+		action, before, after = db.AuditActionACLRevoke, aclGrantDelta(target.DisplayName(), req.Perm), nil
+	}
+	s.auditACL(r.Context(), org.ID, me2, action, db.AuditTargetPipe, req.Pipe, before, after)
+
 	s.notifyACLChanged(r.Context(), org.ID)
 	writeJSON(w, http.StatusOK, map[string]string{
 		"pipe": req.Pipe, "principal": target.DisplayName(), "perm": req.Perm,

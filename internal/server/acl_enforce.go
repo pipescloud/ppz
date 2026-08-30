@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -179,10 +180,13 @@ func (s *Server) handleAPIACLEnforce(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		was, _ := db.ACLEnforced(ctx, s.Pool, org.ID)
 		if err := db.SetACLEnforced(ctx, s.Pool, org.ID, req.Enforced); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
+		s.auditACL(ctx, org.ID, CallerFromCtx(r.Context()), db.AuditActionACLEnforce,
+			db.AuditTargetOrg, org.Name, aclEnforceDelta(was), aclEnforceDelta(req.Enforced))
 		s.notifyACLChanged(ctx, org.ID)
 		writeJSON(w, http.StatusOK, map[string]bool{"enforced": req.Enforced})
 		return
@@ -415,10 +419,14 @@ func (s *Server) handleGUISetACLEnforce(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	on := r.FormValue("enforced") == "on" || r.FormValue("enforced") == "true"
+	was, _ := db.ACLEnforced(r.Context(), s.Pool, org.ID)
 	if err := db.SetACLEnforced(r.Context(), s.Pool, org.ID, on); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	// Session path: no API key, so the trail names the person directly.
+	s.auditACL(r.Context(), org.ID, AuthedCaller{UserID: uid}, db.AuditActionACLEnforce,
+		db.AuditTargetOrg, org.Name, aclEnforceDelta(was), aclEnforceDelta(on))
 	s.notifyACLChanged(r.Context(), org.ID)
 	browserSubmit(w, r)
 }
@@ -443,3 +451,62 @@ func (s *Server) notifyACLChanged(ctx context.Context, accountID uuid.UUID) {
 	_ = oa.NC.Publish(natsubj.SystemACLSubject(accountID), nil)
 	_ = oa.NC.Flush()
 }
+
+// requirePipeAdmin refuses a pipe-management operation unless the caller
+// holds admin on that pipe.
+//
+// Only bites while the org has opted into enforcement — with it off this
+// returns nil without touching the ACL tables, so nothing about an
+// un-opted-in org's behaviour changes.
+//
+// Applies to retention changes (`ppz pipe set`) as well as create and
+// destroy: retention is what `admin` is defined to cover, and pipe set
+// deliberately reaches reserved auto-pipes that `pipe create` can never
+// name — so leaving it ungated would let any member shorten the TTL on
+// another principal's stdout and silently discard their history.
+func (s *Server) requirePipeAdmin(ctx context.Context, key db.APIKey, path string) error {
+	// No pool means no enforcement state to consult — the validation-only
+	// handler tests construct a Server without one.
+	if s == nil || s.Pool == nil {
+		return nil
+	}
+	enforced, err := db.ACLEnforced(ctx, s.Pool, key.AccountID)
+	if err != nil || !enforced {
+		return nil
+	}
+	principal := key.Actor()
+	u, err := db.GetUser(ctx, s.Pool, principal)
+	if err != nil {
+		return errors.New("no principal")
+	}
+	role, err := s.RoleInOrg(ctx, principal, key.AccountID)
+	if err != nil {
+		return err
+	}
+	p := acl.Principal{ID: principal, Name: u.DisplayName(), OrgRole: acl.OrgRole(role)}
+
+	srcRows, err := db.ListSourcesForOrg(ctx, s.Pool, key.AccountID)
+	if err != nil {
+		return err
+	}
+	sources := make(map[string]db.Source, len(srcRows))
+	for _, src := range srcRows {
+		sources[src.Handle] = src
+	}
+	stored, err := db.ListACLGrantsForPrincipal(ctx, s.Pool, key.AccountID, principal)
+	if err != nil {
+		return err
+	}
+	grants := make([]acl.Grant, 0, len(stored))
+	for _, g := range stored {
+		grants = append(grants, g.ToACL())
+	}
+	if !acl.Evaluate(p, subjectFor(acl.PipeRef{Path: path}, sources), grants).Has(acl.Admin) {
+		return errPipeForbidden
+	}
+	return nil
+}
+
+// errPipeForbidden is the sentinel the pipe handlers map to
+// E_PIPE_FORBIDDEN.
+var errPipeForbidden = errors.New("admin required on this pipe")

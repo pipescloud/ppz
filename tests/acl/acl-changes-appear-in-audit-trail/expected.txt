@@ -1,0 +1,7 @@
+--- acl actions in the trail, oldest first ---
+acl.grant ops.deploy-log
+acl.enforce alpha
+acl.revoke ops.deploy-log
+--- the grant records who and what ---
+foo {"perm": "read", "principal": "bar"}
+exit=0
