@@ -92,6 +92,45 @@ func TestCompile_WriteGrantsSubjectPubOnly(t *testing.T) {
 	}
 }
 
+// A pipe's logical path is NOT always the subject it rides. `heartbeat`
+// routes to the presence family (`<account>._presence.<handle>`) — that
+// is the whole point of Phase 0b — so compiling pub/sub entries from the
+// logical path emits permissions for a subject nothing publishes to, and
+// withholds the one that matters.
+//
+// Reads happen to survive that mismatch because the blanket
+// `_presence.>` sub-allow masks it. Writes have no equivalent, so every
+// heartbeat publish in the org would be denied the moment enforcement is
+// switched on — silently, because the heartbeat ticker discards its
+// error, taking `ppz who` down for everyone including the org owner.
+func TestCompile_UsesTheWireSubjectNotTheLogicalPath(t *testing.T) {
+	presence := PipeRef{
+		Path:    "alice.heartbeat",
+		Subject: testAcct + "._presence.alice",
+		Stream:  "presence_11111111_alice",
+	}
+	perms := Compile(testAcct, []Access{{Pipe: presence, Perm: Read | Write}})
+
+	if !hasEntry(perms.PubAllow, testAcct+"._presence.alice") {
+		t.Errorf("write must be granted on the wire subject: %v", perms.PubAllow)
+	}
+	if hasEntry(perms.PubAllow, testAcct+".alice.heartbeat") {
+		t.Error("compiled a permission for the logical path, which nothing publishes to")
+	}
+	if !hasEntry(perms.SubAllow, testAcct+"._presence.alice") {
+		t.Errorf("read must be granted on the wire subject: %v", perms.SubAllow)
+	}
+}
+
+// Ordinary pipes ride their logical path, so Subject and Path agree and
+// nothing changes for them.
+func TestCompile_FallsBackToPathWhenSubjectUnset(t *testing.T) {
+	perms := compileOne("alice.inbox", "pipe_11111111_alice_inbox", Write)
+	if !hasEntry(perms.PubAllow, testAcct+".alice.inbox") {
+		t.Errorf("a pipe whose subject equals its path must still compile: %v", perms.PubAllow)
+	}
+}
+
 // Every principal needs its own inbox for PubAcks and consumer
 // delivery. Without it nothing works at all, so it is unconditional.
 func TestCompile_AlwaysAllowsOwnInbox(t *testing.T) {

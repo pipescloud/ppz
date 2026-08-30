@@ -17,7 +17,7 @@ import (
 
 type APIKey struct {
 	ID              uuid.UUID
-	AccountID  uuid.UUID
+	AccountID       uuid.UUID
 	CreatedByUserID uuid.UUID // user that minted the key (NOT NULL)
 	// PrincipalUserID is the identity the key ACTS AS — the subject an
 	// ACL grant names. Seeded from CreatedByUserID by migration 0007,
@@ -88,7 +88,8 @@ const (
 )
 
 // HashAPIKey produces a self-describing argon2id hash:
-//   $argon2id$v=19$m=65536,t=1,p=4$<base64-salt>$<base64-tag>
+//
+//	$argon2id$v=19$m=65536,t=1,p=4$<base64-salt>$<base64-tag>
 func HashAPIKey(plaintext string) (string, error) {
 	salt := make([]byte, a2SaltLen)
 	if _, err := rand.Read(salt); err != nil {

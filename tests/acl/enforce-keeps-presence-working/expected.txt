@@ -1,0 +1,5 @@
+--- enable enforcement first ---
+true
+--- an agent started under enforcement still reports presence ---
+presence=live
+exit=0

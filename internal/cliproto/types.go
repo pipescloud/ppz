@@ -19,19 +19,19 @@ const (
 	IPCSend      = "Send"
 	IPCSendBatch = "SendBatch"
 
-	IPCList          = "List"
-	IPCListWatch     = "ListWatch"
-	IPCSubscribe     = "Subscribe"
-	IPCRead          = "Read"
-	IPCConnect       = "Connect"
-	IPCDisconnect    = "Disconnect"
-	IPCPipeCreate    = "PipeCreate"
-	IPCPipeSet       = "PipeSet"
+	IPCList       = "List"
+	IPCListWatch  = "ListWatch"
+	IPCSubscribe  = "Subscribe"
+	IPCRead       = "Read"
+	IPCConnect    = "Connect"
+	IPCDisconnect = "Disconnect"
+	IPCPipeCreate = "PipeCreate"
+	IPCPipeSet    = "PipeSet"
 	// IPCACL carries every ACL verb (ACL Phase 2). One verb rather than
 	// five: the daemon is a pure HTTP passthrough here — no NATS, no
 	// state — so the dispatch belongs in the Action field, not in the
 	// IPC surface.
-	IPCACL = "ACL"
+	IPCACL           = "ACL"
 	IPCPipeDestroy   = "PipeDestroy"
 	IPCSourceDestroy = "SourceDestroy"
 	// IPCEnsurePTY promotes the session's current source to a full terminal
@@ -617,6 +617,12 @@ type AuthExchangeReply struct {
 	// connecting to the NATS server URL. Re-fetch before ExpiresAt
 	// (currently 5min) by re-running /auth/exchange with the same
 	// bearer.
+	// ACLEnforced tells the daemon whether this org enforces ACLs, so it
+	// can tell a refusal apart from a transport fault. Without it a
+	// denied stream enumeration and a NATS hiccup look identical, and
+	// degrading on both would hide real failures from every org —
+	// including the ones that never opted in.
+	ACLEnforced  bool   `json:"acl_enforced"`
 	NATSUserJWT  string `json:"nats_user_jwt"`
 	NATSUserSeed string `json:"nats_user_seed"`
 }
@@ -674,7 +680,7 @@ type CompleteReply struct {
 // default) is distinguishable from "explicitly zero".
 //
 // Phase 1.5 fields per locked decision #18 four-role grammar:
-//   - Manifold:     hierarchical-grouping segment string (” = root)
+//   - Manifold:     hierarchical-grouping segment string ('' = root)
 //   - SourceHandle: actor identity name; nil = uncollared (sourceless)
 //
 // Handle is retained as a backward-compat alias for SourceHandle until

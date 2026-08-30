@@ -1,0 +1,5 @@
+--- ls degrades rather than failing ---
+ls=ok
+--- and still lists the pipes it can see ---
+ops.deploy-log
+exit=0

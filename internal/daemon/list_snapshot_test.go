@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/pipescloud/ppz/internal/cliproto"
@@ -20,7 +21,7 @@ func TestStreamInfoByNameListsStreamsOnce(t *testing.T) {
 		},
 	}
 
-	got, err := streamInfoByName(context.Background(), provider, accountID)
+	got, err := streamInfoByName(context.Background(), provider, accountID, false)
 	if err != nil {
 		t.Fatalf("streamInfoByName: %v", err)
 	}
@@ -71,3 +72,18 @@ type fakeStreamInfoLister struct {
 
 func (l fakeStreamInfoLister) Info() <-chan *jetstream.StreamInfo { return l.infos }
 func (l fakeStreamInfoLister) Err() error                         { return l.err }
+
+// A denied stream enumeration and an unreachable server both surface as
+// a timeout, so degrading on a timeout alone would silently render `ls`
+// without counts for every org — including ones that never opted into
+// enforcement, where a denial is impossible and the timeout is real.
+func TestStreamInfoByName_TimeoutIsATransportFaultWhenNotEnforced(t *testing.T) {
+	provider := &fakeStreamInfoProvider{err: nats.ErrTimeout}
+
+	if _, err := streamInfoByName(context.Background(), provider, uuid.New(), false); err == nil {
+		t.Error("a timeout must surface as an error when the org does not enforce ACLs")
+	}
+	if _, err := streamInfoByName(context.Background(), provider, uuid.New(), true); err != nil {
+		t.Errorf("under enforcement a timeout is a denial and ls must degrade, got %v", err)
+	}
+}

@@ -23,7 +23,7 @@ type streamInfoListProvider interface {
 	ListStreams(context.Context, ...jetstream.StreamListOpt) jetstream.StreamInfoLister
 }
 
-func streamInfoByName(ctx context.Context, js streamInfoListProvider, accountID uuid.UUID) (map[string]*jetstream.StreamInfo, error) {
+func streamInfoByName(ctx context.Context, js streamInfoListProvider, accountID uuid.UUID, aclEnforced bool) (map[string]*jetstream.StreamInfo, error) {
 	lister := js.ListStreams(ctx, jetstream.WithStreamListSubject(natsubj.OrgSubscription(accountID)))
 	infos := map[string]*jetstream.StreamInfo{}
 	for info := range lister.Info() {
@@ -40,7 +40,7 @@ func streamInfoByName(ctx context.Context, js streamInfoListProvider, accountID 
 		// design (docs/ACL.md: "lists pipes you cannot read, marked;
 		// suppresses their contents") — rather than failing the whole
 		// verb. Counts and previews are the part that is withheld.
-		if isEnumerationDenied(err) {
+		if aclEnforced && isEnumerationDenied(err) {
 			return map[string]*jetstream.StreamInfo{}, nil
 		}
 		return nil, err
@@ -49,9 +49,15 @@ func streamInfoByName(ctx context.Context, js streamInfoListProvider, accountID 
 }
 
 // isEnumerationDenied distinguishes "the server refused this" from a
-// genuine transport failure. A denied JS API request surfaces either as
-// an explicit permissions error or, because the reply never comes, as a
-// timeout on the inbox — so both shapes count here.
+// genuine transport failure.
+//
+// A denied JS API request surfaces either as an explicit permissions
+// error or — because the reply never comes — as a timeout on the inbox,
+// so both shapes count. A bare timeout is ALSO what an unreachable
+// server looks like, which is why callers gate this on the org actually
+// enforcing ACLs: without that gate a NATS hiccup would silently render
+// `ls` without counts for every org, including ones that never opted in,
+// turning a real failure into a quietly degraded page.
 func isEnumerationDenied(err error) bool {
 	if errors.Is(err, nats.ErrPermissionViolation) ||
 		errors.Is(err, nats.ErrTimeout) ||
@@ -96,8 +102,8 @@ func applyRetention(info *cliproto.PipeInfo, cfg jetstream.StreamConfig) {
 	info.MaxBytes = cfg.MaxBytes
 }
 
-func enrichSourcesWithPipeInfo(ctx context.Context, js jetstream.JetStream, sources []cliproto.Source, accountID uuid.UUID, session string, patterns []string, cursors map[string]cursorEntry, long bool) ([]cliproto.Source, error) {
-	streamInfos, err := streamInfoByName(ctx, js, accountID)
+func enrichSourcesWithPipeInfo(ctx context.Context, js jetstream.JetStream, sources []cliproto.Source, accountID uuid.UUID, session string, patterns []string, cursors map[string]cursorEntry, long bool, aclEnforced bool) ([]cliproto.Source, error) {
+	streamInfos, err := streamInfoByName(ctx, js, accountID, aclEnforced)
 	if err != nil {
 		return nil, err
 	}

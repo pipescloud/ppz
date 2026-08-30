@@ -184,6 +184,7 @@ func (d *Daemon) authExchangeRefresh(ctx context.Context, accountID string) (str
 	}
 	// Persist the refreshed creds so a daemon restart picks them up
 	// without an immediate /auth/exchange round-trip.
+	d.aclEnforced.Store(ex.ACLEnforced)
 	creds.NATSUserJWT = ex.NATSUserJWT
 	creds.NATSUserSeed = ex.NATSUserSeed
 	_ = d.State.SetLogin(*creds, ex.AccountID, ex.AccountName, keyPrefix(creds.APIKey))
@@ -205,8 +206,8 @@ func (d *Daemon) startRefreshLoop(accountID, jwt, seed string, expUnix int64) {
 		lastRefreshErrAt     time.Time
 	)
 	d.Refresh = &RefreshLoop{
-		AccountID:   accountID,
-		Refresh: d.authExchangeRefresh,
+		AccountID: accountID,
+		Refresh:   d.authExchangeRefresh,
 		OnUnauthorized: func(string) {
 			d.State.SetLoginCheck(cliproto.LoginCheckInvalid)
 		},
@@ -316,6 +317,13 @@ func (d *Daemon) handleLogin(ctx context.Context, conn net.Conn, params json.Raw
 	// no recovery path — bootstrapNATS only re-exchanges when NATSURL is
 	// empty, and rebuildNC gates on the same failing parse. Reject the
 	// exchange outright, before anything is overwritten.
+	// Record the org's enforcement state here too, not just on the
+	// refresh path. Logging in to an org that ALREADY enforces hands
+	// this daemon a restrictive credential immediately, and without the
+	// flag it cannot tell a denied stream enumeration from a transport
+	// fault — `ppz ls` would fail hard instead of degrading, and would
+	// keep doing so until the first refresh near credential expiry.
+	d.aclEnforced.Store(ex.ACLEnforced)
 	if _, err := uuid.Parse(ex.AccountID); err != nil {
 		writeIPCErr(conn, &cliproto.Error{Code: "E_PROTOCOL", Message: fmt.Sprintf("auth exchange returned invalid account id %q", ex.AccountID)})
 		return
@@ -373,7 +381,7 @@ func (d *Daemon) handleLogin(ctx context.Context, conn net.Conn, params json.Raw
 	if newNC != nil {
 		if aid, err := uuid.Parse(ex.AccountID); err == nil {
 			_, _ = d.subscribePresence(aid)
-		_, _ = d.subscribeSystem(aid)
+			_, _ = d.subscribeSystem(aid)
 		}
 	} else {
 		// Best-effort dial failed: with no conn there is no "closed"
@@ -472,6 +480,7 @@ func (d *Daemon) bootstrapNATS(ctx context.Context, creds *Credentials) error {
 		d.NATSURL = natsURL
 		// Refresh persisted creds with the new JWT/seed so reconnects
 		// don't depend on stale on-disk values.
+		d.aclEnforced.Store(ex.ACLEnforced)
 		creds.NATSUserJWT = ex.NATSUserJWT
 		creds.NATSUserSeed = ex.NATSUserSeed
 		// Adopt the account the server actually minted the JWT in — not the
@@ -1446,7 +1455,7 @@ func (d *Daemon) handleList(ctx context.Context, conn net.Conn, params json.RawM
 		return
 	}
 
-	enriched, err := enrichSourcesWithPipeInfo(ctx, js, lr.Sources, accountID, req.Session, nil, cursorSnapshot(d.Cursors, req.Session), req.Long)
+	enriched, err := enrichSourcesWithPipeInfo(ctx, js, lr.Sources, accountID, req.Session, nil, cursorSnapshot(d.Cursors, req.Session), req.Long, d.aclEnforced.Load())
 	if err != nil {
 		writeIPCErr(conn, cliproto.New(cliproto.ENATSUnreachable))
 		return

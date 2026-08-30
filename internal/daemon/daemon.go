@@ -88,6 +88,11 @@ type Daemon struct {
 	// credential. Under ACL enforcement that means holding access that
 	// has already been narrowed.
 	ncGen uint64
+
+	// aclEnforced mirrors the org's enforcement state from the last
+	// /auth/exchange. Read by the list path to tell a refusal apart
+	// from a transport fault — see isEnumerationDenied.
+	aclEnforced atomic.Bool
 	// dial builds a fresh NATS connection; injectable so tests can
 	// substitute a stub. Defaults to connectNATSWithRefresh.
 	dial func(url string, r *RefreshLoop, store func(NATSEvent)) (*nats.Conn, error)

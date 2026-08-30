@@ -16,11 +16,34 @@ package acl
 
 import "strings"
 
-// PipeRef is one pipe: its subject path (no account prefix) and the
-// JetStream stream backing it.
+// PipeRef is one pipe: how it is NAMED, where it actually rides, and the
+// JetStream stream behind it. The three are not interchangeable.
+//
+// Path is the logical path an ACL selector matches — `alice.heartbeat`.
+// Subject is the NATS subject the pipe is really published to and
+// subscribed on, which for presence is `<account>._presence.<handle>`
+// rather than the logical path (Phase 0b). Stream is the JetStream
+// stream name, which flattens dots to underscores.
+//
+// Keeping the wire subject here rather than deriving it from Path is
+// what stops the compiler emitting permissions for a subject nothing
+// uses: an earlier version built pub/sub entries from Path, which
+// silently denied every heartbeat publish in an org the moment
+// enforcement was switched on.
 type PipeRef struct {
-	Path   string
-	Stream string
+	Path    string
+	Subject string
+	Stream  string
+}
+
+// wireSubject is where this pipe is actually published and subscribed.
+// Falls back to the account-qualified logical path for the ordinary case
+// where the two coincide, and for callers that only care about matching.
+func (r PipeRef) wireSubject(accountID string) string {
+	if r.Subject != "" {
+		return r.Subject
+	}
+	return accountID + "." + r.Path
 }
 
 // Access is a principal's effective permission on one pipe.
@@ -123,11 +146,11 @@ func Compile(accountID string, access []Access) Permissions {
 	for _, a := range access {
 		perm := a.Perm.Effective()
 		if perm&Write != 0 {
-			p.PubAllow = append(p.PubAllow, accountID+"."+a.Pipe.Path)
+			p.PubAllow = append(p.PubAllow, a.Pipe.wireSubject(accountID))
 		}
 		if perm&Read != 0 {
 			// The live tail is a core subscription on the subject.
-			p.SubAllow = append(p.SubAllow, accountID+"."+a.Pipe.Path)
+			p.SubAllow = append(p.SubAllow, a.Pipe.wireSubject(accountID))
 			readable = append(readable, a.Pipe)
 			continue
 		}

@@ -41,8 +41,12 @@ func (s *Server) aclPipeRefs(ctx context.Context, accountID uuid.UUID) ([]acl.Pi
 		}
 		seen[path] = true
 		out = append(out, acl.PipeRef{
-			Path:   path,
-			Stream: natsubj.BuildStreamName(accountID, manifold, handle, name),
+			Path: path,
+			// The wire subject, not the logical path: BuildSubject
+			// routes `heartbeat` to the presence family, and compiling
+			// permissions from the path would deny every beat.
+			Subject: natsubj.BuildSubject(accountID, manifold, handle, name),
+			Stream:  natsubj.BuildStreamName(accountID, manifold, handle, name),
 		})
 	}
 	for _, src := range sources {
@@ -141,11 +145,11 @@ func (s *Server) principalAccess(ctx context.Context, accountID, principalID uui
 // natsPermissionsFor is what /auth/exchange asks for. When the org has
 // not opted in this returns the wide-open credential unchanged, without
 // touching the ACL tables at all.
-func (s *Server) natsPermissionsFor(ctx context.Context, accountID, principalID uuid.UUID) (acl.Permissions, error) {
-	enforced, err := db.ACLEnforced(ctx, s.Pool, accountID)
-	if err != nil {
-		return acl.Permissions{}, err
-	}
+// natsPermissionsFor takes the org's enforcement state rather than
+// re-reading it: the caller has already looked it up to put on the
+// exchange reply, and two reads could in principle disagree if the
+// switch were flipped between them.
+func (s *Server) natsPermissionsFor(ctx context.Context, accountID, principalID uuid.UUID, enforced bool) (acl.Permissions, error) {
 	if !enforced {
 		return credentialPermissions(false, accountID.String(), nil), nil
 	}
