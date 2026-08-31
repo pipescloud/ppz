@@ -143,9 +143,13 @@ var jsAPITimeout = 5 * time.Second
 func (d *Daemon) jetStream() (jetstream.JetStream, *cliproto.Error) {
 	d.ncMu.Lock()
 	nc := d.NC
+	noConn := d.noConnErrLocked()
 	d.ncMu.Unlock()
 	if nc == nil {
-		return nil, cliproto.New(cliproto.ENATSUnreachable)
+		// Report why the dial failed when we know — an oversized ACL
+		// credential is not "unreachable", and saying so sent a real
+		// outage down the network/re-login path for hours.
+		return nil, noConn
 	}
 	js, err := jetstream.New(nc, jetstream.WithDefaultTimeout(jsAPITimeout))
 	if err != nil {

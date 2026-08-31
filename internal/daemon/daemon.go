@@ -88,6 +88,11 @@ type Daemon struct {
 	// credential. Under ACL enforcement that means holding access that
 	// has already been narrowed.
 	ncGen uint64
+	// lastDialErr is why the most recent dial failed, or nil after a
+	// successful one. Guarded by ncMu and read in the same critical
+	// section as NC, so "no connection" can always be reported with its
+	// cause instead of a generic unreachable.
+	lastDialErr *cliproto.Error
 
 	// aclEnforced mirrors the org's enforcement state from the last
 	// /auth/exchange. Read by the list path to tell a refusal apart
@@ -218,8 +223,16 @@ func (d *Daemon) rebuildNC(caller string) error {
 	}
 	nc, err := d.dialer()(d.NATSURL, d.Refresh, d.recordNATSEvent)
 	if err != nil || nc == nil {
-		return cliproto.New(cliproto.ENATSUnreachable)
+		// Classify rather than flatten: an oversized credential is
+		// deterministic and server-side, and telling the user to
+		// re-login (E_NATS_UNREACHABLE's advice) sends them round a loop
+		// that cannot terminate. Recorded so the call sites that later
+		// find no connection installed can say why.
+		cerr := natsDialError(err)
+		d.setDialErrLocked(cerr)
+		return cerr
 	}
+	d.clearDialErrLocked()
 	d.swapNCLocked(caller, nc) // stamps d.ncExp and emits any transition event
 	if aid, perr := uuid.Parse(d.State.AccountID()); perr == nil {
 		_, _ = d.subscribePresence(aid)

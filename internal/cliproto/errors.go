@@ -36,6 +36,17 @@ const (
 	// labelling it "unreachable" sends the reader looking at the network
 	// instead of at their grants.
 	EPipeForbidden Code = "E_PIPE_FORBIDDEN"
+	// ECredentialTooLarge — the minted NATS User JWT does not fit in the
+	// server's max control line, so the connection is refused by the
+	// protocol parser before authentication runs.
+	//
+	// Distinct from E_NATS_UNREACHABLE on purpose. "Unreachable" sends
+	// the reader at the network and at re-login, and its remediation
+	// ("logout then re-login") actively cannot work here: the fresh
+	// credential is the same size as the one that was rejected. The
+	// cause is the size of this principal's compiled ACL grants, and the
+	// fix is server-side.
+	ECredentialTooLarge Code = "E_CREDENTIAL_TOO_LARGE"
 	// EInvalidSubject is returned when a caller (CLI flag parser or IPC
 	// client) tries to set a Subject value that violates the reserved-
 	// prefix invariant. Daemon-emitted protocol messages own the `ack:`
@@ -139,6 +150,8 @@ func ExitCode(c Code) int {
 		return 28
 	case EPipeForbidden:
 		return 29
+	case ECredentialTooLarge:
+		return 30
 	}
 	return 1
 }
@@ -183,6 +196,10 @@ func Message(c Code) string {
 		return "pipe with this name already exists on this source"
 	case EPipeForbidden:
 		return "access denied by this org's pipe ACLs; run 'ppz acl whoami <pipe>' to see what you hold and who can grant more"
+	case ECredentialTooLarge:
+		// Deliberately does NOT suggest logout/re-login: the replacement
+		// credential is the same size, so that loop never terminates.
+		return "nats credential too large; this principal's compiled ACL grants exceed the server's max control line, so NATS refuses the connection before authenticating. Re-login cannot help — the new credential is the same size. Raise max_control_line on ppz-server, or narrow this principal's pipe grants"
 	case EPipeNotFound:
 		return "pipe not found on this source"
 	case EInvalidSchedule:

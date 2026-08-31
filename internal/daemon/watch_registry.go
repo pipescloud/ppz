@@ -174,7 +174,9 @@ func (d *Daemon) armWatch(subject string, cb nats.MsgHandler) (*watchEntry, *cli
 	d.ncMu.Lock()
 	defer d.ncMu.Unlock()
 	if d.NC == nil {
-		return nil, cliproto.New(cliproto.ENATSUnreachable)
+		// Same reasoning as jetStream(): report the recorded dial cause
+		// rather than a blanket unreachable.
+		return nil, d.noConnErrLocked()
 	}
 	sub, err := d.NC.Subscribe(subject, cb)
 	if err != nil {
