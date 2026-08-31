@@ -44,13 +44,22 @@ func (r retentionSnapshot) mustJSON() []byte {
 
 // auditActorFromKey resolves the actor pair for an API-key request.
 //
-// The user is the key's CREATOR — the server genuinely cannot know who
-// typed the command, so with a shared org key every change attributes to
-// whoever minted the key. Returning the key id alongside is what lets the
-// GUI render "via key" rather than implying a person was at a keyboard.
+// The actor is the key's PRINCIPAL — who the key acts as. For an
+// ordinary key that is its creator, preserving the original reasoning:
+// the server cannot know who typed the command, so a shared org key
+// attributes to whoever minted it.
+//
+// For a service-account key (ACL Phase 1) principal and creator differ,
+// and the principal is the right answer — nobody typed anything, the bot
+// genuinely IS the actor. Attributing its work to the human who minted
+// its key would make the trail misleading exactly where it matters most:
+// the reader sees a person taking an action they never took.
+//
+// Returning the key id alongside is what lets the GUI render "via key"
+// rather than implying a person was at a keyboard.
 func auditActorFromKey(key db.APIKey) (uuid.UUID, *uuid.UUID) {
 	id := key.ID
-	return key.CreatedByUserID, &id
+	return key.Actor(), &id
 }
 
 // recordAudit appends one row, best-effort.
@@ -88,6 +97,63 @@ func (s *Server) auditPipe(ctx context.Context, key db.APIKey, action, target st
 		Before:        before,
 		After:         after,
 	})
+}
+
+// formatAuditDelta picks the renderer that matches the action.
+//
+// The payload shape is per-action: a pipe event carries a retention
+// snapshot, an ACL event carries a principal and a permission. Running
+// one through the other's formatter does not fail — it silently reads
+// missing fields as zero — so before this existed, `acl.grant` rendered
+// as "ttl=0s, msgs=0, bytes=0", i.e. the trail claimed a grant had reset
+// the pipe's retention. A misleading audit line is worse than none.
+func formatAuditDelta(action string, before, after []byte) string {
+	switch action {
+	case db.AuditActionACLGrant, db.AuditActionACLRevoke:
+		return formatACLGrantDelta(action, before, after)
+	case db.AuditActionACLEnforce:
+		return formatACLEnforceDelta(before, after)
+	default:
+		return formatRetentionDelta(before, after)
+	}
+}
+
+// formatACLGrantDelta renders "+read for bar" / "-read for bar".
+func formatACLGrantDelta(action string, before, after []byte) string {
+	payload := after
+	sign := "+"
+	if action == db.AuditActionACLRevoke {
+		payload, sign = before, "−"
+	}
+	var v struct {
+		Principal string `json:"principal"`
+		Perm      string `json:"perm"`
+	}
+	if len(payload) == 0 || json.Unmarshal(payload, &v) != nil || v.Principal == "" {
+		return ""
+	}
+	perm := v.Perm
+	if perm == "" || perm == "all" {
+		perm = "all permissions"
+	}
+	return sign + perm + " for " + v.Principal
+}
+
+// formatACLEnforceDelta renders "off → on".
+func formatACLEnforceDelta(before, after []byte) string {
+	state := func(b []byte) string {
+		var v struct {
+			Enforced bool `json:"enforced"`
+		}
+		if len(b) == 0 || json.Unmarshal(b, &v) != nil {
+			return "?"
+		}
+		if v.Enforced {
+			return "on"
+		}
+		return "off"
+	}
+	return state(before) + " → " + state(after)
 }
 
 // formatRetentionDelta renders the human line the audit tab shows.
@@ -194,7 +260,7 @@ func buildAuditRows(ctx context.Context, pool *db.Pool, events []db.AuditEvent) 
 			Target: ev.Target,
 			Actor:  usernames[ev.ActorUserID],
 			Via:    "web",
-			Delta:  formatRetentionDelta(ev.Before, ev.After),
+			Delta:  formatAuditDelta(ev.Action, ev.Before, ev.After),
 			When:   ev.CreatedAt.UTC().Format(time.RFC3339),
 		}
 		if row.Actor == "" {
@@ -207,4 +273,50 @@ func buildAuditRows(ctx context.Context, pool *db.Pool, events []db.AuditEvent) 
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// auditACL records one access-control change.
+//
+// Unlike auditPipe this takes the AuthedCaller rather than a db.APIKey,
+// because the ACL routes are mounted on requireBearer: the caller may
+// have arrived on a session token with no key at all, in which case
+// ActorAPIKeyID stays nil and the GUI renders it as a person rather than
+// "via key".
+func (s *Server) auditACL(ctx context.Context, accountID uuid.UUID, caller AuthedCaller, action, targetType, target string, before, after []byte) {
+	var keyID *uuid.UUID
+	if caller.APIKey != nil {
+		id := caller.APIKey.ID
+		keyID = &id
+	}
+	s.recordAudit(ctx, db.AuditEvent{
+		AccountID:     accountID,
+		ActorUserID:   caller.Principal(),
+		ActorAPIKeyID: keyID,
+		Action:        action,
+		TargetType:    targetType,
+		Target:        target,
+		Before:        before,
+		After:         after,
+	})
+}
+
+// aclGrantDelta is the before/after payload for a grant or revoke: who
+// was named and what they were given. Kept minimal on purpose — the
+// trail records the change, not a snapshot of everything the principal
+// could reach, which is derived and would be stale the moment a pipe is
+// created.
+func aclGrantDelta(principal, perm string) []byte {
+	b, err := json.Marshal(map[string]string{"principal": principal, "perm": perm})
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+func aclEnforceDelta(on bool) []byte {
+	b, err := json.Marshal(map[string]bool{"enforced": on})
+	if err != nil {
+		return nil
+	}
+	return b
 }

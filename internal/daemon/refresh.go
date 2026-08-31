@@ -58,7 +58,7 @@ type OnRefreshedFn func(jwt, seed string, expUnix int64)
 // expiry. Concurrency: Current() may be called from any goroutine;
 // Start/Stop must be called from the same goroutine.
 type RefreshLoop struct {
-	AccountID          string
+	AccountID      string
 	Refresh        RefreshFn
 	OnUnauthorized func(accountID string)
 	OnRefreshed    OnRefreshedFn
@@ -80,6 +80,7 @@ type RefreshLoop struct {
 	seed    string
 	expUnix int64
 	lastAt  time.Time
+	gen     uint64
 	cancel  context.CancelFunc
 }
 
@@ -136,6 +137,24 @@ func (r *RefreshLoop) LastRefreshAt() time.Time {
 // post-rotation-auth-violation pattern relies on this to correlate
 // disconnects with rotation timing. Safe for concurrent callers; nil-
 // receiver returns 0 so callers can pass r.JWTExp without nil-checking.
+// Generation counts successful refreshes. It exists because JWTExp is
+// unix SECONDS: two refreshes landing in the same second mint
+// credentials with an identical exp, and a caller coalescing on exp
+// alone concludes it is already on the current generation and skips the
+// redial. The freshly-minted credential is then held but never used.
+//
+// Harmless while every credential carries the same permissions; once
+// ACL enforcement (Phase 3) makes a refresh able to NARROW access, the
+// skipped redial means a principal keeps using access it no longer has.
+func (r *RefreshLoop) Generation() uint64 {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.gen
+}
+
 func (r *RefreshLoop) JWTExp() int64 {
 	if r == nil {
 		return 0
@@ -203,6 +222,21 @@ func (r *RefreshLoop) run(ctx context.Context) {
 	}
 }
 
+// ForceRefresh re-exchanges immediately, regardless of how much of the
+// credential's lifetime is left, and fires OnRefreshed so the caller
+// rebuilds its NATS connection.
+//
+// Used when the server signals that access changed (ACL Phase 3). NATS
+// evaluates permissions only at connect, so a grant, revoke or
+// enforcement toggle does not reach a live connection until it redials
+// with a freshly minted credential.
+func (r *RefreshLoop) ForceRefresh(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	return r.refreshNow(ctx)
+}
+
 func (r *RefreshLoop) refreshNow(ctx context.Context) error {
 	newJWT, newSeed, newExp, err := r.Refresh(ctx, r.AccountID)
 	if err != nil && r.OnError != nil {
@@ -222,6 +256,7 @@ func (r *RefreshLoop) refreshNow(ctx context.Context) error {
 	r.jwt = newJWT
 	r.seed = newSeed
 	r.expUnix = newExp
+	r.gen++
 	r.lastAt = time.Now()
 	// Capture under lock; invoke without it so callers (the daemon's
 	// swapNC) can't deadlock with Current() / other RefreshLoop methods.

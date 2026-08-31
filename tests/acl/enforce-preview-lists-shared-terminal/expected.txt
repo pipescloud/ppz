@@ -1,0 +1,5 @@
+--- shared terminals that would become private ---
+alice owner=foo
+--- uncollared pipes are unaffected and not listed ---
+absent
+exit=0

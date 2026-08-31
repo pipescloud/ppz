@@ -83,20 +83,24 @@ func TestAPICreateInvite_MissingUsername_400(t *testing.T) {
 	}
 }
 
-func TestAPICreateInvite_APIKeyCaller_403(t *testing.T) {
-	// API-key bearers have UserID = uuid.Nil → handler should 403
-	// without touching the DB.
+func TestAPICreateInvite_NoPrincipal_403(t *testing.T) {
+	// A request with no authenticated caller has UserID = uuid.Nil →
+	// handler should 403 without touching the DB.
+	//
+	// Renamed in ACL Phase 0a: this used to be called
+	// ..._APIKeyCaller_403 on the premise that API-key bearers also
+	// carry uuid.Nil. They no longer do — a key resolves to its
+	// principal — so the only caller this guard rejects is an
+	// unauthenticated one.
 	srv := &Server{}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/orgs/alpha/invites", bytes.NewReader([]byte(`{"username":"alice"}`)))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("slug", "alpha")
-	// No authed caller in context (or one with UserID=uuid.Nil) — the
-	// no-context case is the same as an API-key caller for the purpose
-	// of this guard.
+	// No authed caller in context at all.
 	rec := httptest.NewRecorder()
 	srv.handleAPICreateInvite(rec, req)
 	if rec.Code != http.StatusForbidden {
-		t.Errorf("API-key caller should 403; got %d body=%s", rec.Code, rec.Body.String())
+		t.Errorf("caller with no principal should 403; got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -1,0 +1,8 @@
+--- bar holds write-only on alice.inbox ---
+{"read":false,"write":true}
+--- and so can see its roster ---
+bar
+foo
+--- bar holds nothing on alice.stdout, so is refused ---
+refused
+exit=0

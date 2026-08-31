@@ -68,6 +68,12 @@ var ValidPipes = map[string]bool{
 // `broadcast` is retained though Phase 1 removed it (locked decision
 // #16) — old rows may still name it, and skipping a name that no longer
 // exists costs nothing.
+//
+// ACL Phase 0c: the ACL default table (docs/ACL.md) is keyed on these
+// names too, and wants the same superset. A default for a pipe that
+// cannot exist is never consulted, whereas a set MISSING a provisioned
+// name silently grants the wrong access — which is what `system` and
+// `heartbeat` were doing before they were added here.
 var AutoProvisionedPipes = map[string]bool{
 	"broadcast": true,
 	"inbox":     true,
@@ -84,6 +90,10 @@ var ReservedPipeNames = map[string]bool{
 	"system": true,
 	"db":     true,
 	"inbox":  true,
+	// ACL Phase 0b: `heartbeat` routes to the presence subject family
+	// (presence.go). A user-created pipe of that name would collide
+	// with a source's presence stream.
+	"heartbeat": true,
 }
 
 // ValidChannels is a deprecated alias kept during the Phase A rename for any
@@ -153,6 +163,13 @@ func Subject(accountID uuid.UUID, handle, pipe string) string {
 // happens by DB row at create time. The builder just emits the
 // canonical dotted form.
 func BuildSubject(accountID uuid.UUID, manifold, source, pipe string) string {
+	// ACL Phase 0b: presence gets its own subject family so a daemon
+	// can subscribe to heartbeats without subscribing to every message
+	// in the org. Routed here so provisioning, publishing, reading and
+	// `ls` all agree — see presence.go.
+	if pipe == PresencePipe {
+		return PresenceSubject(accountID, manifold, source)
+	}
 	var b strings.Builder
 	b.WriteString(accountID.String())
 	if manifold != "" {
@@ -166,6 +183,25 @@ func BuildSubject(accountID uuid.UUID, manifold, source, pipe string) string {
 	b.WriteByte('.')
 	b.WriteString(pipe)
 	return b.String()
+}
+
+// StreamPrefixes lists every prefix ppz uses for its own JetStream
+// streams. IsPPZStream is the single check callers should use — the
+// admin wipe originally hard-coded {source_, pipe_}, so when ACL Phase
+// 0b added the presence_ family those streams survived every reset and
+// heartbeats accumulated across e2e scenarios.
+var StreamPrefixes = []string{"source_", "pipe_", "presence_"}
+
+// IsPPZStream reports whether a JetStream stream name belongs to ppz.
+// Anything else (internal $JS machinery, streams a user made directly)
+// is left alone.
+func IsPPZStream(name string) bool {
+	for _, p := range StreamPrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // StreamName produces the JetStream stream name per WIRE.md §2:
@@ -190,6 +226,10 @@ func StreamName(accountID uuid.UUID, handle, pipe string) string {
 //
 //	pipe_<orgshort>[_<manifold-underscored>][_<source>]_<name>
 func BuildStreamName(accountID uuid.UUID, manifold, source, name string) string {
+	// Presence streams carry their own prefix — see BuildSubject.
+	if name == PresencePipe {
+		return PresenceStreamName(accountID, manifold, source)
+	}
 	hex := strings.ReplaceAll(accountID.String(), "-", "")
 	if len(hex) > 8 {
 		hex = hex[:8]

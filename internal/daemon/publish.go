@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,6 +38,11 @@ func (d *Daemon) publishWithAck(subject string, data []byte) *cliproto.Error {
 	ctx, cancel := context.WithTimeout(context.Background(), jsPublishAckTimeout)
 	defer cancel()
 	if _, err := js.Publish(ctx, subject, data); err != nil {
+		// A denial is terminal: redialling cannot turn it into a
+		// success, and force-closing here makes the daemon thrash.
+		if isPermissionErr(err) {
+			return cliproto.New(cliproto.EPipeForbidden)
+		}
 		// Timeout on a live NC → zombie connection. Close so the next
 		// ensureNATS rebuilds rather than coalescing on the dead conn.
 		if !isNATSConnErr(err) {
@@ -108,6 +114,32 @@ func classifyPublishErr(err error) *cliproto.Error {
 // reportNATSFailure call in those cases.
 func isNATSConnErr(err error) bool {
 	return errors.Is(err, nats.ErrConnectionClosed) || errors.Is(err, nats.ErrNoServers)
+}
+
+// isPermissionErr reports whether the server REFUSED the operation, as
+// opposed to the transport failing.
+//
+// The distinction matters once ACLs are enforced (Phase 3). A denial is
+// terminal — retrying, force-closing the connection and redialling
+// cannot turn it into a success, and treating it as a transport fault
+// makes the daemon thrash: force_close, reconnect, denial, repeat. It
+// also mislabels a permissions problem as "nats unreachable", sending
+// whoever reads the error looking at the network instead of at their
+// grants.
+//
+// A denied JetStream request can surface two ways: as an explicit
+// permissions violation, or — because the reply never comes — as a
+// timeout on the caller's inbox. Only the explicit form is treated as a
+// denial here; a bare timeout stays a transport fault, since that is
+// also what a genuinely unreachable server looks like.
+func isPermissionErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, nats.ErrPermissionViolation) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "permissions violation")
 }
 
 // buildBroadcastEnvelope is the pure envelope-assembly step inside

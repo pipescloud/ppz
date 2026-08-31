@@ -1,0 +1,8 @@
+--- create service account ---
+builder-bot
+--- list shows the bare name ---
+builder-bot
+--- mint a key for it ---
+--- the service key acts as the service, not as foo ---
+{"handle":"deploybot","creator":"builder-bot"}
+exit=0

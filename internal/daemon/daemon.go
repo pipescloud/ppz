@@ -81,6 +81,18 @@ type Daemon struct {
 	// live Refresh.JWTExp() means creds rotated and NC must be rebuilt;
 	// matching means a concurrent caller already did it (coalesce).
 	ncExp int64
+	// ncGen is the RefreshLoop generation d.NC was dialed against.
+	// Checked alongside ncExp because exp is unix SECONDS: two refreshes
+	// in the same second produce an identical exp, and coalescing on exp
+	// alone would skip the redial and leave the daemon on the previous
+	// credential. Under ACL enforcement that means holding access that
+	// has already been narrowed.
+	ncGen uint64
+
+	// aclEnforced mirrors the org's enforcement state from the last
+	// /auth/exchange. Read by the list path to tell a refusal apart
+	// from a transport fault — see isEnumerationDenied.
+	aclEnforced atomic.Bool
 	// dial builds a fresh NATS connection; injectable so tests can
 	// substitute a stub. Defaults to connectNATSWithRefresh.
 	dial func(url string, r *RefreshLoop, store func(NATSEvent)) (*nats.Conn, error)
@@ -200,7 +212,8 @@ func (d *Daemon) rebuildNC(caller string) error {
 	if d.NATSURL == "" {
 		return nil // nothing to dial yet (pre-login / pre-bootstrap)
 	}
-	if d.NC != nil && d.NC.IsConnected() && d.ncExp == d.Refresh.JWTExp() {
+	if d.NC != nil && d.NC.IsConnected() &&
+		d.ncExp == d.Refresh.JWTExp() && d.ncGen == d.Refresh.Generation() {
 		return nil // already connected on the current generation — coalesce
 	}
 	nc, err := d.dialer()(d.NATSURL, d.Refresh, d.recordNATSEvent)
@@ -209,7 +222,8 @@ func (d *Daemon) rebuildNC(caller string) error {
 	}
 	d.swapNCLocked(caller, nc) // stamps d.ncExp and emits any transition event
 	if aid, perr := uuid.Parse(d.State.AccountID()); perr == nil {
-		d.subscribeOrgHeartbeats(aid)
+		_, _ = d.subscribePresence(aid)
+		_, _ = d.subscribeSystem(aid)
 	}
 	return nil
 }
@@ -332,8 +346,10 @@ func (d *Daemon) swapNCLocked(caller string, newNC *nats.Conn) {
 	// (creds gone) clears the generation.
 	if newNC != nil {
 		d.ncExp = d.Refresh.JWTExp()
+		d.ncGen = d.Refresh.Generation()
 	} else {
 		d.ncExp = 0
+		d.ncGen = 0
 	}
 	if d.NATSEvents != nil && newNC != nil {
 		switch {

@@ -173,7 +173,7 @@ func (d *Daemon) buildFilteredList(ctx context.Context, accountID uuid.UUID, ses
 		return cliproto.ListReply{}, e
 	}
 
-	enriched, err := enrichSourcesWithPipeInfo(ctx, js, lr.Sources, accountID, session, patterns, cursorSnapshot(d.Cursors, session), long)
+	enriched, err := enrichSourcesWithPipeInfo(ctx, js, lr.Sources, accountID, session, patterns, cursorSnapshot(d.Cursors, session), long, d.aclEnforced.Load())
 	if err != nil {
 		return cliproto.ListReply{}, cliproto.New(cliproto.ENATSUnreachable)
 	}

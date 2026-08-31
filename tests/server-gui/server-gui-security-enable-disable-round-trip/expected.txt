@@ -1,0 +1,13 @@
+--- enable from the GUI form ---
+status=200
+--- the tab now reports enforced and renders the rights table ---
+state=enforced
+rights-table=present
+--- bar's granted row is labelled as a grant, not a default ---
+grant-provenance=present
+--- disable again ---
+status=200
+--- back to off, and the grant survived ---
+state=off
+1
+exit=0

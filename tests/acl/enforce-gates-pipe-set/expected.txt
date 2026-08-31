@@ -1,0 +1,7 @@
+--- enforcement off: bar may still set retention ---
+allowed
+--- enforcement on: bar holds no admin on ops.deploy-log ---
+denied
+--- the pipe's owner still can ---
+owner allowed
+exit=0

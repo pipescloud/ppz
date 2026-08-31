@@ -18,6 +18,7 @@ import (
 
 	"github.com/pipescloud/ppz/internal/cliproto"
 	"github.com/pipescloud/ppz/internal/envelope"
+	"github.com/pipescloud/ppz/internal/natsubj"
 )
 
 // RED tests for the PR #193 round-2 review. The heartbeat findings
@@ -27,11 +28,18 @@ import (
 // in-flight callbacks, and no lock spans the login sequence, so
 // ordering alone can never be airtight.
 
-// orgHeartbeatMsg builds the NATS message an org-heartbeat subscription
-// would deliver: <account>.<handle>.heartbeat carrying an envelope.
-func orgHeartbeatMsg(account, handle, payload string) *nats.Msg {
+// presenceMsg builds the NATS message a presence subscription would
+// deliver, carrying an envelope.
+//
+// ACL Phase 0b moved presence off the <account>.> firehose onto its own
+// <account>._presence.<handle> family — the subject grammar changed, the
+// account-boundary invariant these tests pin did not.
+func presenceMsg(account, handle, payload string) *nats.Msg {
 	data, _ := json.Marshal(envelope.Message{Payload: payload})
-	return &nats.Msg{Subject: account + "." + handle + ".heartbeat", Data: data}
+	return &nats.Msg{
+		Subject: natsubj.PresenceSubject(uuid.MustParse(account), "", handle),
+		Data:    data,
+	}
 }
 
 // driveWho runs handleWho over a net.Pipe and returns the entries.
@@ -78,7 +86,7 @@ func TestWho_LateOldOrgCallbackAfterLogin(t *testing.T) {
 	}
 
 	// The straggler: an old-org callback completing after login is done.
-	d.stampOrgHeartbeat(uuid.MustParse(loginTestAcctOld), orgHeartbeatMsg(loginTestAcctOld, "alice", `{"harness":"claude"}`))
+	d.stampPresence(uuid.MustParse(loginTestAcctOld), presenceMsg(loginTestAcctOld, "alice", `{"harness":"claude"}`))
 
 	if got := driveWho(t, d); len(got) != 0 {
 		t.Fatalf("old-org beat delivered after login renders in `ppz who` under the new "+
@@ -105,7 +113,7 @@ func TestWho_NewOrgBeatDuringLoginSurvives(t *testing.T) {
 		if dials.Add(1) == 1 {
 			// Mid-login: the new org's subscription (armed by a
 			// concurrent rebuild) delivers a beat.
-			d.stampOrgHeartbeat(uuid.MustParse(loginTestAcctNew), orgHeartbeatMsg(loginTestAcctNew, "bob", `{"harness":"claude"}`))
+			d.stampPresence(uuid.MustParse(loginTestAcctNew), presenceMsg(loginTestAcctNew, "bob", `{"harness":"claude"}`))
 		}
 		return nil, os.ErrDeadlineExceeded
 	}
@@ -129,7 +137,7 @@ func TestWho_NewOrgBeatDuringLoginSurvives(t *testing.T) {
 func TestWho_LogoutHidesRows(t *testing.T) {
 	d := newLoginTestDaemon(t)
 	loginAsPriorAccount(t, d, loginTestAcctOld)
-	d.stampOrgHeartbeat(uuid.MustParse(loginTestAcctOld), orgHeartbeatMsg(loginTestAcctOld, "alice", `{"harness":"claude"}`))
+	d.stampPresence(uuid.MustParse(loginTestAcctOld), presenceMsg(loginTestAcctOld, "alice", `{"harness":"claude"}`))
 
 	// Logout: credentials file removed, state reloaded (what watchState
 	// does on the creds-gone transition).
@@ -140,7 +148,7 @@ func TestWho_LogoutHidesRows(t *testing.T) {
 		t.Fatalf("LoadFromDisk: %v", err)
 	}
 	// The straggler, finishing after the logout wipe.
-	d.stampOrgHeartbeat(uuid.MustParse(loginTestAcctOld), orgHeartbeatMsg(loginTestAcctOld, "eve", `{"harness":"claude"}`))
+	d.stampPresence(uuid.MustParse(loginTestAcctOld), presenceMsg(loginTestAcctOld, "eve", `{"harness":"claude"}`))
 
 	if got := driveWho(t, d); len(got) != 0 {
 		t.Fatalf("logged-out daemon renders %v in `ppz who`: rows must be scoped to the "+

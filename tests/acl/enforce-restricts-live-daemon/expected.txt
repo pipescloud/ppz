@@ -1,0 +1,7 @@
+--- off: bar can read ---
+secret
+--- enable ---
+true
+--- on: bar is denied, without restarting anything ---
+denied
+exit=0

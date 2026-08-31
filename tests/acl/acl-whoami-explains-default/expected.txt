@@ -1,0 +1,5 @@
+--- bar on alice.inbox ---
+{"read":false,"write":true,"admin":false}
+--- why ---
+default — inbox is write-open
+exit=0

@@ -37,6 +37,8 @@ func Run(args []string) error {
 		return cmdSourceGroup(rest)
 	case "pipe":
 		return cmdPipeGroup(rest)
+	case "acl":
+		return cmdACLGroup(rest)
 	case "terminal":
 		return cmdTerminal(rest)
 	case "agent":

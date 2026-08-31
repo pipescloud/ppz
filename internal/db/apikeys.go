@@ -17,8 +17,14 @@ import (
 
 type APIKey struct {
 	ID              uuid.UUID
-	AccountID  uuid.UUID
+	AccountID       uuid.UUID
 	CreatedByUserID uuid.UUID // user that minted the key (NOT NULL)
+	// PrincipalUserID is the identity the key ACTS AS — the subject an
+	// ACL grant names. Seeded from CreatedByUserID by migration 0007,
+	// but distinct: an ACL Phase 1 service-account key is created_by a
+	// human and acts_as the service. Never collapse the two, or the
+	// service inherits the human's rights.
+	PrincipalUserID uuid.UUID
 	KeyHash         string
 	KeyPrefix       string
 	Label           string
@@ -28,6 +34,21 @@ type APIKey struct {
 	// out revoked rows; the GUI shows them with strikethrough so the
 	// audit trail stays visible.
 	RevokedAt *time.Time
+}
+
+// Actor is the identity rows created through this key are attributed
+// to — the principal, not the minter. For an ordinary key the two are
+// the same; for a service-account key the minter is a human and the
+// actor is the bot, and crediting the human would misattribute the
+// agent's work (and, once ACLs land, evaluate the wrong subject).
+//
+// Falls back to CreatedByUserID so a synthetic APIKey built by the
+// OAuth path (which sets only that field) still resolves.
+func (k APIKey) Actor() uuid.UUID {
+	if k.PrincipalUserID != uuid.Nil {
+		return k.PrincipalUserID
+	}
+	return k.CreatedByUserID
 }
 
 // Revoked is a small accessor — useful from html/template, which can't
@@ -67,7 +88,8 @@ const (
 )
 
 // HashAPIKey produces a self-describing argon2id hash:
-//   $argon2id$v=19$m=65536,t=1,p=4$<base64-salt>$<base64-tag>
+//
+//	$argon2id$v=19$m=65536,t=1,p=4$<base64-salt>$<base64-tag>
 func HashAPIKey(plaintext string) (string, error) {
 	salt := make([]byte, a2SaltLen)
 	if _, err := rand.Read(salt); err != nil {
@@ -102,10 +124,19 @@ func VerifyAPIKey(plaintext, stored string) bool {
 	return subtle.ConstantTimeCompare(want, got) == 1
 }
 
-// InsertAPIKey mints a fresh plaintext key, hashes it, and writes the row.
-// `createdBy` is the user who minted the key — required (NOT NULL on the
-// table) so every key is attributable for `ppz ls` HUMAN.
-func InsertAPIKey(ctx context.Context, p *Pool, accountID, createdBy uuid.UUID, label string) (key APIKey, plaintext string, err error) {
+// InsertAPIKey mints a key that acts as its own creator — the ordinary
+// case. Equivalent to InsertAPIKeyAs with principal == createdBy.
+func InsertAPIKey(ctx context.Context, p *Pool, accountID, createdBy uuid.UUID, label string) (APIKey, string, error) {
+	return InsertAPIKeyAs(ctx, p, accountID, createdBy, createdBy, label)
+}
+
+// InsertAPIKeyAs mints a key whose principal differs from its creator.
+//
+// `createdBy` is who minted it (attribution / audit); `principal` is who
+// it ACTS AS — the subject an ACL grant names. They diverge for service
+// accounts: a human mints a key that acts as a bot. Collapsing them
+// would hand the bot the human's rights.
+func InsertAPIKeyAs(ctx context.Context, p *Pool, accountID, createdBy, principal uuid.UUID, label string) (key APIKey, plaintext string, err error) {
 	plaintext, err = GeneratePlaintextKey()
 	if err != nil {
 		return APIKey{}, "", err
@@ -116,17 +147,18 @@ func InsertAPIKey(ctx context.Context, p *Pool, accountID, createdBy uuid.UUID, 
 	}
 	key = APIKey{
 		ID:              uuid.New(),
-		AccountID:  accountID,
+		AccountID:       accountID,
 		CreatedByUserID: createdBy,
+		PrincipalUserID: principal,
 		KeyHash:         hash,
 		KeyPrefix:       KeyPrefix(plaintext),
 		Label:           label,
 		CreatedAt:       time.Now().UTC(),
 	}
 	_, err = p.Exec(ctx,
-		`INSERT INTO api_keys (id, account_id, created_by_user_id, key_hash, key_prefix, label, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		key.ID, key.AccountID, key.CreatedByUserID, key.KeyHash, key.KeyPrefix, key.Label, key.CreatedAt)
+		`INSERT INTO api_keys (id, account_id, created_by_user_id, principal_user_id, key_hash, key_prefix, label, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		key.ID, key.AccountID, key.CreatedByUserID, key.PrincipalUserID, key.KeyHash, key.KeyPrefix, key.Label, key.CreatedAt)
 	return key, plaintext, err
 }
 
@@ -136,7 +168,7 @@ func InsertAPIKey(ctx context.Context, p *Pool, accountID, createdBy uuid.UUID, 
 func LookupAPIKey(ctx context.Context, p *Pool, plaintext string) (APIKey, error) {
 	prefix := KeyPrefix(plaintext)
 	rows, err := p.Query(ctx,
-		`SELECT id, account_id, created_by_user_id, key_hash, key_prefix, label, created_at, revoked_at
+		`SELECT id, account_id, created_by_user_id, principal_user_id, key_hash, key_prefix, label, created_at, revoked_at
 		   FROM api_keys WHERE key_prefix = $1 AND revoked_at IS NULL`, prefix)
 	if err != nil {
 		return APIKey{}, err
@@ -144,7 +176,7 @@ func LookupAPIKey(ctx context.Context, p *Pool, plaintext string) (APIKey, error
 	defer rows.Close()
 	for rows.Next() {
 		var k APIKey
-		if err := rows.Scan(&k.ID, &k.AccountID, &k.CreatedByUserID, &k.KeyHash, &k.KeyPrefix, &k.Label, &k.CreatedAt, &k.RevokedAt); err != nil {
+		if err := rows.Scan(&k.ID, &k.AccountID, &k.CreatedByUserID, &k.PrincipalUserID, &k.KeyHash, &k.KeyPrefix, &k.Label, &k.CreatedAt, &k.RevokedAt); err != nil {
 			return APIKey{}, err
 		}
 		if VerifyAPIKey(plaintext, k.KeyHash) {
@@ -163,7 +195,7 @@ func LookupAPIKey(ctx context.Context, p *Pool, plaintext string) (APIKey, error
 // revoked rows.
 func ListAPIKeysForOrg(ctx context.Context, p *Pool, accountID uuid.UUID) ([]APIKey, error) {
 	rows, err := p.Query(ctx,
-		`SELECT id, account_id, created_by_user_id, key_hash, key_prefix, label, created_at, revoked_at
+		`SELECT id, account_id, created_by_user_id, principal_user_id, key_hash, key_prefix, label, created_at, revoked_at
 		   FROM api_keys
 		  WHERE account_id = $1
 		  ORDER BY (revoked_at IS NULL) DESC, created_at ASC`, accountID)
@@ -174,7 +206,7 @@ func ListAPIKeysForOrg(ctx context.Context, p *Pool, accountID uuid.UUID) ([]API
 	var out []APIKey
 	for rows.Next() {
 		var k APIKey
-		if err := rows.Scan(&k.ID, &k.AccountID, &k.CreatedByUserID, &k.KeyHash, &k.KeyPrefix, &k.Label, &k.CreatedAt, &k.RevokedAt); err != nil {
+		if err := rows.Scan(&k.ID, &k.AccountID, &k.CreatedByUserID, &k.PrincipalUserID, &k.KeyHash, &k.KeyPrefix, &k.Label, &k.CreatedAt, &k.RevokedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, k)

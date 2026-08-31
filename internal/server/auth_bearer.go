@@ -32,11 +32,33 @@ const (
 )
 
 // AuthedCaller is what requireBearer attaches to the request context.
-// Exactly one of APIKey or TokenID is populated.
+// Exactly one of APIKey or TokenID is populated, but UserID is set on
+// BOTH paths — every authenticated caller has a principal (ACL Phase
+// 0a). Before that, the API-key path left UserID as uuid.Nil, so any
+// handler needing a user had to reject API keys outright and an ACL
+// grant had no subject to name.
 type AuthedCaller struct {
-	UserID  uuid.UUID    // set on OAuth path; uuid.Nil on API-key path (V1 keys aren't user-scoped)
-	APIKey  *db.APIKey   // populated when authed via api_keys
-	TokenID *uuid.UUID   // populated when authed via oauth_tokens
+	UserID  uuid.UUID  // the principal, on both auth surfaces
+	APIKey  *db.APIKey // populated when authed via api_keys
+	TokenID *uuid.UUID // populated when authed via oauth_tokens
+}
+
+// Principal is the identity an ACL grant names. Uniform across auth
+// surfaces so the evaluator never has to ask which credential carried
+// the request. uuid.Nil means unauthenticated — never a valid subject.
+func (c AuthedCaller) Principal() uuid.UUID { return c.UserID }
+
+// callerFromAPIKey builds the caller for the api_keys path. The caller
+// acts as the key's PRINCIPAL, not as whoever minted it: with Phase 1's
+// service-account keys a human mints a key that acts as a bot, and
+// reading the creator here would hand the bot the human's rights.
+func callerFromAPIKey(key db.APIKey) AuthedCaller {
+	return AuthedCaller{UserID: key.PrincipalUserID, APIKey: &key}
+}
+
+// callerFromOAuthToken builds the caller for the oauth_tokens path.
+func callerFromOAuthToken(tok db.OAuthToken) AuthedCaller {
+	return AuthedCaller{UserID: tok.UserID, TokenID: &tok.ID}
 }
 
 type ctxKeyAuthedCallerType struct{}
@@ -98,14 +120,14 @@ func (s *Server) resolveBearer(ctx context.Context, tok string) (AuthedCaller, b
 		if err != nil {
 			return AuthedCaller{}, false
 		}
-		return AuthedCaller{UserID: row.UserID, TokenID: &row.ID}, true
+		return callerFromOAuthToken(row), true
 
 	case strings.HasPrefix(tok, bearerPrefixAPIKey):
 		key, err := db.LookupAPIKey(ctx, s.Pool, tok)
 		if err != nil {
 			return AuthedCaller{}, false
 		}
-		return AuthedCaller{APIKey: &key}, true
+		return callerFromAPIKey(key), true
 	}
 	return AuthedCaller{}, false
 }
@@ -146,7 +168,7 @@ func (s *Server) requireAPIKey(h authedHandler) http.HandlerFunc {
 				writeJSON(w, http.StatusForbidden, map[string]string{"error": "not a member of org"})
 				return
 			}
-			h(w, r, db.APIKey{AccountID: accountID, CreatedByUserID: caller.UserID})
+			h(w, r, db.APIKey{AccountID: accountID, CreatedByUserID: caller.UserID, PrincipalUserID: caller.UserID})
 			return
 		}
 		// Fallback: caller's default org (owned, else member). Used by
@@ -159,6 +181,6 @@ func (s *Server) requireAPIKey(h authedHandler) http.HandlerFunc {
 			})
 			return
 		}
-		h(w, r, db.APIKey{AccountID: org.ID, CreatedByUserID: caller.UserID})
+		h(w, r, db.APIKey{AccountID: org.ID, CreatedByUserID: caller.UserID, PrincipalUserID: caller.UserID})
 	})
 }

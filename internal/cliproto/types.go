@@ -1,6 +1,9 @@
 package cliproto
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // IPC method names. Keep in sync with WIRE.md §7.
 const (
@@ -16,14 +19,19 @@ const (
 	IPCSend      = "Send"
 	IPCSendBatch = "SendBatch"
 
-	IPCList          = "List"
-	IPCListWatch     = "ListWatch"
-	IPCSubscribe     = "Subscribe"
-	IPCRead          = "Read"
-	IPCConnect       = "Connect"
-	IPCDisconnect    = "Disconnect"
-	IPCPipeCreate    = "PipeCreate"
-	IPCPipeSet       = "PipeSet"
+	IPCList       = "List"
+	IPCListWatch  = "ListWatch"
+	IPCSubscribe  = "Subscribe"
+	IPCRead       = "Read"
+	IPCConnect    = "Connect"
+	IPCDisconnect = "Disconnect"
+	IPCPipeCreate = "PipeCreate"
+	IPCPipeSet    = "PipeSet"
+	// IPCACL carries every ACL verb (ACL Phase 2). One verb rather than
+	// five: the daemon is a pure HTTP passthrough here — no NATS, no
+	// state — so the dispatch belongs in the Action field, not in the
+	// IPC surface.
+	IPCACL           = "ACL"
 	IPCPipeDestroy   = "PipeDestroy"
 	IPCSourceDestroy = "SourceDestroy"
 	// IPCEnsurePTY promotes the session's current source to a full terminal
@@ -609,6 +617,12 @@ type AuthExchangeReply struct {
 	// connecting to the NATS server URL. Re-fetch before ExpiresAt
 	// (currently 5min) by re-running /auth/exchange with the same
 	// bearer.
+	// ACLEnforced tells the daemon whether this org enforces ACLs, so it
+	// can tell a refusal apart from a transport fault. Without it a
+	// denied stream enumeration and a NATS hiccup look identical, and
+	// degrading on both would hide real failures from every org —
+	// including the ones that never opted in.
+	ACLEnforced  bool   `json:"acl_enforced"`
 	NATSUserJWT  string `json:"nats_user_jwt"`
 	NATSUserSeed string `json:"nats_user_seed"`
 }
@@ -666,7 +680,7 @@ type CompleteReply struct {
 // default) is distinguishable from "explicitly zero".
 //
 // Phase 1.5 fields per locked decision #18 four-role grammar:
-//   - Manifold:     hierarchical-grouping segment string (” = root)
+//   - Manifold:     hierarchical-grouping segment string ('' = root)
 //   - SourceHandle: actor identity name; nil = uncollared (sourceless)
 //
 // Handle is retained as a backward-compat alias for SourceHandle until
@@ -917,4 +931,35 @@ type WhoEntry struct {
 // the cache and the next round of beats re-populates it.
 type WhoReply struct {
 	Entries []WhoEntry `json:"entries"`
+}
+
+// ─── ACL (Phase 2) ───────────────────────────────────────────────────
+
+// ACLAction names which ACL surface the CLI is asking for.
+const (
+	ACLActionRoster    = "roster"    // who can touch this pipe
+	ACLActionPrincipal = "principal" // what can this principal reach
+	ACLActionWhoami    = "whoami"    // what can I do here, and why not
+	ACLActionGrant     = "grant"
+	ACLActionRevoke    = "revoke"
+	// ACL Phase 3 — the per-org opt-in switch and its preview.
+	ACLActionEnforceGet = "enforce-get"
+	ACLActionEnforceOn  = "enforce-on"
+	ACLActionEnforceOff = "enforce-off"
+	ACLActionPreview    = "preview"
+)
+
+// ACLRequest is the IPC body for every ACL verb.
+type ACLRequest struct {
+	Action    string `json:"action"`
+	Pipe      string `json:"pipe,omitempty"`
+	Principal string `json:"principal,omitempty"`
+	Perm      string `json:"perm,omitempty"`
+}
+
+// ACLReply carries the server's JSON response verbatim. The CLI either
+// prints it (--json) or renders a table from it; keeping it opaque here
+// means the daemon needs no knowledge of the ACL model.
+type ACLReply struct {
+	Body json.RawMessage `json:"body"`
 }

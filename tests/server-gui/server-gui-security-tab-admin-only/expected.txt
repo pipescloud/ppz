@@ -1,0 +1,11 @@
+--- owner may view the tab ---
+status=200
+--- a plain member may not ---
+status=403
+--- nor may they flip the switch ---
+status=403
+--- and enforcement is untouched ---
+f
+--- the nav hides the tab from a member ---
+nav-link=hidden
+exit=0

@@ -1,0 +1,9 @@
+--- foo (owner) promotes bar to admin ---
+status=200
+--- bar (admin) tries to promote themselves to owner ---
+status=403
+--- bar (admin) tries to demote foo ---
+status=403
+--- alpha's owner is unchanged ---
+foo
+exit=0

@@ -1,0 +1,9 @@
+--- bar is denied read on alice.stdout ---
+false
+--- and is told why ---
+no grant; pipes under a handle are owner-only by default
+--- and how to fix it ---
+ppz pipe acl grant alice.stdout bar read
+--- and who can run it ---
+foo (handle owner)
+exit=0

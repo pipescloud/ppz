@@ -30,6 +30,8 @@ func cmdPipeGroup(args []string) error {
 		return cmdPipeSet(args[1:])
 	case "destroy":
 		return cmdPipeDestroy(args[1:])
+	case "acl":
+		return cmdPipeACL(args[1:])
 	}
 	fmt.Fprintf(os.Stderr, "ppz pipe: unknown subcommand %q\n", args[0])
 	os.Exit(2)

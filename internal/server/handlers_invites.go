@@ -37,7 +37,7 @@ func (s *Server) handleAPICreateInvite(w http.ResponseWriter, r *http.Request) {
 	caller := CallerFromCtx(r.Context())
 	if caller.UserID == uuid.Nil {
 		writeJSON(w, http.StatusForbidden, map[string]string{
-			"error": "this endpoint requires an OAuth token (user identity)",
+			"error": "authentication required",
 		})
 		return
 	}
@@ -95,7 +95,7 @@ func (s *Server) handleAPICreateInvite(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAPIListInvitesForOrg(w http.ResponseWriter, r *http.Request) {
 	caller := CallerFromCtx(r.Context())
 	if caller.UserID == uuid.Nil {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "OAuth token required"})
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "authentication required"})
 		return
 	}
 	ctx, cancel := withTimeout(r)
@@ -125,7 +125,7 @@ func (s *Server) handleAPIListInvitesForOrg(w http.ResponseWriter, r *http.Reque
 func (s *Server) handleAPIRevokeInvite(w http.ResponseWriter, r *http.Request) {
 	caller := CallerFromCtx(r.Context())
 	if caller.UserID == uuid.Nil {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "OAuth token required"})
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "authentication required"})
 		return
 	}
 	inviteID, err := uuid.Parse(r.PathValue("id"))
@@ -164,7 +164,7 @@ func (s *Server) handleAPIRevokeInvite(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAPIListMyInvites(w http.ResponseWriter, r *http.Request) {
 	caller := CallerFromCtx(r.Context())
 	if caller.UserID == uuid.Nil {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "OAuth token required"})
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "authentication required"})
 		return
 	}
 	ctx, cancel := withTimeout(r)
@@ -199,7 +199,7 @@ func (s *Server) handleAPIDeclineInvite(w http.ResponseWriter, r *http.Request) 
 func (s *Server) acceptOrDecline(w http.ResponseWriter, r *http.Request, accept bool) {
 	caller := CallerFromCtx(r.Context())
 	if caller.UserID == uuid.Nil {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "OAuth token required"})
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "authentication required"})
 		return
 	}
 	inviteID, err := uuid.Parse(r.PathValue("id"))

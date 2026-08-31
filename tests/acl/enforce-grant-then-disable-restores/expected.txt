@@ -1,0 +1,5 @@
+--- grant bar read, then it works ---
+secret
+--- disable: grants persist ---
+1
+exit=0

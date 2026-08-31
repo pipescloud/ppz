@@ -25,6 +25,7 @@ import (
 
 	"github.com/pipescloud/ppz/internal/db"
 	"github.com/pipescloud/ppz/internal/natsauth"
+	"github.com/pipescloud/ppz/internal/natsubj"
 )
 
 // handleAdminWipe deletes every source_*/pipe_* JetStream stream
@@ -145,16 +146,18 @@ func (s *Server) handleSimulateStaleOperator(w http.ResponseWriter, r *http.Requ
 	_, _ = w.Write([]byte("ok"))
 }
 
-// wipeStreams deletes every stream in this account whose name starts
-// with `source_` or `pipe_`. Other streams (e.g. internal $JS
-// machinery, user-created streams under different prefixes) are
-// left alone.
+// wipeStreams deletes every ppz-owned stream in this account. Other
+// streams (internal $JS machinery, anything a user created directly)
+// are left alone.
+//
+// The prefix set lives in natsubj so a new stream family cannot escape
+// the wipe — which is exactly what happened when presence_ was added.
 func wipeStreams(ctx context.Context, js jetstream.JetStream) error {
 	lister := js.ListStreams(ctx)
 	var deleteErrs []string
 	for info := range lister.Info() {
 		name := info.Config.Name
-		if !strings.HasPrefix(name, "source_") && !strings.HasPrefix(name, "pipe_") {
+		if !natsubj.IsPPZStream(name) {
 			continue
 		}
 		if err := js.DeleteStream(ctx, name); err != nil {

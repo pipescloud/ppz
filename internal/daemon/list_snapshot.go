@@ -2,11 +2,14 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/pipescloud/ppz/internal/cliproto"
@@ -20,16 +23,103 @@ type streamInfoListProvider interface {
 	ListStreams(context.Context, ...jetstream.StreamListOpt) jetstream.StreamInfoLister
 }
 
-func streamInfoByName(ctx context.Context, js streamInfoListProvider, accountID uuid.UUID) (map[string]*jetstream.StreamInfo, error) {
+func streamInfoByName(ctx context.Context, js streamInfoListProvider, accountID uuid.UUID, aclEnforced bool) (map[string]*jetstream.StreamInfo, error) {
 	lister := js.ListStreams(ctx, jetstream.WithStreamListSubject(natsubj.OrgSubscription(accountID)))
 	infos := map[string]*jetstream.StreamInfo{}
 	for info := range lister.Info() {
 		infos[info.Config.Name] = info
 	}
 	if err := lister.Err(); err != nil {
+		// Under ACL enforcement (Phase 3) stream enumeration is denied:
+		// $JS.API.STREAM.LIST carries no stream token, so it cannot be
+		// scoped per pipe, and allowing it would expose every pipe's
+		// message count regardless of grants.
+		//
+		// `ppz ls` must still work. Degrade to the server-side view —
+		// handles, pipe names and creators, which are org-visible by
+		// design (docs/ACL.md: "lists pipes you cannot read, marked;
+		// suppresses their contents") — rather than failing the whole
+		// verb. Counts and previews are the part that is withheld.
+		if aclEnforced && isEnumerationDenied(err) {
+			return map[string]*jetstream.StreamInfo{}, nil
+		}
 		return nil, err
 	}
 	return infos, nil
+}
+
+// isEnumerationDenied distinguishes "the server refused this" from a
+// genuine transport failure.
+//
+// A denied JS API request surfaces either as an explicit permissions
+// error or — because the reply never comes — as a timeout on the inbox,
+// so both shapes count. A bare timeout is ALSO what an unreachable
+// server looks like, which is why callers gate this on the org actually
+// enforcing ACLs: without that gate a NATS hiccup would silently render
+// `ls` without counts for every org, including ones that never opted in,
+// turning a real failure into a quietly degraded page.
+func isEnumerationDenied(err error) bool {
+	if errors.Is(err, nats.ErrPermissionViolation) ||
+		errors.Is(err, nats.ErrTimeout) ||
+		errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "permission")
+}
+
+// perStreamFallbackTimeout bounds each probe in the fallback below.
+//
+// A refused stream never answers — the reply simply does not come — so
+// the probe can only end in a timeout. At the full JS API deadline, and
+// run serially, that made `ppz ls` take 15s for a principal with no read
+// access: far worse than the missing counts it was added to fix. The
+// probes are therefore concurrent AND short, since for this purpose a
+// slow answer is worth no more than a refusal.
+const perStreamFallbackTimeout = 2 * time.Second
+
+// perStreamInfo asks about each pipe individually, skipping the ones the
+// caller is refused. Used when account-wide enumeration is denied.
+func perStreamInfo(ctx context.Context, js jetstream.JetStream, accountID uuid.UUID, sources []cliproto.Source) map[string]*jetstream.StreamInfo {
+	names := make([]string, 0, len(sources)*4)
+	seen := map[string]bool{}
+	for _, s := range sources {
+		for _, p := range pipesForSource(s) {
+			name := natsubj.BuildStreamName(accountID, s.Manifold, s.Handle, p)
+			if !seen[name] {
+				seen[name] = true
+				names = append(names, name)
+			}
+		}
+	}
+
+	var mu sync.Mutex
+	out := map[string]*jetstream.StreamInfo{}
+	sem := make(chan struct{}, listPreviewFetchConcurrency)
+	var wg sync.WaitGroup
+	for _, name := range names {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			pctx, cancel := context.WithTimeout(ctx, perStreamFallbackTimeout)
+			defer cancel()
+			stream, err := js.Stream(pctx, name)
+			if err != nil {
+				return // refused, gone, or too slow — leave it unknown
+			}
+			info, err := stream.Info(pctx)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			out[name] = info
+			mu.Unlock()
+		}(name)
+	}
+	wg.Wait()
+	return out
 }
 
 type listPreviewTarget struct {
@@ -67,10 +157,29 @@ func applyRetention(info *cliproto.PipeInfo, cfg jetstream.StreamConfig) {
 	info.MaxBytes = cfg.MaxBytes
 }
 
-func enrichSourcesWithPipeInfo(ctx context.Context, js jetstream.JetStream, sources []cliproto.Source, accountID uuid.UUID, session string, patterns []string, cursors map[string]cursorEntry, long bool) ([]cliproto.Source, error) {
-	streamInfos, err := streamInfoByName(ctx, js, accountID)
-	if err != nil {
-		return nil, err
+func enrichSourcesWithPipeInfo(ctx context.Context, js jetstream.JetStream, sources []cliproto.Source, accountID uuid.UUID, session string, patterns []string, cursors map[string]cursorEntry, long bool, aclEnforced bool) ([]cliproto.Source, error) {
+	// Under enforcement, account-wide enumeration is ALWAYS denied —
+	// $JS.API.STREAM.LIST carries no stream token, so it cannot be
+	// scoped per pipe and is refused for every principal including the
+	// org owner. Attempting it anyway costs a full JS API timeout before
+	// the reply that never comes gives up, which made `ppz ls` take six
+	// seconds for everyone. Go straight to the per-stream path.
+	//
+	// That path matters for correctness too: with no stream info every
+	// collared pipe renders as 0/0, which reads as "empty" rather than
+	// "unknown" — `ppz ls` under-reporting a pipe that has messages, to
+	// its own owner. Per-stream INFO *is* grantable, so the caller gets
+	// real counts for what it may read and nothing for the rest, which
+	// is the honest answer.
+	var streamInfos map[string]*jetstream.StreamInfo
+	if aclEnforced {
+		streamInfos = perStreamInfo(ctx, js, accountID, sources)
+	} else {
+		var err error
+		streamInfos, err = streamInfoByName(ctx, js, accountID, aclEnforced)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	enriched := make([]cliproto.Source, 0, len(sources))

@@ -1,0 +1,11 @@
+--- the tab is reachable and reports the off state ---
+state=off
+--- it offers to enable, not to disable ---
+enable-form=present
+--- the preview names the shared terminal that would become private ---
+preview-terminal=present
+--- and the collared pipe that becomes owner-only ---
+preview-collared=present
+--- no rights table while nothing is enforced ---
+rights-table=absent
+exit=0

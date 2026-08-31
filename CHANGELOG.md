@@ -1,5 +1,120 @@
 # Changelog
 
+## Unreleased — pipe ACLs, phase 3 (opt-in enforcement)
+
+ACLs now actually restrict access — **but only for an org that has switched
+enforcement on**, and enforcement is off for every org, existing and new.
+
+- **Per-org opt-in** (`accounts.acl_enforced`, default false). `/auth/exchange`
+  returns the same wide-open credential as today without touching the ACL
+  tables at all until an org opts in. ACL defaults are derived rather than
+  stored, so flipping enforcement globally would have made every shared
+  terminal private on upgrade morning with no warning.
+- **New Security tab** on the org page. Off: a preview of what enabling would
+  break, and an Enable button. On: the live rights table and Disable.
+  Disabling keeps grants, so switching back restores exactly the previous
+  configuration.
+- **The preview** is computed from the derived defaults, not from observed
+  traffic — traffic is wrong in both directions, silent on a collaboration
+  that happens to be idle and noisy about a one-off read months ago. It leads
+  with handles whose owner has left the org: those become reachable only by an
+  org owner or admin, and the nominal owner loses them too, which is the
+  failure that otherwise looks like nothing in particular.
+- **Credential compilation.** Reads compile to JetStream API entries, writes to
+  a bare subject publish — disjoint sets, which is what makes write-without-read
+  enforceable rather than merely declarable. Stream enumeration is denied
+  outright (`STREAM.LIST`/`NAMES` carry no stream token, so they cannot be
+  scoped per pipe), and stream lifecycle is denied even for admin, closing the
+  JS-API control-plane hole noted in `docs/AUTH-V2.md` §3.5.
+- **Every ACL surface reports whether it is enforced.** An answer that reads as
+  a guarantee while nothing upholds it would be worse than no answer.
+- **New verbs:** `ppz acl enforce [on|off]`, `ppz acl preview`, both with
+  `--json`.
+
+## Unreleased — pipe ACLs, phases 1-2 (principals, grants, visibility)
+
+Builds on phase 0. Grants are stored and every surface can show them, but
+**nothing is enforced yet** — the credential compiler is phase 3. Until then
+an ACL is advisory: it describes intent and the GUI/CLI honour it, while a
+hand-rolled NATS client still is not stopped.
+
+### Principals
+
+- **Org roles gain an `admin` tier** (`account_members.role`). Admin can do
+  what an owner can except transfer ownership and change roles — deliberately
+  below owner, so widening the org gates cannot let an admin promote
+  themselves. Unknown role values fail closed.
+- **Service accounts** (`users.mode='service'`) give an agent its own
+  identity, distinct from the human who spawned it: a real principal that
+  holds grants, owns handles and is attributed on `ppz who` and on every
+  message it publishes. `POST /api/v1/svc`, `GET /api/v1/svc`,
+  `DELETE /api/v1/svc/{name}`, `POST /api/v1/svc/{name}/keys`.
+- **A key can act as someone other than its minter.** A service key is
+  created_by a human and acts_as the bot; rows it creates now attribute to
+  the principal (`db.APIKey.Actor()`), not the human. Crediting the minter
+  would misattribute the agent's work and, once enforcement lands, evaluate
+  the wrong subject.
+
+### ACLs
+
+- `read` and `write` are **independent** — neither implies the other. `admin`
+  implies both plus managing the pipe. Write-without-read is the shape
+  `<handle>.inbox` needs, and it is enforceable rather than merely
+  declarable because NATS keeps publish and the JetStream API in disjoint
+  permission sets.
+- **Defaults are derived, never stored.** The collar is the ownership
+  boundary: everything under a handle is that handle's principal's.
+  `<handle>.inbox` takes writes from anyone; `<handle>.heartbeat` is its dual
+  (readable by everyone, written only by its owner); stdio and user-created
+  collared pipes are owner-only; uncollared pipes are shared org space.
+  Because there is no stored blanket grant to subtract from, there are no
+  deny rules and no precedence tiers — every stored row is an allow.
+- **Every view reports provenance**, not the raw grant table. Most access has
+  no row behind it, so a view built on `acl_grants` renders almost nothing
+  and implies that nobody can reach `<handle>.inbox`.
+- **New verbs:**
+  `ppz pipe acl ls PIPE`, `ppz pipe acl grant PIPE PRINCIPAL PERM`,
+  `ppz pipe acl revoke PIPE PRINCIPAL [PERM|all]`, `ppz acl whoami PIPE`,
+  `ppz acl ls --principal NAME`. All take `--json`.
+- **A denial says how to fix itself.** `ppz acl whoami` on a pipe you cannot
+  reach prints the exact grant command and the principals able to run it, so
+  an agent can ask over that principal's inbox instead of failing opaquely.
+- **Roster visibility:** anyone holding any access on a pipe can see who else
+  can — including write-only. An inbox sender holds no read, and a
+  "can you read it" gate would hide the roster from every sender in the org.
+
+## Unreleased — pipe ACLs, phase 0 (identity + presence isolation)
+
+Groundwork for per-pipe ACLs (`docs/ACL.md`). No ACL is enforced yet; these
+are the two prerequisites that made enforcement impossible, both of which
+were defects in their own right.
+
+- **API keys now act as a principal.** A key carried `created_by_user_id`
+  for row attribution only — the authenticated caller itself had no
+  identity (`AuthedCaller.UserID` was `uuid.Nil` on the API-key path), so
+  every handler needing a user rejected API keys outright with "this
+  endpoint requires an OAuth token". New `api_keys.principal_user_id`
+  (migration 0007, backfilled from the creator) is the identity a key acts
+  as, and both auth surfaces now populate the caller uniformly. Invite
+  endpoints consequently work with an API key, gated on the key's principal
+  rather than refused.
+- **Heartbeats no longer ride the org firehose.** The daemon collected
+  presence by core-subscribing to `<account>.>` and filtering for a
+  `.heartbeat` suffix client-side. Live JetStream publishes are delivered
+  to core subscribers too, so that one subscription received **every**
+  message published anywhere in the org — every byte of every shared
+  terminal, every inbox message between other agents. Presence moves to its
+  own subject family, `<account>._presence.<manifold?>.<handle>`, and the
+  daemon subscribes to exactly that.
+- **Wire change:** heartbeat subjects and their backing streams are renamed
+  (`presence_<org>_<handle>`). Routed inside `natsubj.BuildSubject` /
+  `BuildStreamName`, so provisioning, publishing, reading, `ppz ls` and the
+  GUI chat roster all follow. `heartbeat` becomes a reserved pipe name.
+- `natsubj.AutoProvisionedPipes` is now the single source of truth for the
+  auto-provisioned set — it had drifted, still listing the pre-launch
+  `broadcast` and omitting `heartbeat` and `system`. `ppz pipe destroy`
+  glob expansion uses that set to skip auto-pipes, so the stale set would
+  have let a glob match `<handle>.heartbeat`.
 ## Unreleased — `ppz ls -l` shows pipe retention
 
 **Retention became readable.** `ppz pipe set` could change a pipe's caps but

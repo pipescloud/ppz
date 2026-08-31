@@ -10,8 +10,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/pipescloud/ppz/internal/clock"
 	"github.com/pipescloud/ppz/internal/cliproto"
+	"github.com/pipescloud/ppz/internal/clock"
 	"github.com/pipescloud/ppz/internal/db"
 	"github.com/pipescloud/ppz/internal/natsauth"
 	"github.com/pipescloud/ppz/internal/natsubj"
@@ -34,6 +34,9 @@ func (s *Server) handleAuthExchange(w http.ResponseWriter, r *http.Request) {
 	//                    must match (or be empty) — API keys are
 	//                    org-scoped at issuance.
 	var accountID uuid.UUID
+	// The principal the credential is minted for — the subject ACL
+	// grants name, not whoever minted the key.
+	var callerPrincipal uuid.UUID
 	if strings.HasPrefix(req.APIKey, bearerPrefixOAuth) {
 		tok, err := db.LookupBearerToken(ctx, s.Pool, req.APIKey)
 		if err != nil {
@@ -51,6 +54,7 @@ func (s *Server) handleAuthExchange(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			accountID = parsed
+			callerPrincipal = tok.UserID
 		} else {
 			defaultOrg, err := db.DefaultAccountFor(ctx, s.Pool, tok.UserID)
 			if err != nil {
@@ -58,6 +62,7 @@ func (s *Server) handleAuthExchange(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			accountID = defaultOrg.ID
+			callerPrincipal = tok.UserID
 		}
 	} else {
 		key, err := db.LookupAPIKey(ctx, s.Pool, req.APIKey)
@@ -66,6 +71,7 @@ func (s *Server) handleAuthExchange(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		accountID = key.AccountID
+		callerPrincipal = key.Actor()
 		if req.AccountID != "" && req.AccountID != accountID.String() {
 			writeErr(w, &cliproto.Error{Code: "E_INVALID_ORG", Message: "api key is not for this org"})
 			return
@@ -115,10 +121,20 @@ func (s *Server) handleAuthExchange(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: "provision org account: " + err.Error()})
 		return
 	}
-	natsJWT, natsSeed, err := natsauth.MintUserJWTInAccount(
+	// ACL Phase 3: the credential is compiled from the caller's
+	// effective access only when the org has opted in. Every org ships
+	// with acl_enforced=false, so this keeps returning the wide-open
+	// credential until an admin turns it on.
+	aclEnforced, _ := db.ACLEnforced(ctx, s.Pool, accountID)
+	perms, err := s.natsPermissionsFor(ctx, accountID, callerPrincipal, aclEnforced)
+	if err != nil {
+		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: "resolve acl: " + err.Error()})
+		return
+	}
+	natsJWT, natsSeed, err := natsauth.MintUserJWTWithPermissions(
 		oa.AccountPub, oa.SigningKP,
 		"ppz-user-"+accountID.String(),
-		[]string{">"}, []string{">"},
+		perms,
 		clock.Now().Add(natsUserJWTTTL).Unix(),
 	)
 	if err != nil {
@@ -130,9 +146,10 @@ func (s *Server) handleAuthExchange(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, cliproto.AuthExchangeReply{
 		JWT:          "stub-jwt-not-yet-issued",
 		NATSURL:      natsURL,
-		AccountID:        accountID.String(),
-		AccountName:      org.Name,
+		AccountID:    accountID.String(),
+		AccountName:  org.Name,
 		ExpiresAt:    now.Add(natsUserJWTTTL),
+		ACLEnforced:  aclEnforced,
 		NATSUserJWT:  natsJWT,
 		NATSUserSeed: natsSeed,
 	})
@@ -224,7 +241,7 @@ func (s *Server) handleCreateSource(w http.ResponseWriter, r *http.Request, key 
 		return
 	}
 
-	src, err := db.InsertSource(ctx, s.Pool, key.AccountID, key.CreatedByUserID, req.Manifold, req.Handle, kind)
+	src, err := db.InsertSource(ctx, s.Pool, key.AccountID, key.Actor(), req.Manifold, req.Handle, kind)
 	if err != nil {
 		if errors.Is(err, db.ErrHandleTaken) {
 			writeErr(w, cliproto.NewSourceTaken(req.Handle))
@@ -250,6 +267,12 @@ func (s *Server) handleCreateSource(w http.ResponseWriter, r *http.Request, key 
 	}
 	subject := natsubj.BuildSubject(key.AccountID, src.Manifold, src.Handle, "inbox")
 
+	// The account's pipe set just changed, and a compiled credential
+	// enumerates it. Without this nudge the caller cannot use the pipe
+	// it just created until its credential expires — the "created a
+	// pipe, denied for five minutes" trap. No-op when the org has not
+	// opted into enforcement.
+	s.notifyACLChanged(ctx, key.AccountID)
 	writeJSON(w, http.StatusCreated, cliproto.CreateSourceReply{
 		ID:        src.ID.String(),
 		Handle:    src.Handle,
@@ -383,6 +406,9 @@ func (s *Server) handleEnsurePTY(w http.ResponseWriter, r *http.Request, key db.
 		return
 	}
 
+	// The account's pipe set just changed, and a compiled credential
+	// enumerates it. No-op when the org has not opted into enforcement.
+	s.notifyACLChanged(ctx, key.AccountID)
 	writeJSON(w, http.StatusOK, cliproto.CreateSourceReply{
 		ID:       src.ID.String(),
 		Handle:   src.Handle,
@@ -436,7 +462,7 @@ func (s *Server) handleCreatePipe(w http.ResponseWriter, r *http.Request, key db
 	// /api/v1/sources/{handle}/pipes), so source_id is always set. The
 	// pipe inherits the source's manifold (root '' until Cycle B adds
 	// explicit manifold support).
-	pipe, err := db.InsertPipe(ctx, s.Pool, key.AccountID, src.Manifold, &src.ID, key.CreatedByUserID, req.Name,
+	pipe, err := db.InsertPipe(ctx, s.Pool, key.AccountID, src.Manifold, &src.ID, key.Actor(), req.Name,
 		req.TTLSeconds, req.MaxMsgs, req.MaxBytes)
 	if err != nil {
 		if errors.Is(err, db.ErrPipeNameTaken) {
@@ -464,6 +490,12 @@ func (s *Server) handleCreatePipe(w http.ResponseWriter, r *http.Request, key db
 		cliproto.FormatPipePath(src.Manifold, src.Handle, pipe.Name),
 		nil, snapshotRetention(maxAge, maxMsgs, maxBytes).mustJSON())
 
+	// The account's pipe set just changed, and a compiled credential
+	// enumerates it. Without this nudge the caller cannot use the pipe
+	// it just created until its credential expires — the "created a
+	// pipe, denied for five minutes" trap. No-op when the org has not
+	// opted into enforcement.
+	s.notifyACLChanged(ctx, key.AccountID)
 	writeJSON(w, http.StatusCreated, cliproto.PipeCreateReply{
 		Handle:     src.Handle,
 		Manifold:   src.Manifold,
@@ -546,7 +578,7 @@ func (s *Server) handleCreatePipeFullPath(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	pipe, err := db.InsertPipe(ctx, s.Pool, key.AccountID, req.Manifold, nil, key.CreatedByUserID, req.Name,
+	pipe, err := db.InsertPipe(ctx, s.Pool, key.AccountID, req.Manifold, nil, key.Actor(), req.Name,
 		req.TTLSeconds, req.MaxMsgs, req.MaxBytes)
 	if err != nil {
 		if errors.Is(err, db.ErrPipeNameTaken) {
@@ -573,6 +605,12 @@ func (s *Server) handleCreatePipeFullPath(w http.ResponseWriter, r *http.Request
 		cliproto.FormatPipePath(req.Manifold, "", pipe.Name),
 		nil, snapshotRetention(maxAge, maxMsgs, maxBytes).mustJSON())
 
+	// The account's pipe set just changed, and a compiled credential
+	// enumerates it. Without this nudge the caller cannot use the pipe
+	// it just created until its credential expires — the "created a
+	// pipe, denied for five minutes" trap. No-op when the org has not
+	// opted into enforcement.
+	s.notifyACLChanged(ctx, key.AccountID)
 	writeJSON(w, http.StatusCreated, cliproto.PipeCreateReply{
 		Handle:     "",
 		Manifold:   req.Manifold,
@@ -678,6 +716,9 @@ func (s *Server) handleDestroyUncollaredPipe(w http.ResponseWriter, r *http.Requ
 		cliproto.FormatPipePath(manifold, "", name),
 		snapshotRetention(prevAge, prevMsgs, prevBytes).mustJSON(), nil)
 
+	// The account's pipe set just changed, and a compiled credential
+	// enumerates it. No-op when the org has not opted into enforcement.
+	s.notifyACLChanged(ctx, key.AccountID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -732,6 +773,9 @@ func (s *Server) handleDestroySource(w http.ResponseWriter, r *http.Request, key
 		}
 	}
 
+	// The account's pipe set just changed, and a compiled credential
+	// enumerates it. No-op when the org has not opted into enforcement.
+	s.notifyACLChanged(ctx, key.AccountID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -798,6 +842,9 @@ func (s *Server) handleDestroyPipe(w http.ResponseWriter, r *http.Request, key d
 		cliproto.FormatPipePath(src.Manifold, src.Handle, name),
 		snapshotRetention(prevAge, prevMsgs, prevBytes).mustJSON(), nil)
 
+	// The account's pipe set just changed, and a compiled credential
+	// enumerates it. No-op when the org has not opted into enforcement.
+	s.notifyACLChanged(ctx, key.AccountID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
