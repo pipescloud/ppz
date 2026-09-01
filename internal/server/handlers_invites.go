@@ -88,6 +88,9 @@ func (s *Server) handleAPICreateInvite(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	s.auditOrg(ctx, org.ID, caller, db.AuditActionInviteCreate, db.AuditTargetInvite,
+		inv.InviteeUsername, nil, invitePayload(inv.Status))
+
 	writeJSON(w, http.StatusCreated, cliproto.CreateInviteReply{Invite: inviteToWire(inv, org.Name)})
 }
 
@@ -157,6 +160,11 @@ func (s *Server) handleAPIRevokeInvite(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+
+	s.auditOrg(ctx, org.ID, caller, db.AuditActionInviteRevoke, db.AuditTargetInvite,
+		inv.InviteeUsername, invitePayload(db.InviteStatusPending),
+		invitePayload(db.InviteStatusRevoked))
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -209,6 +217,13 @@ func (s *Server) acceptOrDecline(w http.ResponseWriter, r *http.Request, accept 
 	}
 	ctx, cancel := withTimeout(r)
 	defer cancel()
+
+	// Read the invite before deciding it: the audit row is filed against
+	// the invite's ORG and names the invitee, and neither is derivable
+	// from an invite id once the status has moved on. A miss here just
+	// means the decision below reports the not-found.
+	inv, invErr := db.GetInvite(ctx, s.Pool, inviteID)
+
 	if accept {
 		err = db.AcceptInvite(ctx, s.Pool, inviteID, caller.UserID)
 	} else {
@@ -226,6 +241,10 @@ func (s *Server) acceptOrDecline(w http.ResponseWriter, r *http.Request, accept 
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		}
 		return
+	}
+
+	if invErr == nil {
+		s.auditInviteDecision(ctx, inv, caller.UserID, accept)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -260,7 +279,8 @@ func (s *Server) handleGUICreateInvite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot invite yourself", http.StatusBadRequest)
 		return
 	}
-	if _, err := db.CreateInvite(ctx, s.Pool, org.ID, username, uid); err != nil {
+	inv, err := db.CreateInvite(ctx, s.Pool, org.ID, username, uid)
+	if err != nil {
 		switch {
 		case errors.Is(err, db.ErrAlreadyMember), errors.Is(err, db.ErrDuplicatePendingInvite):
 			http.Error(w, err.Error(), http.StatusConflict)
@@ -269,6 +289,9 @@ func (s *Server) handleGUICreateInvite(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+
+	s.auditOrg(ctx, org.ID, AuthedCaller{UserID: uid}, db.AuditActionInviteCreate,
+		db.AuditTargetInvite, inv.InviteeUsername, nil, invitePayload(inv.Status))
 	browserSubmit(w, r)
 }
 
@@ -304,6 +327,10 @@ func (s *Server) handleGUIRevokeInvite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	s.auditOrg(ctx, org.ID, AuthedCaller{UserID: uid}, db.AuditActionInviteRevoke,
+		db.AuditTargetInvite, inv.InviteeUsername,
+		invitePayload(db.InviteStatusPending), invitePayload(db.InviteStatusRevoked))
 	browserSubmit(w, r)
 }
 
@@ -326,6 +353,12 @@ func (s *Server) guiAcceptOrDecline(w http.ResponseWriter, r *http.Request, acce
 	}
 	ctx, cancel := withTimeout(r)
 	defer cancel()
+
+	// Snapshotted before the decision, for the same reason as the API
+	// path above: the org and invitee aren't recoverable from the id
+	// once the status moves.
+	inv, invErr := db.GetInvite(ctx, s.Pool, inviteID)
+
 	if accept {
 		err = db.AcceptInvite(ctx, s.Pool, inviteID, uid)
 	} else {
@@ -343,6 +376,10 @@ func (s *Server) guiAcceptOrDecline(w http.ResponseWriter, r *http.Request, acce
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 		return
+	}
+
+	if invErr == nil {
+		s.auditInviteDecision(ctx, inv, uid, accept)
 	}
 	browserSubmit(w, r)
 }

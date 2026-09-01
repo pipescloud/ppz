@@ -377,7 +377,7 @@ func (s *Server) mutateACL(w http.ResponseWriter, r *http.Request, grant bool) {
 	if !grant {
 		action, before, after = db.AuditActionACLRevoke, aclGrantDelta(target.DisplayName(), req.Perm), nil
 	}
-	s.auditACL(r.Context(), org.ID, me2, action, db.AuditTargetPipe, req.Pipe, before, after)
+	s.auditOrg(r.Context(), org.ID, me2, action, db.AuditTargetPipe, req.Pipe, before, after)
 
 	s.notifyACLChanged(r.Context(), org.ID)
 	writeJSON(w, http.StatusOK, map[string]string{

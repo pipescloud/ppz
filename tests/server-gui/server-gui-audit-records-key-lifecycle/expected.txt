@@ -1,0 +1,13 @@
+--- the revoke form is owner-gated, not the anonymous api route ---
+revoke-form=owner-gated
+--- audit actions, newest first ---
+key.revoke
+key.create
+--- targets name the key by its label ---
+ci-bot
+--- a session action is attributed to the person, not a key ---
+web
+foo
+--- the revoke row states the state change ---
+state active → revoked
+exit=0

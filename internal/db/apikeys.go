@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -212,6 +213,27 @@ func ListAPIKeysForOrg(ctx context.Context, p *Pool, accountID uuid.UUID) ([]API
 		out = append(out, k)
 	}
 	return out, rows.Err()
+}
+
+// GetAPIKey reads one key by id, revoked or not.
+//
+// The revoke path needs it for two reasons the id alone can't serve: the
+// audit row names the key by its LABEL (an id tells a reader nothing),
+// and the row has to be filed against the key's own account rather than
+// whichever org appeared in the request path.
+func GetAPIKey(ctx context.Context, p *Pool, id uuid.UUID) (APIKey, error) {
+	var k APIKey
+	err := p.QueryRow(ctx,
+		`SELECT id, account_id, created_by_user_id, principal_user_id, key_hash, key_prefix, label, created_at, revoked_at
+		   FROM api_keys WHERE id = $1`, id).
+		Scan(&k.ID, &k.AccountID, &k.CreatedByUserID, &k.PrincipalUserID, &k.KeyHash, &k.KeyPrefix, &k.Label, &k.CreatedAt, &k.RevokedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return APIKey{}, ErrNotFound
+	}
+	if err != nil {
+		return APIKey{}, err
+	}
+	return k, nil
 }
 
 // RevokeAPIKey marks the key revoked. Idempotent: revoking an

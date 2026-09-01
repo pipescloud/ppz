@@ -1,0 +1,13 @@
+--- invite actions with who acted, oldest first ---
+invite.create invite alice foo
+invite.create invite bob foo
+invite.create invite carol foo
+invite.revoke invite carol foo
+invite.accept invite alice alice
+invite.decline invite bob bob
+--- every row is filed against alpha's trail ---
+6
+--- state transitions ---
+invite.accept {"status": "pending"} {"status": "accepted"}
+invite.revoke {"status": "pending"} {"status": "revoked"}
+exit=0

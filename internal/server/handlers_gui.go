@@ -459,6 +459,15 @@ func (s *Server) handleGUICreateKey(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("create key: %v", err), 500)
 		return
 	}
+
+	// Targeted by LABEL, since that is what the keys tab shows and what
+	// an operator would name. The prefix rides along in the payload: it
+	// is the only thing tying this row to the later "via key ppz_ab12…"
+	// attributions the key goes on to produce.
+	s.auditOrg(ctx, org.ID, AuthedCaller{UserID: creator}, db.AuditActionKeyCreate,
+		db.AuditTargetKey, key.Label, nil,
+		fieldPayload(map[string]string{"prefix": key.KeyPrefix, "state": "active"}))
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := tmpl.ExecuteTemplate(w, "key_created.html", map[string]any{
 		"AccountID":   org.ID.String(),

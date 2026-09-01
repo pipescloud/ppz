@@ -1,0 +1,8 @@
+--- service-account actions, oldest first ---
+svc.create service builder-bot
+svc.key.mint service builder-bot
+svc.create service janitor-bot
+svc.destroy service janitor-bot
+--- minting the bot's key is attributed to the human who did it ---
+foo
+exit=0

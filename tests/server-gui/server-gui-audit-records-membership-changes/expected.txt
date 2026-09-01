@@ -1,0 +1,13 @@
+--- membership actions, newest first ---
+member.remove
+member.role
+member.add
+--- targets name the user ---
+bob
+--- deltas, newest first ---
+role=admin
+role member → admin
+role=member
+--- attributed to foo, acting in the GUI ---
+foo t
+exit=0

@@ -23,6 +23,45 @@ const (
 	AuditActionACLGrant   = "acl.grant"
 	AuditActionACLRevoke  = "acl.revoke"
 	AuditActionACLEnforce = "acl.enforce"
+
+	// Source lifecycle. A `source destroy` CASCADEs away every pipe
+	// under the source, which makes it the most destructive single
+	// operation in the product — and until now the only trace it left
+	// was the sudden absence of pipe rows nobody had destroyed.
+	AuditActionSourceCreate  = "source.create"
+	AuditActionSourceDestroy = "source.destroy"
+	// AuditActionSourcePromote is the message→pty flip (ensure-pty).
+	// Recorded on the STATE CHANGE, not the request: bare `ppz terminal
+	// share` calls ensure-pty on every invocation, so auditing the call
+	// would bury an org's real history under one row per share.
+	AuditActionSourcePromote = "source.promote"
+
+	// Key lifecycle — who can act as the org at all.
+	AuditActionKeyCreate = "key.create"
+	AuditActionKeyRevoke = "key.revoke"
+
+	// Membership. member.role is here alongside add/remove because
+	// promotion to admin hands someone the key, membership and
+	// ACL-enforcement gates in one POST; it is the membership edit a
+	// reviewer will look for first.
+	AuditActionMemberAdd    = "member.add"
+	AuditActionMemberRemove = "member.remove"
+	AuditActionMemberRole   = "member.role"
+
+	// Service accounts (ACL Phase 1). A service account is precisely a
+	// way for a person's action to stop looking like theirs — the key
+	// acts_as the bot — so its lifecycle has to be on the record.
+	AuditActionSvcCreate  = "svc.create"
+	AuditActionSvcDestroy = "svc.destroy"
+	AuditActionSvcKeyMint = "svc.key.mint"
+
+	// Invites. create/revoke are the owner's actions, accept/decline the
+	// invitee's; all four are filed against the ORG's trail (whose
+	// membership changed) but attributed to whoever actually acted.
+	AuditActionInviteCreate  = "invite.create"
+	AuditActionInviteRevoke  = "invite.revoke"
+	AuditActionInviteAccept  = "invite.accept"
+	AuditActionInviteDecline = "invite.decline"
 )
 
 // Audit target types. Names what Target refers to.
@@ -33,6 +72,18 @@ const (
 	// filing it under a pipe that does not exist would make the trail
 	// lie about what was touched.
 	AuditTargetOrg = "org"
+	// AuditTargetSource distinguishes a handle from a pipe of the same
+	// name. "chat" is a legal source handle AND a legal uncollared pipe
+	// name, so without this the trail cannot say which one was
+	// destroyed.
+	AuditTargetSource = "source"
+	AuditTargetKey    = "key"
+	// AuditTargetUser covers membership changes. Target is the
+	// USERNAME, not the member row's uuid — a trail you have to join
+	// against `users` to read is a trail nobody reads.
+	AuditTargetUser    = "user"
+	AuditTargetService = "service"
+	AuditTargetInvite  = "invite"
 )
 
 // AuditEvent is one append-only row of the trail. See

@@ -267,6 +267,12 @@ func (s *Server) handleCreateSource(w http.ResponseWriter, r *http.Request, key 
 	}
 	subject := natsubj.BuildSubject(key.AccountID, src.Manifold, src.Handle, "inbox")
 
+	// Audited after provisioning, matching pipe create: the trail should
+	// record the source the caller actually got, not the row we hoped to
+	// finish setting up.
+	s.auditSource(ctx, key, db.AuditActionSourceCreate,
+		sourcePath(src.Manifold, src.Handle), nil, sourceKindPayload(src.Kind))
+
 	// The account's pipe set just changed, and a compiled credential
 	// enumerates it. Without this nudge the caller cannot use the pipe
 	// it just created until its credential expires — the "created a
@@ -381,6 +387,13 @@ func (s *Server) handleEnsurePTY(w http.ResponseWriter, r *http.Request, key db.
 		return
 	}
 
+	// Captured before the write below mutates src.Kind. This bool, not
+	// the fact that the endpoint was called, is what gets audited: bare
+	// `ppz terminal share` hits ensure-pty on every invocation, so a row
+	// per request would bury the org's real history under share noise.
+	wasKind := src.Kind
+	promoted := src.Kind != db.SourceKindPTY
+
 	// Promote kind → pty when not already. Skip the write when it's a no-op so
 	// an already-pty source doesn't churn the row.
 	if src.Kind != db.SourceKindPTY {
@@ -404,6 +417,12 @@ func (s *Server) handleEnsurePTY(w http.ResponseWriter, r *http.Request, key db.
 	if err := ensureSourceStreams(ctx, s.Pool, js, key.AccountID, src); err != nil {
 		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
 		return
+	}
+
+	if promoted {
+		s.auditSource(ctx, key, db.AuditActionSourcePromote,
+			sourcePath(src.Manifold, src.Handle),
+			sourceKindPayload(wasKind), sourceKindPayload(src.Kind))
 	}
 
 	// The account's pipe set just changed, and a compiled credential
@@ -772,6 +791,15 @@ func (s *Server) handleDestroySource(w http.ResponseWriter, r *http.Request, key
 			_ = deletePipeStream(ctx, js, key.AccountID, src.Manifold, handle, p)
 		}
 	}
+
+	// A destroy has no "after". `before` is read from the snapshot taken
+	// above — after the CASCADE there is nothing left to read it from.
+	//
+	// The pipes this took with it get no rows of their own: a source
+	// destroy is one operator action, and emitting a pipe.destroy per
+	// cascaded pipe would drown the row that actually explains them.
+	s.auditSource(ctx, key, db.AuditActionSourceDestroy,
+		sourcePath(src.Manifold, src.Handle), sourceKindPayload(src.Kind), nil)
 
 	// The account's pipe set just changed, and a compiled credential
 	// enumerates it. No-op when the org has not opted into enforcement.

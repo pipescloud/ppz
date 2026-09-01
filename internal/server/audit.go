@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -84,19 +85,39 @@ func (s *Server) recordAudit(ctx context.Context, ev db.AuditEvent) {
 	}
 }
 
-// auditPipe records one pipe-lifecycle mutation made through an API key.
-func (s *Server) auditPipe(ctx context.Context, key db.APIKey, action, target string, before, after []byte) {
+// auditViaKey records one mutation made through an API key.
+func (s *Server) auditViaKey(ctx context.Context, key db.APIKey, action, targetType, target string, before, after []byte) {
 	userID, keyID := auditActorFromKey(key)
 	s.recordAudit(ctx, db.AuditEvent{
 		AccountID:     key.AccountID,
 		ActorUserID:   userID,
 		ActorAPIKeyID: keyID,
 		Action:        action,
-		TargetType:    db.AuditTargetPipe,
+		TargetType:    targetType,
 		Target:        target,
 		Before:        before,
 		After:         after,
 	})
+}
+
+// auditPipe records one pipe-lifecycle mutation made through an API key.
+func (s *Server) auditPipe(ctx context.Context, key db.APIKey, action, target string, before, after []byte) {
+	s.auditViaKey(ctx, key, action, db.AuditTargetPipe, target, before, after)
+}
+
+// auditSource records one source-lifecycle mutation made through an API
+// key. Source management is CLI-only, so unlike the key and membership
+// writers there is no session path to cover here.
+func (s *Server) auditSource(ctx context.Context, key db.APIKey, action, target string, before, after []byte) {
+	s.auditViaKey(ctx, key, action, db.AuditTargetSource, target, before, after)
+}
+
+// sourceKindPayload is the before/after body for a source row: what the
+// source WAS. Kind is the only field that can change over a source's
+// life, and it is the one that decides whether the handle can be driven
+// as a terminal or only read.
+func sourceKindPayload(kind db.SourceKind) []byte {
+	return fieldPayload(map[string]string{"kind": string(kind)})
 }
 
 // formatAuditDelta picks the renderer that matches the action.
@@ -109,13 +130,192 @@ func (s *Server) auditPipe(ctx context.Context, key db.APIKey, action, target st
 // the pipe's retention. A misleading audit line is worse than none.
 func formatAuditDelta(action string, before, after []byte) string {
 	switch action {
+	case db.AuditActionPipeCreate, db.AuditActionPipeSet, db.AuditActionPipeDestroy:
+		return formatRetentionDelta(before, after)
 	case db.AuditActionACLGrant, db.AuditActionACLRevoke:
 		return formatACLGrantDelta(action, before, after)
 	case db.AuditActionACLEnforce:
 		return formatACLEnforceDelta(before, after)
 	default:
-		return formatRetentionDelta(before, after)
+		return formatFieldDelta(before, after)
 	}
+}
+
+// formatFieldDelta renders the org-lifecycle payloads: flat objects of
+// scalars — a kind, a role, a state.
+//
+// These share one renderer rather than getting a formatter each because
+// the shape is genuinely uniform, and a formatter per action is exactly
+// how retention ended up as the default branch above and rendered
+// `acl.grant` as "ttl=0s, msgs=0, bytes=0". Being the DEFAULT is the
+// point: a future writer that forgets to add a case here gets a
+// truthful, if plain, line instead of a confidently wrong one.
+//
+// Follows the same two rules formatRetentionDelta does. Only fields that
+// MOVED appear, because reciting the unchanged ones buries the change;
+// and when one half is absent (a create has no before, a destroy no
+// after) it states the payload instead of diffing against nothing.
+//
+// Never panics and never errors — an audit tab that 500s on one
+// malformed row is worse than one that renders it blank.
+func formatFieldDelta(before, after []byte) string {
+	b, bok := parseFieldPayload(before)
+	a, aok := parseFieldPayload(after)
+	switch {
+	case !bok && !aok:
+		return ""
+	case !bok:
+		return fieldStatement(a)
+	case !aok:
+		return fieldStatement(b)
+	}
+	var parts []string
+	for _, k := range unionKeys(b, a) {
+		bv, bHas := b[k]
+		av, aHas := a[k]
+		switch {
+		case bHas && aHas:
+			if bv != av {
+				parts = append(parts, k+" "+bv+" → "+av)
+			}
+		case aHas:
+			parts = append(parts, k+"="+av)
+		default:
+			parts = append(parts, k+"="+bv)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// parseFieldPayload decodes a flat jsonb object into rendered scalars.
+//
+// Values are rendered from their RAW JSON rather than from a decoded
+// `any`: Go would print a JSON number 5000 as "5e+03" and a list as
+// "[broadcast inbox]", neither of which is what was stored. Strings are
+// unquoted; everything else passes through as the JSON it is.
+//
+// A non-object payload (an array, a bare scalar, malformed bytes) is
+// reported as absent rather than half-rendered.
+func parseFieldPayload(raw []byte) (map[string]string, bool) {
+	if len(raw) == 0 {
+		return nil, false
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, false
+	}
+	out := make(map[string]string, len(fields))
+	for k, v := range fields {
+		var str string
+		if json.Unmarshal(v, &str) == nil {
+			out[k] = str
+			continue
+		}
+		out[k] = string(v)
+	}
+	return out, true
+}
+
+// fieldStatement renders the whole payload, used when there's no
+// counterpart to diff against.
+func fieldStatement(m map[string]string) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+m[k])
+	}
+	return strings.Join(parts, ", ")
+}
+
+// unionKeys returns every key across both sides, sorted. Sorted because
+// map iteration is randomised in Go: without it the same event renders
+// differently per request, and a row nobody can quote or diff is not
+// much of an audit trail.
+func unionKeys(a, b map[string]string) []string {
+	seen := make(map[string]struct{}, len(a)+len(b))
+	keys := make([]string, 0, len(a)+len(b))
+	for _, m := range []map[string]string{a, b} {
+		for k := range m {
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			seen[k] = struct{}{}
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// fieldPayload marshals an ordered set of scalars for before/after.
+// Values are strings because every org-lifecycle payload is one — a
+// kind, a role, a status, a key prefix.
+func fieldPayload(kv map[string]string) []byte {
+	b, err := json.Marshal(kv)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// auditUsername resolves the name a membership row should target.
+//
+// Names, not uuids: a trail you have to join against `users` to read is
+// a trail nobody reads. DisplayName strips the "<org>/" scope prefix
+// service accounts are stored under, matching every other surface.
+//
+// Falls back to "unknown" rather than failing the audit — a row that
+// names the action and loses the name still beats no row.
+func auditUsername(ctx context.Context, pool *db.Pool, id uuid.UUID) string {
+	u, err := db.GetUser(ctx, pool, id)
+	if err != nil {
+		return "unknown"
+	}
+	return u.DisplayName()
+}
+
+// rolePayload is the before/after body for a membership change.
+func rolePayload(role OrgRole) []byte {
+	return fieldPayload(map[string]string{"role": string(role)})
+}
+
+// invitePayload is the before/after body for an invite row. Status is
+// the only thing about an invite that moves.
+func invitePayload(status db.InviteStatus) []byte {
+	return fieldPayload(map[string]string{"status": string(status)})
+}
+
+// auditInviteDecision records an accept or a decline.
+//
+// Filed against the ORG — that is whose membership just changed, and an
+// org owner reading their own trail is the person who needs to see it —
+// but attributed to the INVITEE, who is the one who actually acted. The
+// two differ here in a way they do not for any other writer, which is
+// exactly why the split is worth being explicit about.
+func (s *Server) auditInviteDecision(ctx context.Context, inv db.Invite, actor uuid.UUID, accept bool) {
+	after := db.InviteStatusDeclined
+	action := db.AuditActionInviteDecline
+	if accept {
+		after = db.InviteStatusAccepted
+		action = db.AuditActionInviteAccept
+	}
+	s.auditOrg(ctx, inv.AccountID, AuthedCaller{UserID: actor}, action,
+		db.AuditTargetInvite, inv.InviteeUsername,
+		invitePayload(db.InviteStatusPending), invitePayload(after))
+}
+
+// sourcePath is the manifold-qualified handle an audit row targets.
+// Mirrors cliproto.FormatPipePath's joining so a source and the pipes
+// under it address the same way.
+func sourcePath(manifold, handle string) string {
+	if manifold == "" {
+		return handle
+	}
+	return manifold + "." + handle
 }
 
 // formatACLGrantDelta renders "+read for bar" / "-read for bar".
@@ -226,10 +426,10 @@ type auditRow struct {
 	// key attributes every change to whoever minted it. Surfacing "via
 	// api-key" stops the row reading as stronger evidence than it is.
 	//
-	// Every writer today is an API-key handler, so "web" is not yet
-	// reachable — retention is only mutable through the CLI. It is here
-	// because the GUI editor is the next step, and the honest reading of
-	// a nil actor key is "not a key", not "assume a key".
+	// "web" became reachable with the org-lifecycle writers: key,
+	// membership and invite management are session-authed GUI flows, so
+	// those rows carry no actor key and genuinely name a person at a
+	// keyboard. Pipe, source and ACL rows still arrive via the CLI.
 	Via     string
 	KeyHint string // key prefix when Via is "api-key", else ""
 	Delta   string // "msgs 5000 → 5"
@@ -275,14 +475,16 @@ func buildAuditRows(ctx context.Context, pool *db.Pool, events []db.AuditEvent) 
 	return rows
 }
 
-// auditACL records one access-control change.
+// auditOrg records one org-level change: an ACL edit, a key, a member,
+// a service account, an invite.
 //
 // Unlike auditPipe this takes the AuthedCaller rather than a db.APIKey,
-// because the ACL routes are mounted on requireBearer: the caller may
-// have arrived on a session token with no key at all, in which case
-// ActorAPIKeyID stays nil and the GUI renders it as a person rather than
-// "via key".
-func (s *Server) auditACL(ctx context.Context, accountID uuid.UUID, caller AuthedCaller, action, targetType, target string, before, after []byte) {
+// because these routes are mounted on requireBearer or requireSession:
+// the caller may have arrived on a session with no key at all, in which
+// case ActorAPIKeyID stays nil and the GUI renders it as a person rather
+// than "via key". Key and membership management are GUI-only flows, so
+// they are the first writers to actually produce that rendering.
+func (s *Server) auditOrg(ctx context.Context, accountID uuid.UUID, caller AuthedCaller, action, targetType, target string, before, after []byte) {
 	var keyID *uuid.UUID
 	if caller.APIKey != nil {
 		id := caller.APIKey.ID

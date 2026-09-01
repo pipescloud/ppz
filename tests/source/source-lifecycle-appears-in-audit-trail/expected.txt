@@ -1,0 +1,9 @@
+--- source actions, oldest first ---
+source.create source chat
+source.destroy source chat
+--- create records the kind, destroy records what was lost ---
+source.create {"kind": "message"}
+source.destroy {"kind": "message"}
+--- attributed to the key's principal, via the key ---
+foo t
+exit=0

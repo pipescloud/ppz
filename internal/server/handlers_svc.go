@@ -108,6 +108,10 @@ func (s *Server) handleAPICreateService(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	s.auditOrg(ctx, org.ID, CallerFromCtx(r.Context()), db.AuditActionSvcCreate,
+		db.AuditTargetService, u.DisplayName(), nil,
+		fieldPayload(map[string]string{"state": "created"}))
+
 	writeJSON(w, http.StatusCreated, map[string]any{"service": serviceToWire(u)})
 }
 
@@ -148,6 +152,14 @@ func (s *Server) handleAPIDeleteService(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+
+	// Targeted by the BARE name, matching every other surface: usernames
+	// are stored scoped as "<org>/<name>" only because users.username is
+	// globally unique.
+	s.auditOrg(ctx, org.ID, CallerFromCtx(r.Context()), db.AuditActionSvcDestroy,
+		db.AuditTargetService, r.PathValue("name"),
+		fieldPayload(map[string]string{"state": "created"}), nil)
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -170,11 +182,20 @@ func (s *Server) handleAPIMintServiceKey(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	caller := CallerFromCtx(r.Context())
-	_, plaintext, err := db.InsertAPIKeyAs(ctx, s.Pool, org.ID, caller.Principal(), svc.ID, svc.DisplayName())
+	key, plaintext, err := db.InsertAPIKeyAs(ctx, s.Pool, org.ID, caller.Principal(), svc.ID, svc.DisplayName())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+
+	// Attributed to the human who minted it, targeted at the bot it acts
+	// as. That split is the whole reason this row matters: from here on
+	// the key's own work attributes to the service, so this is the last
+	// point at which the trail can name the person behind it.
+	s.auditOrg(ctx, org.ID, caller, db.AuditActionSvcKeyMint,
+		db.AuditTargetService, svc.DisplayName(), nil,
+		fieldPayload(map[string]string{"prefix": key.KeyPrefix, "state": "active"}))
+
 	writeJSON(w, http.StatusCreated, map[string]string{"key": plaintext})
 }
 
@@ -212,6 +233,8 @@ func (s *Server) handleGUISetMemberRole(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	want := r.FormValue("role")
+	wasRole, _ := s.RoleInOrg(r.Context(), target, org.ID)
+
 	if err := db.SetMemberRole(r.Context(), s.Pool, org.ID, target, want); err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			http.NotFound(w, r)
@@ -219,6 +242,19 @@ func (s *Server) handleGUISetMemberRole(w http.ResponseWriter, r *http.Request) 
 		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+
+	// Read the tier back rather than trusting the form value: RoleInOrg
+	// treats accounts.owner_user_id as the authority and downgrades a
+	// stale 'owner' members row to admin, so `want` is what was asked
+	// for and this is what the org will actually enforce. A re-POST of
+	// the tier someone already holds changes nothing and gets no row.
+	nowRole, _ := s.RoleInOrg(r.Context(), target, org.ID)
+	if nowRole != wasRole {
+		s.auditOrg(r.Context(), org.ID, AuthedCaller{UserID: uid},
+			db.AuditActionMemberRole, db.AuditTargetUser,
+			auditUsername(r.Context(), s.Pool, target),
+			rolePayload(wasRole), rolePayload(nowRole))
 	}
 	browserSubmit(w, r)
 }

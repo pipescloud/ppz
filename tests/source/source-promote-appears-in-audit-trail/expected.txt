@@ -1,0 +1,5 @@
+--- one row for the flip, not one per call ---
+1
+--- the row states the kind change ---
+chat {"kind": "message"} {"kind": "pty"}
+exit=0

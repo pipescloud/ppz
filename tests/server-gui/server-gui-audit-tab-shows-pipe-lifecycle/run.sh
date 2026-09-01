@@ -3,6 +3,12 @@
 # set, destroy — newest first. This covers the collared endpoints; the
 # uncollared ones have their own scenario.
 #
+# The trailing `source.create` is the collar itself: a collared pipe can
+# only exist under a source, so the source's own creation is the oldest
+# row here. Its lifecycle has a dedicated scenario; it appears in this
+# one because a pipe trail that starts mid-story is the thing the source
+# actions were added to fix.
+#
 # Every writer today is an API-key handler (retention is only mutable
 # from the CLI), so `via api-key` is the only attribution the trail can
 # currently produce. The `web` rendering is there for the GUI editor and
