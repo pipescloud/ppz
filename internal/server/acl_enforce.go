@@ -189,7 +189,7 @@ func (s *Server) handleAPIACLEnforce(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		s.auditACL(ctx, org.ID, CallerFromCtx(r.Context()), db.AuditActionACLEnforce,
+		s.auditOrg(ctx, org.ID, CallerFromCtx(r.Context()), db.AuditActionACLEnforce,
 			db.AuditTargetOrg, org.Name, aclEnforceDelta(was), aclEnforceDelta(req.Enforced))
 		s.notifyACLChanged(ctx, org.ID)
 		writeJSON(w, http.StatusOK, map[string]bool{"enforced": req.Enforced})
@@ -429,7 +429,7 @@ func (s *Server) handleGUISetACLEnforce(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// Session path: no API key, so the trail names the person directly.
-	s.auditACL(r.Context(), org.ID, AuthedCaller{UserID: uid}, db.AuditActionACLEnforce,
+	s.auditOrg(r.Context(), org.ID, AuthedCaller{UserID: uid}, db.AuditActionACLEnforce,
 		db.AuditTargetOrg, org.Name, aclEnforceDelta(was), aclEnforceDelta(on))
 	s.notifyACLChanged(r.Context(), org.ID)
 	browserSubmit(w, r)

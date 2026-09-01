@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased — the audit trail covers org lifecycle, not just pipes
+
+The trail recorded what happened *inside* an org's pipes. It could tell you a
+pipe's retention changed, but not that the source it hung off had been
+destroyed, that an API key was minted, or that the person who did it had been
+made an admin an hour earlier. Fifteen new actions close that gap.
+
+- **Sources** — `source.create`, `source.destroy`, `source.promote`. A source
+  destroy CASCADEs away every pipe under it, which made it the most
+  destructive single operation in the product and the one that left no trace.
+  The cascaded pipes get no rows of their own: it was one operator action, and
+  a `pipe.destroy` per cascaded pipe would drown the row that explains them.
+- **Keys** — `key.create`, `key.revoke`, targeted by label. The GUI's Revoke
+  button now posts to the owner-gated `/orgs/{id}/keys/{kid}/revoke` instead of
+  the unauthenticated `/api/v1/keys/{id}/revoke`. A route with no caller has no
+  actor, and "revoked by nobody" is the row you would least want to read. That
+  handler also now checks the key belongs to the org in the path — it never
+  did, so an owner of one org could revoke another org's key by id.
+- **Membership** — `member.add`, `member.remove`, `member.role`. The role
+  change is included deliberately: promotion to admin hands someone the key,
+  membership and ACL-enforcement gates in one POST.
+- **Service accounts** — `svc.create`, `svc.destroy`, `svc.key.mint`. A service
+  account is precisely a way for a person's action to stop looking like theirs,
+  so minting its key is the last point at which the trail can name the human
+  behind it — and that is who the row is attributed to.
+- **Invites** — `invite.create`, `.revoke`, `.accept`, `.decline`. All four are
+  filed against the *org's* trail, since that is whose membership changed, but
+  attributed to whoever acted: an acceptance names the invitee, not the owner
+  who sent it.
+- **State changes, not requests.** `source.promote`, `key.revoke`,
+  `member.add` and `member.role` only write a row when something actually
+  moved. Bare `ppz terminal share` calls ensure-pty on every invocation, so
+  auditing the call rather than the flip would bury an org's real history under
+  one row per share.
+- **`via web` is finally reachable.** Every previous writer was an API-key
+  handler, so the audit tab's "acted in the GUI" rendering had never been
+  produced by anything. Key and membership management are session-authed flows,
+  and those rows genuinely name a person at a keyboard.
+- **One renderer for the new payloads**, and it is now the *default* branch —
+  a future writer that forgets to add a case gets a plain, truthful line rather
+  than the retention formatter's confidently wrong "ttl=0s, msgs=0, bytes=0".
+
+No schema change: the 0006 table was built generic on the bet that key revoke,
+member removal and source destroy would slot in without one. They did.
+
 ## Unreleased — pipe ACLs, phase 3 (opt-in enforcement)
 
 ACLs now actually restrict access — **but only for an org that has switched
