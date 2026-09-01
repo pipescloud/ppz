@@ -161,7 +161,34 @@ type EmbeddedConfig struct {
 	// Empty falls back to a per-process os.MkdirTemp — fine for tests,
 	// loses every stream on restart in any long-lived deployment.
 	StoreDir string
+
+	// MaxControlLine bounds the NATS protocol control line — the line
+	// that carries the User JWT inside CONNECT. 0 → DefaultMaxControlLine.
+	// Set explicitly only to test the bound or to raise it further; see
+	// DefaultMaxControlLine for why the stock 4096 is not survivable.
+	MaxControlLine int32
 }
+
+// DefaultMaxControlLine is the control-line budget the embedded server
+// runs with when EmbeddedConfig leaves it unset.
+//
+// nats-server defaults to 4096. That was survivable while a user JWT
+// carried a single per-account wildcard, but ACL Phase 3
+// (internal/acl.Compile) emits one subject per pipe per handle, and the
+// JWT rides inside the CONNECT control line. Production crossed 4096 at
+// four handles (a 4493-byte credential) and every connect began failing
+// in the protocol parser, before authentication — reported to users as
+// E_NATS_UNREACHABLE with advice to re-login, which cannot help because
+// the freshly minted credential is the same size.
+//
+// 32 KiB is ~7x the credential that broke production and leaves room
+// for roughly 30 more handles at the observed ~880 bytes each. The cost
+// is per-connection read-buffer headroom, not steady-state allocation.
+//
+// This raises the ceiling; it does not remove it. The credential still
+// grows without bound as an org grows — see docs/AUTH-V2.md §Phase 3.5
+// on per-account isolation, which is the fix that ends the class.
+const DefaultMaxControlLine = 32768
 
 // StartEmbeddedNATSWithAuth boots an embedded nats-server with
 // decentralized auth: the supplied operatorJWT is set as the trusted
@@ -204,11 +231,19 @@ func StartEmbeddedNATSWithAuth(cfg EmbeddedConfig) (*natsserver.Server, error) {
 	if host == "" {
 		host = "127.0.0.1"
 	}
+	maxControlLine := cfg.MaxControlLine
+	if maxControlLine == 0 {
+		maxControlLine = DefaultMaxControlLine
+	}
 	opts := &natsserver.Options{
 		Host:             host,
 		Port:             cfg.Port,
 		TrustedOperators: []*jwt.OperatorClaims{opClaims},
 		AccountResolver:  resolver,
+		// The User JWT travels inside the CONNECT control line, and ACL
+		// Phase 3 credentials scale with the org. See
+		// DefaultMaxControlLine.
+		MaxControlLine: maxControlLine,
 		// Embedded: the host process owns signal handling. Without this,
 		// nats-server's Start() installs its own SIGINT/SIGTERM handler
 		// whose Shutdown races ours and panics (close of nil channel in

@@ -1217,7 +1217,7 @@ func (d *Daemon) resolveSendTarget(ctx context.Context, reqHandle, reqChannel, b
 		manifold := d.State.CurrentNamespace(session)
 		if d.NC == nil || !d.NC.IsConnected() {
 			if err := d.ensureNATS(ctx); err != nil {
-				return sendTarget{}, cliproto.New(cliproto.ENATSUnreachable)
+				return sendTarget{}, ensureNATSError(err)
 			}
 		}
 		js, jsErr := d.jetStream()
@@ -1301,7 +1301,7 @@ func (d *Daemon) resolveSendTarget(ctx context.Context, reqHandle, reqChannel, b
 	}
 	if d.NC == nil || !d.NC.IsConnected() {
 		if err := d.ensureNATS(ctx); err != nil {
-			return sendTarget{}, cliproto.New(cliproto.ENATSUnreachable)
+			return sendTarget{}, ensureNATSError(err)
 		}
 	}
 	// Verify the JetStream stream exists before publishing. NATS-core

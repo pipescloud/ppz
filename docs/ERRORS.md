@@ -36,6 +36,7 @@ error codes, and HTTP error response codes all derive from it.
 | 26 | `E_DAEMON_TIMEOUT` | the local daemon accepted the IPC connection but did not reply within the deadline | — |
 | 27 | `E_LEASE_HELD` | `terminal lease`: a different controller already holds the terminal's write-lease | — |
 | 28 | `E_LEASE_NO_HOST` | `terminal lease`/`control`: acquire published but no terminal host answered (offline, or a ppz predating terminal control) | — |
+| 30 | `E_CREDENTIAL_TOO_LARGE` | the minted NATS User JWT exceeds the server's `max_control_line`, so NATS refuses the connection before authenticating | — |
 
 Exit codes 21 and 22 are reserved here for the user-creatable-pipes feature
 that lands in a later phase; nothing in the current code path returns them
@@ -59,6 +60,7 @@ entity name available) keep the static message.
 | `E_PAYLOAD_TOO_LARGE` | `payload too large; max 64KiB encoded` |
 | `E_SERVER_UNREACHABLE` | `server unreachable` |
 | `E_NATS_UNREACHABLE` | `nats unreachable; common causes: expired credentials (try 'ppz daemon logout' then re-login), or on non-docker setups missing PPZ_NATS_URL=nats://localhost:4222` |
+| `E_CREDENTIAL_TOO_LARGE` | `nats credential too large; this principal's compiled ACL grants exceed the server's max control line, so NATS refuses the connection before authenticating. Re-login cannot help — the new credential is the same size. Raise max_control_line on ppz-server, or narrow this principal's pipe grants` |
 | `E_INVALID_PIPE` (reserved) | `pipe name '<name>' is reserved` |
 | `E_INVALID_PIPE` (regex) | `pipe name '<name>' is invalid: must match [a-z0-9-] (max 32, no leading/trailing -)` |
 | `E_INVALID_PIPE` (other) | `invalid pipe; check for typos, or for custom pipes run 'ppz pipe create <handle>.<name>' first` |

@@ -1058,10 +1058,25 @@ shim.
 - **Presence as core-only.** Phase 0b moves heartbeats to `_presence` but
   keeps them durable. Making them core-only is cheaper and loses nothing
   a liveness signal needs; deferred because it changes `ppz ls` output.
-- **Credential size at scale.** The Phase 3 benchmark will say whether
-  the ceiling is 200 agents or 2000. If it binds sooner than expected,
-  the escape hatch is a NATS auth callout or per-principal sub-accounts,
-  both of which are large enough to be their own plan.
+- **Credential size at scale.** *This bound in production on 2026-08-31,
+  far sooner than the estimate above: at FOUR handles.* The ceiling was
+  never the benchmark's throughput number — it is `max_control_line`,
+  which nats-server defaults to 4096 bytes and which bounds the CONNECT
+  line the User JWT travels inside. A four-handle org compiled to a
+  4493-byte credential, and every connect failed in the protocol parser
+  before authentication, presenting as `E_NATS_UNREACHABLE`.
+
+  Mitigated by raising the embedded server's budget to 32 KiB
+  (`natsauth.DefaultMaxControlLine`), which buys roughly 30 more handles
+  at the observed ~880 bytes each. That is headroom, not a fix: the
+  credential still grows without bound with handles × pipes. The escape
+  hatches named above — a NATS auth callout, or per-principal
+  sub-accounts — are still the work that ends the class, and are now
+  load-bearing rather than contingent.
+
+  Anything that changes compiled-credential size should be measured, not
+  estimated. `internal/natsauth/control_line_test.go` pins the budget
+  against a production-shaped credential.
 
 ## References
 
