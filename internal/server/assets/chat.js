@@ -87,6 +87,13 @@
     return p(d.getHours()) + ":" + p(d.getMinutes());
   }
 
+  // Within this many px of the bottom counts as "at the bottom", so a
+  // sub-pixel offset or a little slack still follows new messages.
+  const STICK_PX = 40;
+  function atBottom() {
+    return logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight <= STICK_PX;
+  }
+
   function renderMessage(m) {
     if (m.id && seen.has(m.id)) return;
     if (m.id) seen.add(m.id);
@@ -116,12 +123,18 @@
     row.appendChild(time);
     row.appendChild(who);
     row.appendChild(body);
-    logEl.appendChild(row);
 
     // Stick to the bottom only when the reader is already there, so a
-    // scrolled-up reader isn't yanked down by an incoming message.
-    const atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
-    if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+    // scrolled-up reader isn't yanked down by an incoming message. Measured
+    // BEFORE appending: afterwards the new row's own height counts against
+    // the reader, so any message taller than STICK_PX (two lines or more)
+    // read as "scrolled up" and stopped the follow — including mid-replay
+    // when a window opens, which left it parked partway up the history.
+    // Your own message always scrolls into view: you just sent it (it
+    // usually arrives as the WS echo of the send, not the POST reply).
+    const stick = mine || atBottom();
+    logEl.appendChild(row);
+    if (stick) logEl.scrollTop = logEl.scrollHeight;
 
     // Seeing a message in the open window means we've read up to it.
     scheduleMarkRead();
