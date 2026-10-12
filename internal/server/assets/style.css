@@ -1001,3 +1001,46 @@ header.chat-brand {
   h1 { font-size: 1.1rem; }
   .chat-msg-sender { min-width: 3.5em; }
 }
+
+/* Pipes tab: "+ New" toolbar, create dialog, per-row delete actions. */
+.pipes-toolbar { display: flex; justify-content: flex-end; margin-bottom: 0.75rem; }
+dialog[data-create-dialog] {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1.25rem 1.5rem;
+  width: min(28rem, 92vw);
+}
+dialog[data-create-dialog]::backdrop { background: rgba(0, 0, 0, 0.6); }
+.dialog-form { display: flex; flex-direction: column; align-items: stretch; gap: 0.75rem; margin: 0; }
+.dialog-form h2 { margin: 0; font-size: 1.1rem; }
+.dialog-form label { justify-content: space-between; }
+.dialog-form label[hidden] { display: none; }
+.dialog-form select {
+  font: inherit;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  min-width: 200px;
+}
+.dialog-form input:disabled { opacity: 0.45; }
+.kind-choice { display: flex; gap: 1.25rem; }
+.kind-choice label { color: var(--text); }
+.hint { margin: 0; font-size: 0.85rem; color: var(--muted); }
+.form-error { margin: 0; font-size: 0.85rem; color: #f0857d; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+.btn-plain { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+.btn-plain:hover { background: var(--row-hover); color: var(--text); }
+.cell-actions { white-space: nowrap; text-align: right; }
+.cell-actions form.inline { margin: 0; }
+.btn-danger {
+  padding: 0.15rem 0.5rem;
+  font-size: 0.8rem;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+.btn-danger:hover { background: rgba(240, 133, 125, 0.12); color: #f0857d; border-color: #f0857d; }

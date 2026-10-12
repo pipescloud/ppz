@@ -161,94 +161,19 @@ func (s *Server) handleCreateSource(w http.ResponseWriter, r *http.Request, key 
 		writeErr(w, cliproto.New(cliproto.EInvalidHandle))
 		return
 	}
-	if err := natsubj.ValidateHandle(req.Handle); err != nil {
-		writeErr(w, cliproto.NewInvalidHandle(req.Handle))
-		return
-	}
-	if req.Manifold != "" {
-		for _, seg := range strings.Split(req.Manifold, ".") {
-			if err := natsubj.ValidateHandle(seg); err != nil {
-				writeErr(w, &cliproto.Error{Code: cliproto.EInvalidManifold, Message: "manifold segment invalid: " + seg})
-				return
-			}
-		}
-	}
 	ctx, cancel := withTimeout(r)
 	defer cancel()
-
-	kind := db.SourceKind(req.Kind)
-	if kind == "" {
-		kind = db.SourceKindMessage
-	}
-	if kind != db.SourceKindMessage && kind != db.SourceKindPTY {
-		writeErr(w, &cliproto.Error{Code: "E_INVALID_KIND", Message: "kind must be 'message' or 'pty'"})
+	src, e := s.createSource(ctx, key, req.Manifold, req.Handle, db.SourceKind(req.Kind))
+	if e != nil {
+		writeErr(w, e)
 		return
 	}
-
-	// Phase 1.5.1 first-wins collision rule (both directions):
-	// (a) reject if an uncollared pipe with this name already exists at
-	//     this manifold;
-	// (b) reject if there's already at least one pipe (collared or
-	//     uncollared) under the manifold-prefix path the new source's
-	//     auto-pipes would occupy — i.e. manifold==req.Manifold+"."+
-	//     req.Handle (or req.Handle when req.Manifold is empty).
-	if taken, err := db.UncollaredPipeExists(ctx, s.Pool, key.AccountID, req.Manifold, req.Handle); err != nil {
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
-		return
-	} else if taken {
-		writeErr(w, cliproto.NewNameTakenByUncollaredPipe(req.Handle, req.Manifold))
-		return
-	}
-	reservedPath := req.Handle
-	if req.Manifold != "" {
-		reservedPath = req.Manifold + "." + req.Handle
-	}
-	if anyPipe, err := db.PipesExistAtManifold(ctx, s.Pool, key.AccountID, reservedPath); err != nil {
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
-		return
-	} else if anyPipe {
-		writeErr(w, cliproto.NewManifoldReservedBySource(reservedPath, req.Handle, req.Manifold))
-		return
-	}
-
-	src, err := db.InsertSource(ctx, s.Pool, key.AccountID, key.Actor(), req.Manifold, req.Handle, kind)
-	if err != nil {
-		if errors.Is(err, db.ErrHandleTaken) {
-			writeErr(w, cliproto.NewSourceTaken(req.Handle))
-			return
-		}
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
-		return
-	}
-
-	js, err := s.JSFor(ctx, key.AccountID)
-	if err != nil {
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: "account: " + err.Error()})
-		return
-	}
-	// Phase 1.5.1: auto-pipes provisioned at the source's manifold
-	// via the four-role builder. For root-manifold sources (the
-	// pre-1.5.1 case) the stream name is `pipe_<orgshort>_<handle>_<pipe>`
-	// — a wire-format change from the legacy `source_…` prefix that
-	// requires a Reset Database cutover.
-	if err := ensureSourceStreams(ctx, s.Pool, js, key.AccountID, src); err != nil {
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
-		return
-	}
-	subject := natsubj.BuildSubject(key.AccountID, src.Manifold, src.Handle, "inbox")
-
-	// The account's pipe set just changed, and a compiled credential
-	// enumerates it. Without this nudge the caller cannot use the pipe
-	// it just created until its credential expires — the "created a
-	// pipe, denied for five minutes" trap. No-op when the org has not
-	// opted into enforcement.
-	s.notifyACLChanged(ctx, key.AccountID)
 	writeJSON(w, http.StatusCreated, cliproto.CreateSourceReply{
 		ID:        src.ID.String(),
 		Handle:    src.Handle,
 		Manifold:  src.Manifold,
 		Kind:      string(src.Kind),
-		Subject:   subject,
+		Subject:   natsubj.BuildSubject(key.AccountID, src.Manifold, src.Handle, "inbox"),
 		CreatedAt: src.CreatedAt,
 	})
 }
@@ -404,15 +329,10 @@ func (s *Server) handleCreatePipe(w http.ResponseWriter, r *http.Request, key db
 		writeErr(w, cliproto.NewInvalidHandle(handle))
 		return
 	}
-	// natsubj.ValidateUserPipeName returns either "invalid pipe name" (regex
-	// rejection) or "name is reserved" — keep the distinction so the user
-	// sees which one tripped.
-	if err := natsubj.ValidateUserPipeName(req.Name); err != nil {
-		if err.Error() == "name is reserved" {
-			writeErr(w, cliproto.NewInvalidPipeReserved(req.Name))
-		} else {
-			writeErr(w, cliproto.NewInvalidPipeName(req.Name))
-		}
+	// Validated again inside createCollaredPipe; checked here first so a
+	// bad name is reported ahead of a missing source.
+	if e := validateUserPipe(req.Name); e != nil {
+		writeErr(w, e)
 		return
 	}
 	ctx, cancel := withTimeout(r)
@@ -424,57 +344,15 @@ func (s *Server) handleCreatePipe(w http.ResponseWriter, r *http.Request, key db
 			writeErr(w, cliproto.NewSourceNotFound(handle))
 			return
 		}
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
+		writeErr(w, internalErr(err.Error()))
 		return
 	}
-
-	// Phase 1.5: this endpoint is the collared-pipe path (POST
-	// /api/v1/sources/{handle}/pipes), so source_id is always set. The
-	// pipe inherits the source's manifold (root '' until Cycle B adds
-	// explicit manifold support).
-	pipe, err := db.InsertPipe(ctx, s.Pool, key.AccountID, src.Manifold, &src.ID, key.Actor(), req.Name,
-		req.TTLSeconds, req.MaxMsgs, req.MaxBytes)
-	if err != nil {
-		if errors.Is(err, db.ErrPipeNameTaken) {
-			writeErr(w, cliproto.NewPipeTaken(req.Name, handle))
-			return
-		}
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
+	created, e := s.createCollaredPipe(ctx, key, src, req.Name, req.TTLSeconds, req.MaxMsgs, req.MaxBytes)
+	if e != nil {
+		writeErr(w, e)
 		return
 	}
-
-	maxAge, maxMsgs, maxBytes := resolveRetention(pipeLayer(pipe))
-
-	js, err := s.JSFor(ctx, key.AccountID)
-	if err != nil {
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: "org account: " + err.Error()})
-		return
-	}
-	if err := ensurePipeStreamWithRetention(ctx, js, key.AccountID,
-		src.Manifold, src.Handle, pipe.Name, maxAge, maxMsgs, maxBytes); err != nil {
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
-		return
-	}
-
-	s.auditPipe(ctx, key, db.AuditActionPipeCreate,
-		cliproto.FormatPipePath(src.Manifold, src.Handle, pipe.Name),
-		nil, snapshotRetention(maxAge, maxMsgs, maxBytes).mustJSON())
-
-	// The account's pipe set just changed, and a compiled credential
-	// enumerates it. Without this nudge the caller cannot use the pipe
-	// it just created until its credential expires — the "created a
-	// pipe, denied for five minutes" trap. No-op when the org has not
-	// opted into enforcement.
-	s.notifyACLChanged(ctx, key.AccountID)
-	writeJSON(w, http.StatusCreated, cliproto.PipeCreateReply{
-		Handle:     src.Handle,
-		Manifold:   src.Manifold,
-		Name:       pipe.Name,
-		StreamName: natsubj.BuildStreamName(key.AccountID, src.Manifold, src.Handle, pipe.Name),
-		TTLSeconds: int(maxAge / time.Second),
-		MaxMsgs:    maxMsgs,
-		MaxBytes:   maxBytes,
-	})
+	writeJSON(w, http.StatusCreated, pipeCreateReply(key, src.Manifold, src.Handle, created))
 }
 
 // handleCreatePipeFullPath: POST /api/v1/pipes
@@ -497,99 +375,26 @@ func (s *Server) handleCreatePipeFullPath(w http.ResponseWriter, r *http.Request
 		writeErr(w, &cliproto.Error{Code: cliproto.EInvalidPipe, Message: "POST /api/v1/pipes is the uncollared (sourceless) endpoint; for collared pipes use POST /api/v1/sources/{handle}/pipes"})
 		return
 	}
-	if req.Manifold != "" {
-		for _, seg := range strings.Split(req.Manifold, ".") {
-			if err := natsubj.ValidateHandle(seg); err != nil {
-				writeErr(w, &cliproto.Error{Code: cliproto.EInvalidManifold, Message: "manifold segment invalid: " + seg})
-				return
-			}
-		}
-	}
-	if err := natsubj.ValidateUserPipeName(req.Name); err != nil {
-		if err.Error() == "name is reserved" {
-			writeErr(w, cliproto.NewInvalidPipeReserved(req.Name))
-		} else {
-			writeErr(w, cliproto.NewInvalidPipeName(req.Name))
-		}
-		return
-	}
-
 	ctx, cancel := withTimeout(r)
 	defer cancel()
-
-	// Phase 1.5.1 first-wins collision rule: reject if a source with the
-	// same name already exists at this manifold.
-	if exists, err := db.SourceExistsAtManifold(ctx, s.Pool, key.AccountID, req.Manifold, req.Name); err != nil {
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
-		return
-	} else if exists {
-		writeErr(w, cliproto.NewNameTakenBySource(req.Name, req.Manifold))
+	created, e := s.createUncollaredPipe(ctx, key, req.Manifold, req.Name, req.TTLSeconds, req.MaxMsgs, req.MaxBytes)
+	if e != nil {
+		writeErr(w, e)
 		return
 	}
-	// Phase 1.5.1 first-wins collision rule: also reject if the manifold
-	// path itself collides with a reserved source-prefix. Source X at
-	// manifold M reserves the prefix M.X via its auto-pipes — so any pipe
-	// at manifold M.X (or M.X.<deeper>) would land on the source's
-	// subjects. Walk the segments and check each prefix.
-	if req.Manifold != "" {
-		segs := strings.Split(req.Manifold, ".")
-		for i, seg := range segs {
-			parent := strings.Join(segs[:i], ".")
-			reserved, err := db.SourceExistsAtManifold(ctx, s.Pool, key.AccountID, parent, seg)
-			if err != nil {
-				writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
-				return
-			}
-			if reserved {
-				prefix := strings.Join(segs[:i+1], ".")
-				writeErr(w, cliproto.NewManifoldReservedBySource(prefix, seg, parent))
-				return
-			}
-		}
+	writeJSON(w, http.StatusCreated, pipeCreateReply(key, req.Manifold, "", created))
+}
+
+func pipeCreateReply(key db.APIKey, manifold, handle string, c pipeCreated) cliproto.PipeCreateReply {
+	return cliproto.PipeCreateReply{
+		Handle:     handle,
+		Manifold:   manifold,
+		Name:       c.pipe.Name,
+		StreamName: natsubj.BuildStreamName(key.AccountID, manifold, handle, c.pipe.Name),
+		TTLSeconds: int(c.maxAge / time.Second),
+		MaxMsgs:    c.maxMsgs,
+		MaxBytes:   c.maxBytes,
 	}
-
-	pipe, err := db.InsertPipe(ctx, s.Pool, key.AccountID, req.Manifold, nil, key.Actor(), req.Name,
-		req.TTLSeconds, req.MaxMsgs, req.MaxBytes)
-	if err != nil {
-		if errors.Is(err, db.ErrPipeNameTaken) {
-			writeErr(w, cliproto.NewUncollaredPipeTaken(req.Name, req.Manifold))
-			return
-		}
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
-		return
-	}
-
-	maxAge, maxMsgs, maxBytes := resolveRetention(pipeLayer(pipe))
-
-	js, err := s.JSFor(ctx, key.AccountID)
-	if err != nil {
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: "account: " + err.Error()})
-		return
-	}
-	if err := ensurePipeStreamWithRetention(ctx, js, key.AccountID, req.Manifold, "", pipe.Name, maxAge, maxMsgs, maxBytes); err != nil {
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
-		return
-	}
-
-	s.auditPipe(ctx, key, db.AuditActionPipeCreate,
-		cliproto.FormatPipePath(req.Manifold, "", pipe.Name),
-		nil, snapshotRetention(maxAge, maxMsgs, maxBytes).mustJSON())
-
-	// The account's pipe set just changed, and a compiled credential
-	// enumerates it. Without this nudge the caller cannot use the pipe
-	// it just created until its credential expires — the "created a
-	// pipe, denied for five minutes" trap. No-op when the org has not
-	// opted into enforcement.
-	s.notifyACLChanged(ctx, key.AccountID)
-	writeJSON(w, http.StatusCreated, cliproto.PipeCreateReply{
-		Handle:     "",
-		Manifold:   req.Manifold,
-		Name:       pipe.Name,
-		StreamName: natsubj.BuildStreamName(key.AccountID, req.Manifold, "", pipe.Name),
-		TTLSeconds: int(maxAge / time.Second),
-		MaxMsgs:    maxMsgs,
-		MaxBytes:   maxBytes,
-	})
 }
 
 // handleListUncollaredPipes: GET /api/v1/pipes
@@ -636,59 +441,12 @@ func (s *Server) handleListUncollaredPipes(w http.ResponseWriter, r *http.Reques
 // Removes the uncollared pipe row + its JetStream stream. Idempotent on
 // missing stream (row is the source of truth). Phase 1.5.
 func (s *Server) handleDestroyUncollaredPipe(w http.ResponseWriter, r *http.Request, key db.APIKey) {
-	manifold := r.URL.Query().Get("manifold")
-	name := r.URL.Query().Get("name")
-	if name == "" {
-		writeErr(w, cliproto.New(cliproto.EInvalidPipe))
-		return
-	}
-	if err := natsubj.ValidateUserPipeName(name); err != nil {
-		writeErr(w, cliproto.NewInvalidPipeName(name))
-		return
-	}
-	if manifold != "" {
-		for _, seg := range strings.Split(manifold, ".") {
-			if err := natsubj.ValidateHandle(seg); err != nil {
-				writeErr(w, &cliproto.Error{Code: cliproto.EInvalidManifold, Message: "manifold segment invalid: " + seg})
-				return
-			}
-		}
-	}
 	ctx, cancel := withTimeout(r)
 	defer cancel()
-
-	// Read the row before deleting it — the audit entry's `before` is the
-	// retention that was lost, and after the DELETE there is nothing left
-	// to read it from. Best-effort: a missing row here just means the
-	// delete below reports the not-found.
-	prev, _ := db.GetUncollaredPipeByName(ctx, s.Pool, key.AccountID, manifold, name)
-
-	if err := db.DeleteUncollaredPipe(ctx, s.Pool, key.AccountID, manifold, name); err != nil {
-		if errors.Is(err, db.ErrNotFound) {
-			writeErr(w, cliproto.NewUncollaredPipeNotFound(name, manifold))
-			return
-		}
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
+	if e := s.destroyUncollaredPipe(ctx, key, r.URL.Query().Get("manifold"), r.URL.Query().Get("name")); e != nil {
+		writeErr(w, e)
 		return
 	}
-	js, err := s.JSFor(ctx, key.AccountID)
-	if err != nil {
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: "account: " + err.Error()})
-		return
-	}
-	if err := deleteUncollaredPipeStream(ctx, js, key.AccountID, manifold, name); err != nil {
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
-		return
-	}
-
-	prevAge, prevMsgs, prevBytes := pipeRetention(prev)
-	s.auditPipe(ctx, key, db.AuditActionPipeDestroy,
-		cliproto.FormatPipePath(manifold, "", name),
-		snapshotRetention(prevAge, prevMsgs, prevBytes).mustJSON(), nil)
-
-	// The account's pipe set just changed, and a compiled credential
-	// enumerates it. No-op when the org has not opted into enforcement.
-	s.notifyACLChanged(ctx, key.AccountID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -711,41 +469,13 @@ func (s *Server) handleDestroySource(w http.ResponseWriter, r *http.Request, key
 			writeErr(w, cliproto.NewSourceNotFound(handle))
 			return
 		}
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
+		writeErr(w, internalErr(err.Error()))
 		return
 	}
-
-	// Snapshot user-created pipe names before CASCADE removes them.
-	userPipes, err := db.ListPipesForSource(ctx, s.Pool, src.ID)
-	if err != nil {
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
+	if e := s.destroySource(ctx, key, src); e != nil {
+		writeErr(w, e)
 		return
 	}
-
-	if err := db.DeleteSource(ctx, s.Pool, key.AccountID, handle); err != nil {
-		if errors.Is(err, db.ErrNotFound) {
-			writeErr(w, cliproto.NewSourceNotFound(handle))
-			return
-		}
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
-		return
-	}
-
-	// Stream cleanup is best-effort — the DB row is already gone so orphaned
-	// streams are storage waste only, not a correctness problem.
-	js, err := s.JSFor(ctx, key.AccountID)
-	if err == nil {
-		for _, p := range userPipes {
-			_ = deletePipeStream(ctx, js, key.AccountID, p.Manifold, handle, p.Name)
-		}
-		for _, p := range src.Pipes() {
-			_ = deletePipeStream(ctx, js, key.AccountID, src.Manifold, handle, p)
-		}
-	}
-
-	// The account's pipe set just changed, and a compiled credential
-	// enumerates it. No-op when the org has not opted into enforcement.
-	s.notifyACLChanged(ctx, key.AccountID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -769,52 +499,13 @@ func (s *Server) handleDestroyPipe(w http.ResponseWriter, r *http.Request, key d
 			writeErr(w, cliproto.NewSourceNotFound(handle))
 			return
 		}
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
+		writeErr(w, internalErr(err.Error()))
 		return
 	}
-
-	// Snapshot the row before it goes, so the audit trail can state what
-	// the pipe retained. Missing row = an auto-pipe with no override;
-	// the zero Pipe resolves to the defaults, which is the truth.
-	prev, _ := db.GetPipeByName(ctx, s.Pool, src.ID, name)
-
-	if err := db.DeletePipe(ctx, s.Pool, src.ID, name); err != nil {
-		if errors.Is(err, db.ErrNotFound) {
-			// Auto-provisioned pipes (broadcast, inbox, etc.) are
-			// JetStream-only — not in the pipes table. Allow destroying
-			// them directly via stream deletion rather than returning
-			// E_PIPE_NOT_FOUND for pipes the user can see in ppz ls.
-			if !src.IsAutoPipe(name) {
-				writeErr(w, cliproto.NewPipeNotFound(name, handle))
-				return
-			}
-			// fall through to JetStream cleanup below
-		} else {
-			writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
-			return
-		}
-	}
-	js, err := s.JSFor(ctx, key.AccountID)
-	if err != nil {
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: "org account: " + err.Error()})
+	if e := s.destroyCollaredPipe(ctx, key, src, name); e != nil {
+		writeErr(w, e)
 		return
 	}
-	if err := deletePipeStream(ctx, js, key.AccountID, src.Manifold, src.Handle, name); err != nil {
-		writeErr(w, &cliproto.Error{Code: "E_INTERNAL", Message: err.Error()})
-		return
-	}
-
-	// A destroy has no "after". `before` is the retention the pipe had —
-	// resolved, so the row states what was actually lost rather than
-	// which columns happened to be non-NULL.
-	prevAge, prevMsgs, prevBytes := pipeRetention(prev)
-	s.auditPipe(ctx, key, db.AuditActionPipeDestroy,
-		cliproto.FormatPipePath(src.Manifold, src.Handle, name),
-		snapshotRetention(prevAge, prevMsgs, prevBytes).mustJSON(), nil)
-
-	// The account's pipe set just changed, and a compiled credential
-	// enumerates it. No-op when the org has not opted into enforcement.
-	s.notifyACLChanged(ctx, key.AccountID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

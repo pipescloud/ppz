@@ -228,7 +228,16 @@ func (s *Server) handleGUIOrgTab(w http.ResponseWriter, r *http.Request) {
 		LastMessageAt  string // relative duration ("5 seconds ago" / "just now") or ""
 		PayloadDisplay string // truncated to 60 chars or ""
 		HasLastMessage bool
+
+		// For the row's delete actions (handlers_gui_pipes.go).
+		Manifold      string // raw manifold, "" at root (Namespace is display-only)
+		SourcePath    string // manifold.handle, "" for uncollared pipes
+		IsAuto        bool   // provisioned by the source: no per-pipe delete
+		FirstOfSource bool   // carries the source's "delete source" action
+		Live          bool   // pty source with a current heartbeat
 	}
+	// Source paths for the create dialog's "attach to source" picker.
+	var sourcePaths []string
 	// One row per (source, pipe). The pipe set is the union of:
 	//   - auto-provisioned pipes derived from kind (`src.Pipes()`)
 	//   - user-created pipes in the `pipes` table
@@ -258,12 +267,29 @@ func (s *Server) handleGUIOrgTab(w http.ResponseWriter, r *http.Request) {
 		// Phase 3.5: per-org JS. If account not provisioned yet,
 		// rows still render without last-message data.
 		js, _ := s.JSFor(ctx, org.ID)
-		for _, p := range pipes {
+		srcPath := src.Handle
+		if src.Manifold != "" {
+			srcPath = src.Manifold + "." + src.Handle
+		}
+		sourcePaths = append(sourcePaths, srcPath)
+		live := false
+		if js != nil && src.IsAutoPipe("heartbeat") {
+			hb := natsubj.BuildStreamName(org.ID, src.Manifold, src.Handle, "heartbeat")
+			if at, iv, _, ok := readAgentLiveness(ctx, js, hb); ok {
+				live = classifyAgentStatus(at, now, iv) == "online"
+			}
+		}
+		for i, p := range pipes {
 			row := sourceRow{
-				Namespace: namespaceDisplay(src.Manifold),
-				Handle:    src.Handle,
-				Pipe:      p,
-				PipeLink:  fmt.Sprintf("/orgs/%s/sources/%s/pipes/%s", org.Name, src.Handle, p),
+				Namespace:     namespaceDisplay(src.Manifold),
+				Handle:        src.Handle,
+				Pipe:          p,
+				PipeLink:      fmt.Sprintf("/orgs/%s/sources/%s/pipes/%s", org.Name, src.Handle, p),
+				Manifold:      src.Manifold,
+				SourcePath:    srcPath,
+				IsAuto:        src.IsAutoPipe(p),
+				FirstOfSource: i == 0,
+				Live:          live,
 			}
 			streamName := natsubj.BuildStreamName(org.ID, src.Manifold, src.Handle, p)
 			if js == nil {
@@ -318,6 +344,7 @@ func (s *Server) handleGUIOrgTab(w http.ResponseWriter, r *http.Request) {
 				Handle:    "",
 				Pipe:      up.Name,
 				PipeLink:  fmt.Sprintf("/orgs/%s/pipes/%s", org.Name, pipePath),
+				Manifold:  up.Manifold,
 			}
 			if js != nil {
 				streamName := natsubj.BuildStreamName(org.ID, up.Manifold, "", up.Name)
@@ -401,6 +428,7 @@ func (s *Server) handleGUIOrgTab(w http.ResponseWriter, r *http.Request) {
 	data["PendingInvites"] = pendingInvites
 	data["IsOwner"] = isOwner
 	data["IsOrgAdmin"] = isOrgAdmin
+	data["SourcePaths"] = sourcePaths
 	// Lets the keys tab offer Revoke on a member's own keys.
 	data["MeID"] = UserIDFromCtx(r.Context())
 	data["AuditRows"] = auditRows

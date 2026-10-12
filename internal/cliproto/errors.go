@@ -375,6 +375,8 @@ func HTTPStatus(c Code) int {
 		return 400
 	case ENameTaken:
 		return 409
+	case EPipeForbidden:
+		return 403
 	}
 	return 500
 }

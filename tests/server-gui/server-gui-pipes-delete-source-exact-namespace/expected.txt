@@ -1,0 +1,5 @@
+create root bot: 200
+create team-a.bot: 200
+delete team-a.bot: 200
+bot.inbox
+exit=0

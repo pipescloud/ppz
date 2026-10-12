@@ -39,11 +39,40 @@
 
     {{if eq .ActiveTab "pipes"}}
     <section id="section-pipes">
+      <div class="pipes-toolbar">
+        <button type="button" data-open-create>+ New pipe or source</button>
+      </div>
+      <dialog data-create-dialog>
+        <form method="post" action="/orgs/{{.Org.ID}}/pipes" class="dialog-form" data-async data-create-form>
+          <h2>New pipe or source</h2>
+          <div class="kind-choice" role="radiogroup">
+            <label><input type="radio" name="kind" value="pipe" checked> Pipe</label>
+            <label><input type="radio" name="kind" value="source"> Source</label>
+          </div>
+          <p class="hint" data-hint="pipe">A single named stream. Attach it to a source to collar it, or leave it uncollared.</p>
+          <p class="hint" data-hint="source" hidden>A source gets its own inbox. Terminal sources are created by <code>ppz terminal share</code>.</p>
+          <label data-field="source">Attach to source
+            <select name="source">
+              <option value="">none (uncollared)</option>
+              {{range .SourcePaths}}<option value="{{.}}">{{.}}</option>{{end}}
+            </select>
+          </label>
+          <label data-field="namespace">Namespace <input name="namespace" placeholder="optional, e.g. team-a"></label>
+          <label>Name <input name="name" required autocomplete="off"
+                             pattern="[a-z0-9]([a-z0-9\-]{0,30}[a-z0-9])?"
+                             title="lowercase letters, digits and hyphens"></label>
+          <p class="form-error" data-form-error hidden></p>
+          <div class="dialog-actions">
+            <button type="button" class="btn-plain" data-close-dialog>Cancel</button>
+            <button type="submit">Create</button>
+          </div>
+        </form>
+      </dialog>
       {{if .Sources}}
       <div class="table-scroll">
       <table id="pipes">
         <thead>
-          <tr><th>namespace</th><th>source</th><th>pipe</th><th>Last Message</th><th>payload</th></tr>
+          <tr><th>namespace</th><th>source</th><th>pipe</th><th>Last Message</th><th>payload</th><th></th></tr>
         </thead>
         <tbody>
           {{range .Sources}}
@@ -60,13 +89,31 @@
             </td>
             <td data-cell="last-message" class="cell-nowrap">{{if .HasLastMessage}}{{.LastMessageAt}}{{else}}<span class="empty">—</span>{{end}}</td>
             <td data-cell="payload" class="cell-truncate"{{if .HasLastMessage}} title="{{.PayloadDisplay}}"{{end}}>{{if .HasLastMessage}}{{.PayloadDisplay}}{{else}}<span class="empty">—</span>{{end}}</td>
+            <td data-cell="actions" class="cell-actions">
+              {{if not .IsAuto}}
+              <form method="post" action="/orgs/{{$.Org.ID}}/pipes/delete" class="inline" data-async
+                    data-confirm="Delete pipe {{if .SourcePath}}{{.SourcePath}}.{{else if .Manifold}}{{.Manifold}}.{{end}}{{.Pipe}}? Its messages are deleted too.">
+                <input type="hidden" name="source" value="{{.SourcePath}}">
+                <input type="hidden" name="namespace" value="{{.Manifold}}">
+                <input type="hidden" name="name" value="{{.Pipe}}">
+                <button type="submit" class="btn-danger" data-delete-pipe="{{if .SourcePath}}{{.SourcePath}}.{{else if .Manifold}}{{.Manifold}}.{{end}}{{.Pipe}}">delete pipe</button>
+              </form>
+              {{end}}
+              {{if and .SourcePath .FirstOfSource}}
+              <form method="post" action="/orgs/{{$.Org.ID}}/sources/delete" class="inline" data-async
+                    data-confirm="Delete source {{.SourcePath}} and all of its pipes?{{if .Live}} It is online right now; its live session will break.{{end}}">
+                <input type="hidden" name="source" value="{{.SourcePath}}">
+                <button type="submit" class="btn-danger" data-delete-source="{{.SourcePath}}">delete source</button>
+              </form>
+              {{end}}
+            </td>
           </tr>
           {{end}}
         </tbody>
       </table>
       </div>
       {{else}}
-      <p class="empty">No sources yet.</p>
+      <p class="empty">No pipes or sources yet.</p>
       {{end}}
     </section>
     {{end}}
@@ -294,5 +341,6 @@
   </section>
   {{end}}
   </main>
+  <script src="/assets/org.js"></script>
 </body>
 </html>

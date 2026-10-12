@@ -3,10 +3,10 @@
 # set, destroy — newest first. This covers the collared endpoints; the
 # uncollared ones have their own scenario.
 #
-# Every writer today is an API-key handler (retention is only mutable
-# from the CLI), so `via api-key` is the only attribution the trail can
-# currently produce. The `web` rendering is there for the GUI editor and
-# is deliberately NOT asserted here as though it were reachable.
+# Everything here goes through the CLI, so it's attributed `via api-key`;
+# the Pipes-tab path (`via web`) is covered by
+# server-gui-pipes-manage-lifecycle. `ppz source create` is recorded too,
+# as source.create.
 #
 # Setup (provided by the seed): foo owns alpha.
 . /tests/lib/common.sh

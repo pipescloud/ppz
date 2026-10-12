@@ -29,6 +29,9 @@ echo "terminal ws: $(curl_server '/orgs/beta/sources/term1/terminal/ws' \
 echo "key create: $(code '/orgs/beta/keys' -X POST --data-urlencode 'label=intrusion')"
 echo "invite create: $(code '/orgs/beta/invites' -X POST --data-urlencode 'username=bar')"
 echo "invite revoke: $(code '/orgs/beta/invites/00000000-0000-0000-0000-000000000000/revoke' -X POST)"
+echo "pipe create: $(code '/orgs/beta/pipes' -X POST -d kind=pipe -d name=intrusion)"
+echo "pipe delete: $(code '/orgs/beta/pipes/delete' -X POST -d name=general)"
+echo "source delete: $(code '/orgs/beta/sources/delete' -X POST -d source=term1)"
 echo "intrusion keys in beta: $(PGPASSWORD=ppz psql -h postgres -U postgres -d ppz -tAc \
   "SELECT COUNT(*) FROM api_keys k JOIN accounts a ON a.id = k.account_id
     WHERE a.name = 'beta' AND k.label = 'intrusion'")"

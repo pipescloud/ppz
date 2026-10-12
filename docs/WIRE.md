@@ -373,8 +373,17 @@ no defaults-only provisioning helper left in the server.
 | POST | `/orgs/{slug}/keys` | Form field `label`. Creates api key. Renders the **plaintext key once** on the response page. Subsequent visits to `/orgs/{slug}` show only the prefix. |
 | GET | `/orgs/{slug}/sources/{handle}/pipes/{pipe}` | Lists every buffered message on this pipe from the JetStream stream, in chronological order. Honors stream retention (defaults per §2: 24 h / 5000 msgs / 16 MiB, whichever first — or the pipe's overrides). |
 | GET | `/orgs/{slug}/audit` | **Owner-only** (403 for a non-owner member, 404 for a non-member). Newest-first audit trail for the org, capped at 200 rows: when, action, target, change, actor. See §6.2. |
+| POST | `/orgs/{slug}/pipes` | Pipes tab create. Form `kind=source` + `namespace?`, `name` creates a message source; `kind=pipe` + `namespace?`, `name` an uncollared pipe; `kind=pipe` + `source=<manifold.handle>`, `name` a user pipe on that source. Same validation and errors as the CLI (status from `cliproto.HTTPStatus`, body is the message). Any member. |
+| POST | `/orgs/{slug}/pipes/delete` | `source=<manifold.handle>`, `name` deletes that source's user pipe (409 for an auto-provisioned pipe: delete the source); `namespace?`, `name` deletes an uncollared pipe. |
+| POST | `/orgs/{slug}/sources/delete` | `source=<manifold.handle>` deletes exactly that source and every pipe under it. |
 
-All HTML pages are server-rendered (Go `html/template`). No JS framework.
+Every `/orgs/{slug}/…` route requires org membership (404 otherwise). The
+two delete routes also require ACL admin on every pipe removed while the
+org enforces ACLs (403).
+
+All HTML pages are server-rendered (Go `html/template`). No JS framework;
+the org page uses a small `org.js` for the create dialog and in-place
+errors.
 
 ### 6.1 Stable HTML markers (for tests)
 
@@ -391,9 +400,11 @@ contract — do not rename:
 | `GET /orgs/{slug}/sources/{handle}/pipes/{pipe}` | `data-message="<id>:<rfc3339>:<payload>"` | one per buffered message, chronological |
 | `POST /orgs/{slug}/keys` (response page) | `data-new-key="<plaintext>"` | exactly one |
 | `GET /orgs/{slug}/audit` | `data-audit-action="<action>"` | one per audit row, newest first |
-| `GET /orgs/{slug}/audit` | `data-audit-target="<pipe-path>"` | one per audit row |
+| `GET /orgs/{slug}` | `data-delete-pipe="<path>"` | one per deletable (non-auto-provisioned) pipe row |
+| `GET /orgs/{slug}` | `data-delete-source="<manifold.handle>"` | one per source, on its first row |
+| `GET /orgs/{slug}/audit` | `data-audit-target="<pipe-or-source-path>"` | one per audit row |
 | `GET /orgs/{slug}/audit` | `data-audit-actor="<username>"` | one per audit row |
-| `GET /orgs/{slug}/audit` | `data-audit-via="api-key\|web"` | one per audit row; every writer today is an API-key handler, so `web` is not yet emitted |
+| `GET /orgs/{slug}/audit` | `data-audit-via="api-key\|web"` | one per audit row; `web` for changes made from the Pipes tab |
 | `GET /orgs/{slug}/audit` | `data-audit-delta="<human change>"` | one per audit row; e.g. `msgs 5000 → 5` |
 
 ### 6.2 Audit trail
@@ -403,7 +414,9 @@ attributing. Rows are generic (actor / action / target / before / after),
 so the table is not pipe-specific; the first writers are the pipe
 lifecycle actions `pipe.create`, `pipe.set` and `pipe.destroy` — each
 recorded on BOTH the collared (`/sources/{handle}/pipes/...`) and
-uncollared (`/pipes`) endpoints.
+uncollared (`/pipes`) endpoints — and the source lifecycle actions
+`source.create` and `source.destroy`, whose snapshot is
+`{kind, pipes}` so a destroy records every pipe that went with it.
 
 `before` and `after` are jsonb retention snapshots
 (`{ttl_seconds, max_msgs, max_bytes}`). Either may be NULL — a create has
@@ -414,9 +427,9 @@ retention instead of a delta.
 CREATOR, not who typed the command, so a shared org key attributes every
 change to whoever minted it. The row therefore records the key id
 alongside the user, and the GUI renders `via api-key` vs `via web` so a
-row is not read as stronger evidence than it is. Retention is currently
-only mutable through the CLI, so every stored row is `via api-key`; the
-`web` rendering exists for the GUI editor and is not yet reachable.
+row is not read as stronger evidence than it is. Creates and deletes made
+from the Pipes tab carry no key and render `via web`; retention is still
+only mutable through the CLI.
 
 **Known gaps.** Audit writes are best-effort: they happen after the
 mutation has already committed (and, for `pipe set`, already been applied

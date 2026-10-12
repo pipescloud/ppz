@@ -1,0 +1,6 @@
+bar deletes foo's pipe: 403
+bar deletes foo's source: 403
+bar creates a pipe: 200
+foo deletes the pipe: 200
+foo deletes the source: 200
+exit=0

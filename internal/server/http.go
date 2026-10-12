@@ -117,6 +117,10 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /orgs/{id}/invites/{iid}/revoke", s.orgSession(s.handleGUIRevokeInvite))
 	mux.HandleFunc("POST /invites/{id}/accept", s.requireSession(s.handleGUIAcceptInvite))
 	mux.HandleFunc("POST /invites/{id}/decline", s.requireSession(s.handleGUIDeclineInvite))
+	// Pipe/source management from the Pipes tab (handlers_gui_pipes.go).
+	mux.HandleFunc("POST /orgs/{id}/pipes", s.orgSession(s.handleGUICreatePipe))
+	mux.HandleFunc("POST /orgs/{id}/pipes/delete", s.orgSession(s.handleGUIDeletePipe))
+	mux.HandleFunc("POST /orgs/{id}/sources/delete", s.orgSession(s.handleGUIDeleteSource))
 	mux.HandleFunc("GET /orgs/{id}/sources/{handle}/pipes/{pipe}", s.orgSession(s.handleGUIPipePage))
 	// Sourceless (uncollared) pipe view. {pipe} is the dotted
 	// "<manifold>.<name>" path the org pipes table surfaces; the
