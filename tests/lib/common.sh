@@ -63,6 +63,20 @@ auth_as() {
 auth_as_foo() { auth_as foo; }
 auth_as_bar() { auth_as bar; }
 
+# session_cookie prints the ppz_session value from the current auth_as jar,
+# for clients that aren't curl (termws).
+session_cookie() {
+  awk '$6 == "ppz_session" { print $7 }' "$PPZ_TEST_COOKIE_JAR"
+}
+
+# term_ws <org> <handle> STEP... drives the web terminal WebSocket as the
+# current auth_as user (tests/tools/termws).
+term_ws() {
+  local org="$1" handle="$2"; shift 2
+  termws -url "ws://${PPZ_SERVER_URL#http://}/orgs/$org/sources/$handle/terminal/ws" \
+    -cookie "$(session_cookie)" "$@"
+}
+
 # Wait until a command succeeds (rc=0) or `n` attempts of 0.1s have elapsed.
 # Usage: wait_for 20 'ppz_a status | grep -q current'
 #

@@ -907,6 +907,11 @@ your `stdout` through the web page. Every server-side read on behalf of a
 session — `handlers_channel.go`, `handlers_terminal.go`, `handlers_chat.go`
 — must call `eff()` for the session's user before it reads.
 
+Done for the terminal: the page and socket require `read` on
+`<handle>.stdout`, and web terminal control requires `write` on
+`<handle>.stdin` (`sessionCan` in `acl_enforce.go`; WIRE.md §12.1). The
+pipe pages and chat still read unchecked.
+
 ### Behaviour changes to announce
 
 These land **only for an org that has switched enforcement on**, which is

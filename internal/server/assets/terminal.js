@@ -1,10 +1,11 @@
-// Read-only live terminal viewer.
+// Live terminal viewer with optional control.
 //
 // Mounts xterm.js on #terminal, opens a binary WebSocket against the path
 // in data-ws-path, and writes every received frame straight into the
-// emulator. No stdin yet — keypresses on the canvas are dropped on the
-// floor (xterm.js writes locally regardless of attached input; we don't
-// hook onData, so user typing doesn't echo).
+// emulator. If the server says this viewer may write the terminal's stdin
+// ({"type":"control","writable":true}), "Take control" asks the server to
+// acquire the terminal's write-lease; while it's held, keystrokes go back
+// up the socket as binary frames. See internal/server/terminal_control.go.
 
 (function () {
   const root = document.getElementById("terminal");
@@ -27,7 +28,7 @@
   const term = new Terminal({
     convertEol: false,            // keep raw \r\n from the pty
     cursorBlink: false,
-    disableStdin: true,           // read-only
+    disableStdin: true,           // until this viewer holds control
     fontFamily: 'Menlo, Monaco, "Courier New", monospace',
     fontSize: 13,
     scrollback: 5000,
@@ -49,19 +50,80 @@
 
   ws.onopen = () => setStatus("connected — streaming live", "ok");
   ws.onerror = () => setStatus("connection error", "err");
-  ws.onclose = (ev) => setStatus(
-    "disconnected (code " + ev.code + ")", "err");
+  ws.onclose = (ev) => {
+    setStatus("disconnected (code " + ev.code + ")", "err");
+    // The server releases a held lease when the socket goes; stop
+    // offering control the page can no longer exercise.
+    term.options.disableStdin = true;
+    root.classList.remove("controlling");
+    if (bar) bar.hidden = true;
+  };
+  // --- control ---
+  const bar = document.querySelector("[data-terminal-control]");
+  const toggle = document.querySelector("[data-control-toggle]");
+  const stateEl = document.querySelector("[data-control-state]");
+  const control = { writable: false, you: "", holder: "", error: "" };
+
+  function renderControl() {
+    if (!bar) return;
+    const mine = control.holder !== "" && control.holder === control.you;
+    term.options.disableStdin = !mine;
+    root.classList.toggle("controlling", mine);
+    bar.hidden = false;
+    toggle.hidden = !control.writable;
+    toggle.textContent = mine ? "Release control" : "Take control";
+    let text;
+    if (control.error) text = control.error;
+    else if (mine) text = "you're in control — keystrokes go to the terminal";
+    else if (control.holder) text = "controlled by " + control.holder;
+    else if (control.writable) text = "view only";
+    else text = "view only — you don't have write access to this terminal";
+    stateEl.textContent = text;
+    stateEl.className = "terminal-control-state" +
+      (control.error ? " err" : mine ? " mine" : "");
+    if (mine) term.focus();
+  }
+
+  if (toggle) {
+    toggle.addEventListener("click", () => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      const mine = control.holder !== "" && control.holder === control.you;
+      control.error = "";
+      ws.send(JSON.stringify({ type: mine ? "release" : "take" }));
+    });
+  }
+
+  const encoder = new TextEncoder();
+  term.onData((data) => {
+    if (ws.readyState === WebSocket.OPEN && control.holder === control.you) {
+      ws.send(encoder.encode(data));
+    }
+  });
+
   ws.onmessage = (ev) => {
     if (typeof ev.data === "string") {
-      // Text frames carry control signals from <handle>.stdctrl as JSON.
-      // Dispatch by type; ignore unknown types so the wire can grow
-      // without breaking the viewer.
+      // Text frames are JSON: resize events relayed from <handle>.stdctrl,
+      // and terminal-control state from the server. Dispatch by type;
+      // ignore unknown types so the wire can grow without breaking the
+      // viewer.
       try {
         const ctrl = JSON.parse(ev.data);
-        if (ctrl && ctrl.type === "resize" &&
+        if (!ctrl) return;
+        if (ctrl.type === "resize" &&
             Number.isFinite(ctrl.cols) && Number.isFinite(ctrl.rows) &&
             ctrl.cols > 0 && ctrl.rows > 0) {
           term.resize(ctrl.cols, ctrl.rows);
+        } else if (ctrl.type === "control") {
+          control.writable = !!ctrl.writable;
+          control.you = ctrl.you || "";
+          renderControl();
+        } else if (ctrl.type === "lease") {
+          control.holder = ctrl.holder || "";
+          control.error = "";
+          renderControl();
+        } else if (ctrl.type === "control-error") {
+          control.error = ctrl.error || "control failed";
+          renderControl();
         }
       } catch (_) { /* malformed json — drop */ }
     } else {

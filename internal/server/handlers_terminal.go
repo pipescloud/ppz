@@ -9,6 +9,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/pipescloud/ppz/internal/acl"
 	"github.com/pipescloud/ppz/internal/db"
 	"github.com/pipescloud/ppz/internal/envelope"
 	"github.com/pipescloud/ppz/internal/natsubj"
@@ -39,6 +40,9 @@ func (s *Server) handleGUITerminalPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	if !s.canReadTerminal(ctx, w, r, org, src) {
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := tmpl.ExecuteTemplate(w, "terminal.html", map[string]any{
 		"Org":    org,
@@ -52,8 +56,8 @@ func (s *Server) handleGUITerminalPage(w http.ResponseWriter, r *http.Request) {
 // retained messages first (so the page renders a faithful replay of the
 // session so far), then follows live writes until the client closes.
 //
-// Read-only: incoming frames from the browser are discarded. Stdin will
-// land in a future iteration with a write-lease design.
+// Incoming browser frames drive terminal control (terminal_control.go):
+// take / release the write-lease and, while held, keystrokes to stdin.
 //
 // Route: GET /orgs/{id}/sources/{handle}/terminal/ws
 func (s *Server) handleGUITerminalWS(w http.ResponseWriter, r *http.Request) {
@@ -72,6 +76,15 @@ func (s *Server) handleGUITerminalWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	if !s.canReadTerminal(ctx, w, r, org, src) {
+		return
+	}
+	user, err := db.GetUser(ctx, s.Pool, UserIDFromCtx(r.Context()))
+	if err != nil {
+		http.Error(w, "user lookup: "+err.Error(), 500)
 		return
 	}
 
@@ -203,16 +216,39 @@ func (s *Server) handleGUITerminalWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 4) Block until the client disconnects or the request ctx is cancelled.
-	// Reading from the conn lets us notice both — even though we don't
-	// process the messages (read-only).
+	// 4) Control: announce whether this viewer may take control, relay
+	// lease changes, and feed browser frames (take / release / input) to
+	// the controller until the client disconnects. See terminal_control.go.
+	ctl := newTerminalController(s, js, org, src, user.ID, user.Username, conn)
+	stopCtl := ctl.start(ctx)
+	defer stopCtl()
+	defer ctl.close()
 	go func() {
 		for {
-			if _, _, err := conn.Read(ctx); err != nil {
+			typ, data, err := conn.Read(ctx)
+			if err != nil {
 				cancel()
 				return
 			}
+			ctl.handleFrame(ctx, typ, data)
 		}
 	}()
 	<-ctx.Done()
+}
+
+// canReadTerminal applies the ACL read check on <handle>.stdout before
+// the page or socket shows a terminal. The server streams through its own
+// privileged NATS user, so this — not the viewer's credential — is what
+// stops an org member watching a terminal they weren't granted.
+func (s *Server) canReadTerminal(ctx context.Context, w http.ResponseWriter, r *http.Request, org db.Account, src db.Source) bool {
+	ok, err := s.sessionCan(ctx, org.ID, UserIDFromCtx(r.Context()), src.Handle+".stdout", acl.Read)
+	if err != nil {
+		http.Error(w, "access check: "+err.Error(), 500)
+		return false
+	}
+	if !ok {
+		http.Error(w, "you don't have read access to "+src.Handle+".stdout", http.StatusForbidden)
+		return false
+	}
+	return true
 }
