@@ -1,4 +1,4 @@
-control writable=true you=foo@web
+control writable=true resizable=true you=foo@web
 lease holder=foo@web
 lease holder=
 delivered: 1

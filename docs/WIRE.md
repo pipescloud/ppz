@@ -865,6 +865,15 @@ Releases the caller's write-lease on `HANDLE`. A release by anyone but the
 current holder is a host-side no-op. Blocks briefly for the host's free-state
 confirmation so scripts can sequence on it.
 
+### `ppz terminal resize [HANDLE] COLSxROWS`
+Publishes `{"type":"setsize","cols":C,"rows":R}` on `HANDLE.stdctrl`
+(`HANDLE` defaults to the current source; 1–1000 each way). The sharing
+host applies it to the child pty and republishes the new size as a
+`resize`, which every viewer follows. Prints `requested HANDLE CxR`;
+fire-and-forget, so with no host running nothing changes. An invalid size
+exits 2 with usage. On a share running in an interactive terminal, the
+sharer's next local window resize sets the size back.
+
 ## 9. Daemon on-disk state
 
 Under `$PPZ_HOME` (default `~/.ppz`):
@@ -998,9 +1007,10 @@ Frames beside the existing binary stdout / text `resize` frames:
 | Direction | Frame | Meaning |
 |---|---|---|
 | browser → server | text `{"type":"take"}` / `{"type":"release"}` | acquire / release the lease |
+| browser → server | text `{"type":"setsize","cols":C,"rows":R}` | "Fit to window": published on `.stdctrl` as `terminal resize` does. Needs `write` on `<handle>.stdctrl`, not the lease |
 | browser → server | binary | keystrokes; forwarded to `.stdin` (≤ 4 KiB per envelope) only while this socket holds the lease, dropped otherwise |
-| server → browser | text `{"type":"control","writable":B,"you":S}` | sent on connect: may this viewer take control, and the sender it would hold the lease as |
+| server → browser | text `{"type":"control","writable":B,"resizable":B,"you":S}` | sent on connect: may this viewer take control / resize, and the sender it would hold the lease as |
 | server → browser | text `{"type":"lease","holder":H,"until":T}` | current holder on connect, then every `lease-state` (empty holder = free) |
-| server → browser | text `{"type":"control-error","error":E}` | a take/input that failed: no write access, held by someone else, no host |
+| server → browser | text `{"type":"control-error","error":E}` | a take/input/resize that failed: no write access, held by someone else, no host |
 
 Source: `internal/server/terminal_control.go`.

@@ -20,8 +20,9 @@ package server
 // Wire (browser ⇄ server), alongside the existing stdout/stdctrl frames:
 //
 //	browser → server  text   {"type":"take"} | {"type":"release"}
+//	browser → server  text   {"type":"setsize","cols":C,"rows":R}
 //	browser → server  binary keystroke bytes (UTF-8 from xterm onData)
-//	server → browser  text   {"type":"control","writable":B,"you":S}
+//	server → browser  text   {"type":"control","writable":B,"resizable":B,"you":S}
 //	server → browser  text   {"type":"lease","holder":H,"until":T}
 //	server → browser  text   {"type":"control-error","error":E}
 
@@ -94,6 +95,35 @@ func (c *terminalController) canWrite(ctx context.Context) bool {
 	return err == nil && ok
 }
 
+// canResize: resizing publishes to stdctrl, so it needs write there. It
+// doesn't need the control lease — it changes the view, not the input.
+func (c *terminalController) canResize(ctx context.Context) bool {
+	ok, err := c.s.sessionCan(ctx, c.org.ID, c.userID, c.src.Handle+".stdctrl", acl.Write)
+	return err == nil && ok
+}
+
+// maxTermDim bounds a requested dimension (pty sizes are uint16; anything
+// near that is a bug, not a terminal). Matches the CLI's bound.
+const maxTermDim = 1000
+
+// setsize asks the pty host to resize the child, exactly as
+// `ppz terminal resize` does: a "setsize" on <handle>.stdctrl, which the
+// host applies and answers with a "resize" every viewer follows.
+func (c *terminalController) setsize(ctx context.Context, cols, rows int) {
+	if cols < 1 || rows < 1 || cols > maxTermDim || rows > maxTermDim {
+		c.sendError(ctx, "invalid size")
+		return
+	}
+	if !c.canResize(ctx) {
+		c.sendError(ctx, "you don't have write access to "+c.src.Handle+".stdctrl")
+		return
+	}
+	payload, _ := json.Marshal(map[string]any{"type": "setsize", "cols": cols, "rows": rows})
+	if err := c.publish(ctx, "stdctrl", string(payload)); err != nil {
+		c.sendError(ctx, "resize not delivered: "+err.Error())
+	}
+}
+
 func (c *terminalController) send(ctx context.Context, v any) {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -137,10 +167,10 @@ func (c *terminalController) publishLease(ctx context.Context, typ string) (stri
 func (c *terminalController) start(ctx context.Context) func() {
 	stream, err := c.js.Stream(ctx, natsubj.BuildStreamName(c.org.ID, c.src.Manifold, c.src.Handle, "system"))
 	if err != nil {
-		c.send(ctx, map[string]any{"type": "control", "writable": false, "you": c.sender})
+		c.send(ctx, map[string]any{"type": "control", "writable": false, "resizable": c.canResize(ctx), "you": c.sender})
 		return func() {}
 	}
-	c.send(ctx, map[string]any{"type": "control", "writable": c.canWrite(ctx), "you": c.sender})
+	c.send(ctx, map[string]any{"type": "control", "writable": c.canWrite(ctx), "resizable": c.canResize(ctx), "you": c.sender})
 
 	var startSeq uint64 = 1
 	if info, err := stream.Info(ctx); err == nil {
@@ -319,6 +349,8 @@ func (c *terminalController) handleFrame(ctx context.Context, typ websocket.Mess
 	}
 	var m struct {
 		Type string `json:"type"`
+		Cols int    `json:"cols"`
+		Rows int    `json:"rows"`
 	}
 	if json.Unmarshal(data, &m) != nil {
 		return
@@ -328,6 +360,8 @@ func (c *terminalController) handleFrame(ctx context.Context, typ websocket.Mess
 		c.take(ctx)
 	case "release":
 		c.release(ctx)
+	case "setsize":
+		c.setsize(ctx, m.Cols, m.Rows)
 	}
 }
 

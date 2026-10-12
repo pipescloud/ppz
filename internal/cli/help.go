@@ -320,13 +320,14 @@ Glob-destroy sources or pipes:
 
 Examples: destroy '*' · destroy 'agent-*' · destroy '*.stdout' · destroy apple`,
 
-	"terminal": `usage: ppz terminal {share|watch|control|lease|release|read} ...
+	"terminal": `usage: ppz terminal {share|watch|control|lease|release|resize|read} ...
 
   ppz terminal share H [-- CMD...]  run CMD (or $SHELL) in a pty bound to H
   ppz terminal watch H              follow H.stdout in an alt-screen TUI (read-only)
   ppz terminal control H            attach interactively: watch + forward keystrokes (holds the write-lease)
   ppz terminal lease H DURATION     acquire the advisory write-lease on H for DURATION
   ppz terminal release H            release the write-lease on H
+  ppz terminal resize [H] COLSxROWS resize H's pty (default: current source)
   ppz terminal read H [flags]       render H.stdout (reread with --tty default)
 
 Run 'ppz terminal <subverb> --help' for details.`,
@@ -354,6 +355,10 @@ Acquire the advisory write-lease on handle H for DURATION (Go duration, e.g. 60s
 	"terminal release": `usage: ppz terminal release H
 
 Release your write-lease on handle H. A release by anyone but the current holder is a no-op. Blocks briefly for the host's confirmation so scripts can sequence a follow-on send.`,
+
+	"terminal resize": `usage: ppz terminal resize [H] COLSxROWS
+
+Resize the shared terminal bound to handle H (default: the current source) to COLS columns by ROWS rows, e.g. 'ppz terminal resize bob 120x40'. Publishes a resize request on H.stdctrl; the sharing 'ppz terminal share' applies it to the program it runs and every viewer follows. On a share running in someone's own terminal window, their next window resize sets it back. Needs write on H.stdctrl while the org enforces ACLs.`,
 
 	"agent": `usage: ppz agent create NAME [PROMPT] [flags]
 
