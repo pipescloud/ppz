@@ -111,6 +111,8 @@ func (d *Daemon) handleConn(ctx context.Context, conn net.Conn) {
 		d.handlePipeSet(ctx, conn, req.Params)
 	case cliproto.IPCPipeDestroy:
 		d.handlePipeDestroy(ctx, conn, req.Params)
+	case cliproto.IPCPipePurge:
+		d.handlePipePurge(ctx, conn, req.Params)
 	case cliproto.IPCSourceDestroy:
 		d.handleSourceDestroy(ctx, conn, req.Params)
 	case cliproto.IPCSetNamespace:

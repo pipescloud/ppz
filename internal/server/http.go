@@ -68,6 +68,8 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("PATCH /api/v1/pipes", s.requireAPIKey(s.handleSetPipeFullPath))
 	mux.HandleFunc("GET /api/v1/pipes", s.requireAPIKey(s.handleListUncollaredPipes))
 	mux.HandleFunc("DELETE /api/v1/pipes", s.requireAPIKey(s.handleDestroyUncollaredPipe))
+	mux.HandleFunc("POST /api/v1/sources/{handle}/pipes/{name}/purge", s.requireAPIKey(s.handlePurgePipe))
+	mux.HandleFunc("POST /api/v1/pipes/purge", s.requireAPIKey(s.handlePurgeUncollaredPipe))
 
 	// Scheduled sends (docs/specs/schedule.md).
 	mux.HandleFunc("POST /api/v1/schedules", s.requireAPIKey(s.handleCreateSchedule))
@@ -120,6 +122,7 @@ func (s *Server) Routes() *http.ServeMux {
 	// Pipe/source management from the Pipes tab (handlers_gui_pipes.go).
 	mux.HandleFunc("POST /orgs/{id}/pipes", s.orgSession(s.handleGUICreatePipe))
 	mux.HandleFunc("POST /orgs/{id}/pipes/delete", s.orgSession(s.handleGUIDeletePipe))
+	mux.HandleFunc("POST /orgs/{id}/pipes/purge", s.orgSession(s.handleGUIPurgePipe))
 	mux.HandleFunc("POST /orgs/{id}/sources/delete", s.orgSession(s.handleGUIDeleteSource))
 	mux.HandleFunc("GET /orgs/{id}/sources/{handle}/pipes/{pipe}", s.orgSession(s.handleGUIPipePage))
 	// Sourceless (uncollared) pipe view. {pipe} is the dotted

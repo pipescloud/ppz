@@ -90,6 +90,15 @@
             <td data-cell="last-message" class="cell-nowrap">{{if .HasLastMessage}}{{.LastMessageAt}}{{else}}<span class="empty">—</span>{{end}}</td>
             <td data-cell="payload" class="cell-truncate"{{if .HasLastMessage}} title="{{.PayloadDisplay}}"{{end}}>{{if .HasLastMessage}}{{.PayloadDisplay}}{{else}}<span class="empty">—</span>{{end}}</td>
             <td data-cell="actions" class="cell-actions">
+              {{if .HasLastMessage}}
+              <form method="post" action="/orgs/{{$.Org.ID}}/pipes/purge" class="inline" data-async
+                    data-confirm="Purge every buffered message from {{if .SourcePath}}{{.SourcePath}}.{{else if .Manifold}}{{.Manifold}}.{{end}}{{.Pipe}}? The pipe itself stays.{{if eq .Pipe "heartbeat"}} The agent will look offline until its next heartbeat.{{end}}">
+                <input type="hidden" name="source" value="{{.SourcePath}}">
+                <input type="hidden" name="namespace" value="{{.Manifold}}">
+                <input type="hidden" name="name" value="{{.Pipe}}">
+                <button type="submit" class="btn-danger" data-purge-pipe="{{if .SourcePath}}{{.SourcePath}}.{{else if .Manifold}}{{.Manifold}}.{{end}}{{.Pipe}}">purge</button>
+              </form>
+              {{end}}
               {{if not .IsAuto}}
               <form method="post" action="/orgs/{{$.Org.ID}}/pipes/delete" class="inline" data-async
                     data-confirm="Delete pipe {{if .SourcePath}}{{.SourcePath}}.{{else if .Manifold}}{{.Manifold}}.{{end}}{{.Pipe}}? Its messages are deleted too.">

@@ -1,0 +1,9 @@
+--- before ---
+data-purge-pipe="desk.inbox"
+purge: 200
+--- after ---
+buffered: 0
+pipe still listed: 1
+--- audit ---
+pipe.purge desk.inbox foo web purged 2 messages
+exit=0

@@ -927,6 +927,57 @@ func (d *Daemon) handlePipeDestroy(ctx context.Context, conn net.Conn, params js
 	writeIPC(conn, cliproto.PipeDestroyReply{Handle: req.Handle, Name: req.Name})
 }
 
+// handlePipePurge proxies `ppz pipe purge` to the server, routing like
+// handlePipeDestroy: BareTarget → uncollared at the session's namespace,
+// Handle+Name → collared. Messages go; the pipe and its numbering stay,
+// so no local state (cursors, current source) needs clearing.
+func (d *Daemon) handlePipePurge(ctx context.Context, conn net.Conn, params json.RawMessage) {
+	var req cliproto.PipePurgeRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		writeIPCErr(conn, &cliproto.Error{Code: "E_PROTOCOL", Message: err.Error()})
+		return
+	}
+	if _, ok := d.State.Credentials(); !ok {
+		writeIPCErr(conn, cliproto.New(cliproto.ENotLoggedIn))
+		return
+	}
+	var reply cliproto.PipePurgeReply
+	if req.Handle == "" && req.BareTarget != "" {
+		if err := natsubj.ValidatePipe(req.BareTarget); err != nil {
+			writeIPCErr(conn, cliproto.New(cliproto.EInvalidPipe))
+			return
+		}
+		manifold := req.Manifold
+		if manifold == "" {
+			manifold = d.State.CurrentNamespace(req.Session)
+		}
+		q := url.Values{}
+		q.Set("name", req.BareTarget)
+		if manifold != "" {
+			q.Set("manifold", manifold)
+		}
+		if e := d.callServer(ctx, "POST", "/api/v1/pipes/purge?"+q.Encode(), nil, &reply); e != nil {
+			writeIPCErr(conn, e)
+			return
+		}
+		writeIPC(conn, reply)
+		return
+	}
+	if err := natsubj.ValidateHandle(req.Handle); err != nil {
+		writeIPCErr(conn, cliproto.New(cliproto.EInvalidHandle))
+		return
+	}
+	if err := natsubj.ValidatePipe(req.Name); err != nil {
+		writeIPCErr(conn, cliproto.New(cliproto.EInvalidPipe))
+		return
+	}
+	if e := d.callServer(ctx, "POST", "/api/v1/sources/"+req.Handle+"/pipes/"+req.Name+"/purge", nil, &reply); e != nil {
+		writeIPCErr(conn, e)
+		return
+	}
+	writeIPC(conn, reply)
+}
+
 // handleDisconnect clears the calling session's current source. Source
 // itself stays provisioned. Other sessions' currents are unaffected.
 // Idempotent — calling on no-current is fine.

@@ -316,6 +316,26 @@ connection-level NATS failures (connection closed / no servers /
 timeout), which never count: an infra outage of any length retries
 until connectivity returns rather than deleting schedules.
 
+### 5.5a Pipe purge (`ppz pipe purge`)
+
+`POST /api/v1/sources/{handle}/pipes/{name}/purge` — collared form,
+auto-provisioned pipes included.
+`POST /api/v1/pipes/purge?manifold=M&name=N` — uncollared form.
+
+Deletes every buffered message (JetStream stream purge) but keeps the
+pipe, its retention and its sequence numbers, so readers' cursors stay
+valid and see only what is published afterwards. No body.
+
+200: `cliproto.PipePurgeReply` — `{handle?, manifold?, name, purged}`,
+where `purged` is the number of messages removed.
+
+Errors: 400 `E_INVALID_HANDLE` / `E_INVALID_MANIFOLD`, 403
+`E_PIPE_FORBIDDEN` (the org enforces ACLs and the caller lacks admin on
+the pipe — same gate as destroy and `pipe set`), 404
+`E_SOURCE_NOT_FOUND` / `E_PIPE_NOT_FOUND`. Audited as `pipe.purge` with
+`before = {"msgs": N}`. The GUI equivalent is `POST /orgs/{slug}/pipes/purge`
+(§6).
+
 ### 5.6 Pipe retention (`ppz pipe set`)
 
 `PATCH /api/v1/sources/{handle}/pipes/{name}` — collared form.
@@ -375,6 +395,7 @@ no defaults-only provisioning helper left in the server.
 | GET | `/orgs/{slug}/audit` | **Owner-only** (403 for a non-owner member, 404 for a non-member). Newest-first audit trail for the org, capped at 200 rows: when, action, target, change, actor. See §6.2. |
 | POST | `/orgs/{slug}/pipes` | Pipes tab create. Form `kind=source` + `namespace?`, `name` creates a message source; `kind=pipe` + `namespace?`, `name` an uncollared pipe; `kind=pipe` + `source=<manifold.handle>`, `name` a user pipe on that source. Same validation and errors as the CLI (status from `cliproto.HTTPStatus`, body is the message). Any member. |
 | POST | `/orgs/{slug}/pipes/delete` | `source=<manifold.handle>`, `name` deletes that source's user pipe (409 for an auto-provisioned pipe: delete the source); `namespace?`, `name` deletes an uncollared pipe. |
+| POST | `/orgs/{slug}/pipes/purge` | `source=<manifold.handle>` or `namespace?`, plus `name`: empties that pipe (auto-provisioned included). Same gates as delete. |
 | POST | `/orgs/{slug}/sources/delete` | `source=<manifold.handle>` deletes exactly that source and every pipe under it. |
 
 Every `/orgs/{slug}/…` route requires org membership (404 otherwise). The
@@ -401,6 +422,7 @@ contract — do not rename:
 | `POST /orgs/{slug}/keys` (response page) | `data-new-key="<plaintext>"` | exactly one |
 | `GET /orgs/{slug}/audit` | `data-audit-action="<action>"` | one per audit row, newest first |
 | `GET /orgs/{slug}` | `data-delete-pipe="<path>"` | one per deletable (non-auto-provisioned) pipe row |
+| `GET /orgs/{slug}` | `data-purge-pipe="<path>"` | one per row whose pipe holds messages |
 | `GET /orgs/{slug}` | `data-delete-source="<manifold.handle>"` | one per source, on its first row |
 | `GET /orgs/{slug}/audit` | `data-audit-target="<pipe-or-source-path>"` | one per audit row |
 | `GET /orgs/{slug}/audit` | `data-audit-actor="<username>"` | one per audit row |
@@ -412,7 +434,7 @@ contract — do not rename:
 `audit_events` is an append-only, per-account log of mutations worth
 attributing. Rows are generic (actor / action / target / before / after),
 so the table is not pipe-specific; the first writers are the pipe
-lifecycle actions `pipe.create`, `pipe.set` and `pipe.destroy` — each
+lifecycle actions `pipe.create`, `pipe.set`, `pipe.purge` and `pipe.destroy` — each
 recorded on BOTH the collared (`/sources/{handle}/pipes/...`) and
 uncollared (`/pipes`) endpoints — and the source lifecycle actions
 `source.create` and `source.destroy`, whose snapshot is
