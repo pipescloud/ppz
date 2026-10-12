@@ -131,12 +131,19 @@ middleware does the right thing automatically:
 - Authed user clicks → `/dashboard` renders directly.
 - Anonymous user clicks → 302 to `/login?next=/dashboard` → GitHub flow → cookie → 302 back to `/dashboard`.
 
-### Owner-only gates
+### Org gates
 
-- `POST /orgs/<id>/keys` (mint key) — requires owner role.
-- `POST /orgs/<id>/keys/<id>/revoke` — owner.
-- `POST /orgs/<id>/members` (add) — owner.
-- `POST /orgs/<id>/members/<id>/remove` — owner.
+Every route under `/orgs/<id>` is registered through `orgSession`
+(session + org membership; non-members get 404 so org existence doesn't
+leak). `TestOrgRoutesUseOrgSession` fails if a route skips it. Finer
+gates on top:
+
+- `POST /orgs/<id>/keys` (mint key) — any member.
+- `POST /orgs/<id>/keys/<kid>/revoke` — owner/admin for any of the org's
+  keys; a member for keys they created.
+- `POST /orgs/<id>/members` (add) — owner/admin.
+- `POST /orgs/<id>/members/<uid>/remove` — owner/admin.
+- `POST /orgs/<id>/members/<uid>/role`, invites — owner.
 - `POST /orgs/<id>/transfer` — owner. **(stubbed in V1, wire to actual transfer logic here)**
 
 Role check looks up `organisation_members.role` for the authed user

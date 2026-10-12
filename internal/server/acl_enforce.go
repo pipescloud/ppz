@@ -403,23 +403,8 @@ func (s *Server) securityRights(ctx context.Context, org db.Account) []SecurityR
 // handleGUISetACLEnforce is the Security tab's toggle. Org admin only,
 // consistent with the other org-management surfaces.
 func (s *Server) handleGUISetACLEnforce(w http.ResponseWriter, r *http.Request) {
-	uid := UserIDFromCtx(r.Context())
-	org, err := resolveOrg(r.Context(), s.Pool, r.PathValue("id"))
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	role, err := s.RoleInOrg(r.Context(), uid, org.ID)
-	if err != nil {
-		http.Error(w, "role check: "+err.Error(), 500)
-		return
-	}
-	switch {
-	case role == OrgRoleNone:
-		http.NotFound(w, r)
-		return
-	case !role.CanAdministerOrg():
-		http.Error(w, "org admin only", http.StatusForbidden)
+	org, ok := s.resolveAdminOrg(r.Context(), w, r)
+	if !ok {
 		return
 	}
 	on := r.FormValue("enforced") == "on" || r.FormValue("enforced") == "true"
@@ -429,7 +414,7 @@ func (s *Server) handleGUISetACLEnforce(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// Session path: no API key, so the trail names the person directly.
-	s.auditACL(r.Context(), org.ID, AuthedCaller{UserID: uid}, db.AuditActionACLEnforce,
+	s.auditACL(r.Context(), org.ID, AuthedCaller{UserID: UserIDFromCtx(r.Context())}, db.AuditActionACLEnforce,
 		db.AuditTargetOrg, org.Name, aclEnforceDelta(was), aclEnforceDelta(on))
 	s.notifyACLChanged(r.Context(), org.ID)
 	browserSubmit(w, r)

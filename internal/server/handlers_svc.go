@@ -184,27 +184,15 @@ func (s *Server) handleAPIMintServiceKey(w http.ResponseWriter, r *http.Request)
 // widening the org gates in Phase 1 doesn't let an admin promote
 // themselves — that would make the owner tier decorative.
 func (s *Server) handleGUISetMemberRole(w http.ResponseWriter, r *http.Request) {
-	uid := UserIDFromCtx(r.Context())
-	org, err := resolveOrg(r.Context(), s.Pool, r.PathValue("id"))
-	if err != nil {
-		http.NotFound(w, r)
+	a, ok := s.orgAccessFor(r.Context(), w, r)
+	if !ok {
 		return
 	}
-	role, err := s.RoleInOrg(r.Context(), uid, org.ID)
-	if err != nil {
-		http.Error(w, "role check: "+err.Error(), 500)
-		return
-	}
-	switch role {
-	case OrgRoleNone:
-		http.NotFound(w, r)
-		return
-	case OrgRoleOwner:
-		// fall through
-	default:
+	if a.role != OrgRoleOwner {
 		http.Error(w, "owner only", http.StatusForbidden)
 		return
 	}
+	org := a.org
 
 	target, err := uuid.Parse(r.PathValue("uid"))
 	if err != nil {

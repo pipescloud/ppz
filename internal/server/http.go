@@ -104,47 +104,47 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /dashboard", s.requireSession(s.handleGUIIndex))
 	mux.HandleFunc("GET /me", s.requireSession(s.handleMe))
 	mux.HandleFunc("POST /orgs", s.requireSession(s.handleGUICreateOrg))
-	mux.HandleFunc("GET /orgs/{id}", s.requireSession(s.handleGUIOrgRedirect))
-	mux.HandleFunc("GET /orgs/{id}/{tab}", s.requireSession(s.handleGUIOrgTab))
-	mux.HandleFunc("POST /orgs/{id}/keys", s.requireSession(s.handleGUICreateKey))
-	mux.HandleFunc("POST /orgs/{id}/keys/{kid}/revoke", s.requireSession(s.handleGUIRevokeKey))
+	mux.HandleFunc("GET /orgs/{id}", s.orgSession(s.handleGUIOrgRedirect))
+	mux.HandleFunc("GET /orgs/{id}/{tab}", s.orgSession(s.handleGUIOrgTab))
+	mux.HandleFunc("POST /orgs/{id}/keys", s.orgSession(s.handleGUICreateKey))
+	mux.HandleFunc("POST /orgs/{id}/keys/{kid}/revoke", s.orgSession(s.handleGUIRevokeKey))
 	mux.HandleFunc("POST /users", s.requireSession(s.handleCreateUser))
-	mux.HandleFunc("POST /orgs/{id}/members", s.requireSession(s.handleAddMember))
-	mux.HandleFunc("POST /orgs/{id}/members/{uid}/remove", s.requireSession(s.handleRemoveMember))
-	mux.HandleFunc("POST /orgs/{id}/members/{uid}/role", s.requireSession(s.handleGUISetMemberRole))
-	mux.HandleFunc("POST /orgs/{id}/security/enforce", s.requireSession(s.handleGUISetACLEnforce))
-	mux.HandleFunc("POST /orgs/{id}/invites", s.requireSession(s.handleGUICreateInvite))
-	mux.HandleFunc("POST /orgs/{id}/invites/{iid}/revoke", s.requireSession(s.handleGUIRevokeInvite))
+	mux.HandleFunc("POST /orgs/{id}/members", s.orgSession(s.handleAddMember))
+	mux.HandleFunc("POST /orgs/{id}/members/{uid}/remove", s.orgSession(s.handleRemoveMember))
+	mux.HandleFunc("POST /orgs/{id}/members/{uid}/role", s.orgSession(s.handleGUISetMemberRole))
+	mux.HandleFunc("POST /orgs/{id}/security/enforce", s.orgSession(s.handleGUISetACLEnforce))
+	mux.HandleFunc("POST /orgs/{id}/invites", s.orgSession(s.handleGUICreateInvite))
+	mux.HandleFunc("POST /orgs/{id}/invites/{iid}/revoke", s.orgSession(s.handleGUIRevokeInvite))
 	mux.HandleFunc("POST /invites/{id}/accept", s.requireSession(s.handleGUIAcceptInvite))
 	mux.HandleFunc("POST /invites/{id}/decline", s.requireSession(s.handleGUIDeclineInvite))
-	mux.HandleFunc("GET /orgs/{id}/sources/{handle}/pipes/{pipe}", s.requireSession(s.handleGUIPipePage))
+	mux.HandleFunc("GET /orgs/{id}/sources/{handle}/pipes/{pipe}", s.orgSession(s.handleGUIPipePage))
 	// Sourceless (uncollared) pipe view. {pipe} is the dotted
 	// "<manifold>.<name>" path the org pipes table surfaces; the
 	// handler splits on the last dot to recover manifold + leaf.
-	mux.HandleFunc("GET /orgs/{id}/pipes/{pipe}", s.requireSession(s.handleGUIUncollaredPipePage))
+	mux.HandleFunc("GET /orgs/{id}/pipes/{pipe}", s.orgSession(s.handleGUIUncollaredPipePage))
 	// Web `ppz chat` console — roster + live chat pane over the org's
 	// agents, inboxes and pipes. All four routes (page, snapshot, send,
 	// live WS) are session-authed here and additionally membership-gated
 	// in their handlers (resolveMemberOrg), since /chat is a read+write
 	// surface into the org's streams.
-	mux.HandleFunc("GET /orgs/{id}/chat", s.requireSession(s.handleGUIChatPage))
-	mux.HandleFunc("GET /orgs/{id}/chat/messages", s.requireSession(s.handleGUIChatMessages))
-	mux.HandleFunc("GET /orgs/{id}/chat/roster", s.requireSession(s.handleGUIChatRoster))
-	mux.HandleFunc("POST /orgs/{id}/chat/read", s.requireSession(s.handleGUIChatMarkRead))
-	mux.HandleFunc("POST /orgs/{id}/chat/send", s.requireSession(s.handleGUIChatSend))
+	mux.HandleFunc("GET /orgs/{id}/chat", s.orgSession(s.handleGUIChatPage))
+	mux.HandleFunc("GET /orgs/{id}/chat/messages", s.orgSession(s.handleGUIChatMessages))
+	mux.HandleFunc("GET /orgs/{id}/chat/roster", s.orgSession(s.handleGUIChatRoster))
+	mux.HandleFunc("POST /orgs/{id}/chat/read", s.orgSession(s.handleGUIChatMarkRead))
+	mux.HandleFunc("POST /orgs/{id}/chat/send", s.orgSession(s.handleGUIChatSend))
 	// Add/remove uncollared pipes from the console (TUI `a` / `-` parity).
-	mux.HandleFunc("POST /orgs/{id}/chat/pipes", s.requireSession(s.handleGUIChatAddPipe))
-	mux.HandleFunc("DELETE /orgs/{id}/chat/pipes", s.requireSession(s.handleGUIChatRemovePipe))
+	mux.HandleFunc("POST /orgs/{id}/chat/pipes", s.orgSession(s.handleGUIChatAddPipe))
+	mux.HandleFunc("DELETE /orgs/{id}/chat/pipes", s.orgSession(s.handleGUIChatRemovePipe))
 	// The chat WS is session-gated: the browser handshake carries the
 	// session cookie, so the follow is access-controlled AND the server
 	// can stamp `you` correctly from the viewer's identity. The client
 	// also derives `you` from data-me.
-	mux.HandleFunc("GET /orgs/{id}/chat/ws", s.requireSession(s.handleGUIChatWS))
-	mux.HandleFunc("GET /orgs/{id}/sources/{handle}/terminal", s.requireSession(s.handleGUITerminalPage))
+	mux.HandleFunc("GET /orgs/{id}/chat/ws", s.orgSession(s.handleGUIChatWS))
+	mux.HandleFunc("GET /orgs/{id}/sources/{handle}/terminal", s.orgSession(s.handleGUITerminalPage))
 	// WebSocket for the terminal stream. Session-gated like the chat WS,
 	// and membership-gated in the handler: it streams a shared terminal's
 	// full output, which for agents includes everything they run.
-	mux.HandleFunc("GET /orgs/{id}/sources/{handle}/terminal/ws", s.requireSession(s.handleGUITerminalWS))
+	mux.HandleFunc("GET /orgs/{id}/sources/{handle}/terminal/ws", s.orgSession(s.handleGUITerminalWS))
 
 	// Static assets (logo, css, xterm, …) embedded into the binary.
 	mux.Handle("GET /assets/", assetsHandler())

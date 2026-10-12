@@ -126,10 +126,15 @@ func (s *Server) handleGUICreateOrg(w http.ResponseWriter, r *http.Request) {
 	// Default owner to the currently-authenticated user — otherwise
 	// the creator wouldn't see their own org on /dashboard (which is
 	// scoped by ownership/membership). An explicit owner_user_id form
-	// field wins only under DevLogin (e2e seeding): in production it
-	// would let anyone create orgs owned by someone else.
+	// field is honoured only under DevLogin (e2e seeding): in production
+	// it would let anyone create orgs owned by someone else, so it's
+	// refused rather than silently ignored.
 	ownerID := UserIDFromCtx(r.Context())
-	if v := strings.TrimSpace(r.FormValue("owner_user_id")); v != "" && s.DevLogin {
+	if v := strings.TrimSpace(r.FormValue("owner_user_id")); v != "" {
+		if !s.DevLogin {
+			http.Error(w, "owner_user_id is not accepted", http.StatusBadRequest)
+			return
+		}
 		parsed, err := uuid.Parse(v)
 		if err != nil {
 			http.Error(w, "owner_user_id is not a valid uuid", 400)
@@ -396,6 +401,8 @@ func (s *Server) handleGUIOrgTab(w http.ResponseWriter, r *http.Request) {
 	data["PendingInvites"] = pendingInvites
 	data["IsOwner"] = isOwner
 	data["IsOrgAdmin"] = isOrgAdmin
+	// Lets the keys tab offer Revoke on a member's own keys.
+	data["MeID"] = UserIDFromCtx(r.Context())
 	data["AuditRows"] = auditRows
 	data["ActiveTab"] = tab
 

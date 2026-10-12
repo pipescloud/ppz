@@ -1,13 +1,16 @@
 tab pipes: 404
-tab agents: 404
 tab users: 404
 tab keys: 404
+tab audit: 404
+tab security: 404
 org redirect: 404
 pipe page: 404
 uncollared pipe page: 404
 terminal page: 404
 terminal ws: 404
 key create: 404
+invite create: 404
+invite revoke: 404
 intrusion keys in beta: 0
 own tab: 200
 exit=0

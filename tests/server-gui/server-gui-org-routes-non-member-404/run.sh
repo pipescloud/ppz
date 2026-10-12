@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Cross-tenant guard for every session route under /orgs/<id>: a login
 # proves who you are, not that the org is yours. foo is a member of alpha
-# only, so beta's tabs, pipe pages, terminal page/WS and key creation must
-# all 404 — same answer as a nonexistent org, so beta's existence doesn't
+# only, so beta's tabs, pipe pages, terminal page/WS, key creation and
+# invites must all 404 — same answer as a nonexistent org, so beta's existence doesn't
 # leak. (Chat has its own scenario: server-gui-chat-non-member-404.)
 . /tests/lib/common.sh
 
@@ -15,7 +15,7 @@ wait_for 20 "ppz_a read term1.stdout --json | jq -r '.payload' | grep -q beta-se
 
 auth_as_foo
 code() { curl_server "$@" -o /dev/null -w '%{http_code}'; }
-for tab in pipes agents users keys; do
+for tab in pipes users keys audit security; do
   echo "tab $tab: $(code "/orgs/beta/$tab")"
 done
 echo "org redirect: $(code '/orgs/beta')"
@@ -27,6 +27,8 @@ echo "terminal ws: $(curl_server '/orgs/beta/sources/term1/terminal/ws' \
   -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==' \
   --max-time 4 -o /dev/null -w '%{http_code}')"
 echo "key create: $(code '/orgs/beta/keys' -X POST --data-urlencode 'label=intrusion')"
+echo "invite create: $(code '/orgs/beta/invites' -X POST --data-urlencode 'username=bar')"
+echo "invite revoke: $(code '/orgs/beta/invites/00000000-0000-0000-0000-000000000000/revoke' -X POST)"
 echo "intrusion keys in beta: $(PGPASSWORD=ppz psql -h postgres -U postgres -d ppz -tAc \
   "SELECT COUNT(*) FROM api_keys k JOIN accounts a ON a.id = k.account_id
     WHERE a.name = 'beta' AND k.label = 'intrusion'")"

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -30,7 +31,7 @@ type APIKey struct {
 	Label           string
 	CreatedAt       time.Time
 	// RevokedAt is nil for active keys, set to the revoke time once
-	// `POST /api/v1/keys/<id>/revoke` flips it. LookupAPIKey filters
+	// `POST /orgs/<id>/keys/<kid>/revoke` flips it. LookupAPIKey filters
 	// out revoked rows; the GUI shows them with strikethrough so the
 	// audit trail stays visible.
 	RevokedAt *time.Time
@@ -212,6 +213,19 @@ func ListAPIKeysForOrg(ctx context.Context, p *Pool, accountID uuid.UUID) ([]API
 		out = append(out, k)
 	}
 	return out, rows.Err()
+}
+
+// APIKeyCreator returns the user who minted the account's key id.
+// ErrNotFound if no such key belongs to the account.
+func APIKeyCreator(ctx context.Context, p *Pool, accountID, id uuid.UUID) (uuid.UUID, error) {
+	var creator uuid.UUID
+	err := p.QueryRow(ctx,
+		`SELECT created_by_user_id FROM api_keys WHERE id = $1 AND account_id = $2`,
+		id, accountID).Scan(&creator)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, ErrNotFound
+	}
+	return creator, err
 }
 
 // RevokeAPIKey marks the key revoked. Scoped to accountID so a caller
