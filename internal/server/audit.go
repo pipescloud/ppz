@@ -58,6 +58,12 @@ func (r retentionSnapshot) mustJSON() []byte {
 // Returning the key id alongside is what lets the GUI render "via key"
 // rather than implying a person was at a keyboard.
 func auditActorFromKey(key db.APIKey) (uuid.UUID, *uuid.UUID) {
+	// A session caller (the GUI) acts through a synthetic key with no id:
+	// record no key, so the trail reads "via web" rather than naming a
+	// key that doesn't exist.
+	if key.ID == uuid.Nil {
+		return key.Actor(), nil
+	}
 	id := key.ID
 	return key.Actor(), &id
 }
@@ -85,6 +91,26 @@ func (s *Server) recordAudit(ctx context.Context, ev db.AuditEvent) {
 }
 
 // auditPipe records one pipe-lifecycle mutation made through an API key.
+// auditSource records a source lifecycle event; target is the source's
+// full path (manifold.handle).
+func (s *Server) auditSource(ctx context.Context, key db.APIKey, action string, src db.Source, before, after []byte) {
+	userID, keyID := auditActorFromKey(key)
+	target := src.Handle
+	if src.Manifold != "" {
+		target = src.Manifold + "." + src.Handle
+	}
+	s.recordAudit(ctx, db.AuditEvent{
+		AccountID:     key.AccountID,
+		ActorUserID:   userID,
+		ActorAPIKeyID: keyID,
+		Action:        action,
+		TargetType:    db.AuditTargetSource,
+		Target:        target,
+		Before:        before,
+		After:         after,
+	})
+}
+
 func (s *Server) auditPipe(ctx context.Context, key db.APIKey, action, target string, before, after []byte) {
 	userID, keyID := auditActorFromKey(key)
 	s.recordAudit(ctx, db.AuditEvent{
@@ -113,6 +139,8 @@ func formatAuditDelta(action string, before, after []byte) string {
 		return formatACLGrantDelta(action, before, after)
 	case db.AuditActionACLEnforce:
 		return formatACLEnforceDelta(before, after)
+	case db.AuditActionSourceCreate, db.AuditActionSourceDestroy:
+		return formatSourceDelta(before, after)
 	default:
 		return formatRetentionDelta(before, after)
 	}
@@ -319,4 +347,21 @@ func aclEnforceDelta(on bool) []byte {
 		return nil
 	}
 	return b
+}
+
+// formatSourceDelta renders a source snapshot as "kind=pty pipes=a,b".
+// A create shows what was provisioned, a destroy what went with it.
+func formatSourceDelta(before, after []byte) string {
+	raw := after
+	if raw == nil {
+		raw = before
+	}
+	var snap struct {
+		Kind  string   `json:"kind"`
+		Pipes []string `json:"pipes"`
+	}
+	if json.Unmarshal(raw, &snap) != nil {
+		return ""
+	}
+	return "kind=" + snap.Kind + " pipes=" + strings.Join(snap.Pipes, ",")
 }

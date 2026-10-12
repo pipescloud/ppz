@@ -16,6 +16,11 @@ const (
 	AuditActionPipeSet     = "pipe.set"
 	AuditActionPipeDestroy = "pipe.destroy"
 
+	// Source lifecycle. A destroy takes every pipe under the source with
+	// it, so its `before` lists them.
+	AuditActionSourceCreate  = "source.create"
+	AuditActionSourceDestroy = "source.destroy"
+
 	// ACL changes. An access-control edit is arguably the thing most
 	// worth auditing in the product: its entire purpose is to alter who
 	// can see what. docs/ACL.md listed this as a non-goal only because
@@ -27,7 +32,8 @@ const (
 
 // Audit target types. Names what Target refers to.
 const (
-	AuditTargetPipe = "pipe"
+	AuditTargetPipe   = "pipe"
+	AuditTargetSource = "source"
 	// AuditTargetOrg is for changes to the org itself rather than to a
 	// pipe within it — the enforcement switch names the account, and
 	// filing it under a pipe that does not exist would make the trail

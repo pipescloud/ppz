@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased — manage pipes and sources from the web GUI
+
+The org page's Pipes tab can now create and delete, not just list.
+
+- **One "+ New pipe or source" dialog** creates a message source, an
+  uncollared pipe (optionally in a namespace), or a pipe attached to an
+  existing source. Validation, name conflicts and errors are the CLI's,
+  shown in place.
+- **Per-row deletes.** User-created pipes (collared or uncollared) get
+  "delete pipe"; each source gets "delete source", which removes it and
+  every pipe under it. Auto-provisioned pipes (`inbox`, `stdin`,
+  `stdout`, …) can't be deleted one at a time from the GUI — that leaves
+  the source looking alive but broken. The confirmation warns when the
+  source is online.
+- **Who:** any org member, as with the CLI. While the org enforces ACLs,
+  deleting also needs admin on every pipe removed.
+- **Exact addressing.** Sources are deleted by namespace and handle; a
+  same-named source in another namespace is untouched (the API's source
+  delete now also deletes by id).
+- **Audit:** `source.create` / `source.destroy` are recorded (CLI and
+  GUI), and GUI changes are attributed `via web`.
+- `E_PIPE_FORBIDDEN` now returns HTTP 403 instead of 500 (also affects
+  `ppz pipe set` denials; the CLI already read the error code).
+
+Known limitation: a GUI delete doesn't reach connected daemons' local
+state (current source, subscriptions) until they next refresh.
+
 ## Unreleased — web GUI access control
 
 Session routes under `/orgs/<id>` checked that you were logged in, not that

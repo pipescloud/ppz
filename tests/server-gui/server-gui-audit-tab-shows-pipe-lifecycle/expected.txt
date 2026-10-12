@@ -2,6 +2,8 @@
 pipe.destroy
 pipe.set
 pipe.create
+source.create
 --- targets ---
+chat
 chat.archive
 exit=0

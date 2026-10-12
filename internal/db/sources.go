@@ -164,6 +164,39 @@ func ListSourcesForOrg(ctx context.Context, p *Pool, accountID uuid.UUID) ([]Sou
 // DeleteSource removes a source row. The pipes FK is ON DELETE CASCADE so
 // pipe rows are removed automatically. JetStream stream cleanup is the
 // caller's responsibility. Returns ErrNotFound when (org, handle) doesn't exist.
+// GetSourceAt looks a source up by its full address. Handles are unique
+// per (account, manifold), not per account, so this — not
+// GetSourceByHandle — is the lookup for a caller that knows the manifold.
+func GetSourceAt(ctx context.Context, p *Pool, accountID uuid.UUID, manifold, handle string) (Source, error) {
+	var src Source
+	var kind string
+	err := p.QueryRow(ctx,
+		`SELECT id, account_id, created_by_user_id, manifold, handle, kind, created_at, last_broadcast_at, last_broadcast_payload
+		   FROM sources WHERE account_id = $1 AND manifold = $2 AND handle = $3`, accountID, manifold, handle).
+		Scan(&src.ID, &src.AccountID, &src.CreatedByUserID, &src.Manifold, &src.Handle, &kind, &src.CreatedAt,
+			&src.LastBroadcastAt, &src.LastBroadcastPayload)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Source{}, ErrNotFound
+	}
+	src.Kind = SourceKind(kind)
+	return src, err
+}
+
+// DeleteSourceByID deletes exactly one source (pipe rows CASCADE).
+// Unlike DeleteSource it can't take a same-named source in another
+// manifold with it.
+func DeleteSourceByID(ctx context.Context, p *Pool, accountID, id uuid.UUID) error {
+	tag, err := p.Exec(ctx,
+		`DELETE FROM sources WHERE account_id = $1 AND id = $2`, accountID, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func DeleteSource(ctx context.Context, p *Pool, accountID uuid.UUID, handle string) error {
 	tag, err := p.Exec(ctx,
 		`DELETE FROM sources WHERE account_id = $1 AND handle = $2`, accountID, handle)

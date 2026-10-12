@@ -11,6 +11,9 @@ terminal ws: 404
 key create: 404
 invite create: 404
 invite revoke: 404
+pipe create: 404
+pipe delete: 404
+source delete: 404
 intrusion keys in beta: 0
 own tab: 200
 exit=0

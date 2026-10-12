@@ -1,0 +1,29 @@
+create source: 200
+create collared pipe: 200
+create uncollared pipe: 200
+--- the CLI sees them ---
+desk.inbox
+desk.notes
+team-a.general
+--- the table offers deletes (none on the auto-provisioned inbox) ---
+data-delete-pipe="desk.notes"
+data-delete-pipe="team-a.general"
+data-delete-source="desk"
+--- validation and conflicts match the CLI ---
+bad name: 400 pipe name 'Bad_Name' is invalid: must match [a-z0-9-] (max 32, no leading/trailing -)
+duplicate source: 409
+unknown source: 404
+auto pipe delete: 409 inbox is provisioned by source desk; delete the source instead
+--- deletes ---
+delete collared pipe: 200
+delete uncollared pipe: 200
+delete source: 200
+(none)
+--- audit trail, newest first ---
+source.destroy desk foo web
+pipe.destroy team-a.general foo web
+pipe.destroy desk.notes foo web
+pipe.create team-a.general foo web
+pipe.create desk.notes foo web
+source.create desk foo web
+exit=0
