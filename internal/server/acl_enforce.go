@@ -454,46 +454,70 @@ func (s *Server) notifyACLChanged(ctx context.Context, accountID uuid.UUID) {
 // name — so leaving it ungated would let any member shorten the TTL on
 // another principal's stdout and silently discard their history.
 func (s *Server) requirePipeAdmin(ctx context.Context, key db.APIKey, path string) error {
+	dec, enforced, err := s.pipeDecision(ctx, key.AccountID, key.Actor(), path)
+	if err != nil {
+		return err
+	}
+	if enforced && !dec.Has(acl.Admin) {
+		return errPipeForbidden
+	}
+	return nil
+}
+
+// sessionCan reports whether a session user holds perm on a pipe path.
+// Always true while the org hasn't opted into enforcement — the same
+// answer the CLI gets. Used by the GUI's server-side reads and writes
+// (it acts through the server's privileged NATS user, so the minted
+// credential's limits never apply to it: see "The GUI is a confused
+// deputy" in docs/ACL.md).
+func (s *Server) sessionCan(ctx context.Context, accountID, userID uuid.UUID, path string, perm acl.Perm) (bool, error) {
+	dec, enforced, err := s.pipeDecision(ctx, accountID, userID, path)
+	if err != nil {
+		return false, err
+	}
+	return !enforced || dec.Has(perm), nil
+}
+
+// pipeDecision evaluates a principal's rights on a pipe path. enforced is
+// false — and the decision meaningless — while the org hasn't opted into
+// enforcement; in that case the ACL tables aren't touched at all.
+func (s *Server) pipeDecision(ctx context.Context, accountID, principal uuid.UUID, path string) (acl.Decision, bool, error) {
 	// No pool means no enforcement state to consult — the validation-only
 	// handler tests construct a Server without one.
 	if s == nil || s.Pool == nil {
-		return nil
+		return acl.Decision{}, false, nil
 	}
-	enforced, err := db.ACLEnforced(ctx, s.Pool, key.AccountID)
+	enforced, err := db.ACLEnforced(ctx, s.Pool, accountID)
 	if err != nil || !enforced {
-		return nil
+		return acl.Decision{}, false, nil
 	}
-	principal := key.Actor()
 	u, err := db.GetUser(ctx, s.Pool, principal)
 	if err != nil {
-		return errors.New("no principal")
+		return acl.Decision{}, true, errors.New("no principal")
 	}
-	role, err := s.RoleInOrg(ctx, principal, key.AccountID)
+	role, err := s.RoleInOrg(ctx, principal, accountID)
 	if err != nil {
-		return err
+		return acl.Decision{}, true, err
 	}
 	p := acl.Principal{ID: principal, Name: u.DisplayName(), OrgRole: acl.OrgRole(role)}
 
-	srcRows, err := db.ListSourcesForOrg(ctx, s.Pool, key.AccountID)
+	srcRows, err := db.ListSourcesForOrg(ctx, s.Pool, accountID)
 	if err != nil {
-		return err
+		return acl.Decision{}, true, err
 	}
 	sources := make(map[string]db.Source, len(srcRows))
 	for _, src := range srcRows {
 		sources[src.Handle] = src
 	}
-	stored, err := db.ListACLGrantsForPrincipal(ctx, s.Pool, key.AccountID, principal)
+	stored, err := db.ListACLGrantsForPrincipal(ctx, s.Pool, accountID, principal)
 	if err != nil {
-		return err
+		return acl.Decision{}, true, err
 	}
 	grants := make([]acl.Grant, 0, len(stored))
 	for _, g := range stored {
 		grants = append(grants, g.ToACL())
 	}
-	if !acl.Evaluate(p, subjectFor(acl.PipeRef{Path: path}, sources), grants).Has(acl.Admin) {
-		return errPipeForbidden
-	}
-	return nil
+	return acl.Evaluate(p, subjectFor(acl.PipeRef{Path: path}, sources), grants), true, nil
 }
 
 // errPipeForbidden is the sentinel the pipe handlers map to

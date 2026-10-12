@@ -1,0 +1,5 @@
+lease holder=foo@web
+control-error controlled by foo@web
+bar input delivered: 0
+lease after foo disconnects: free
+exit=0

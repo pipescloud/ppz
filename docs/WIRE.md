@@ -977,3 +977,30 @@ the person physically at the shared terminal. It governs remote writers only.
 `terminal lease` / `release` / `control` are the CLI front-ends (§8). Source of
 truth: `internal/cli/terminal.go` (`leaseState`, `runLeaseManager`,
 `handleLeaseMessage`, `forwardStdin` enforcement).
+
+### 12.1 Web terminal control
+
+The web terminal (`GET /orgs/{slug}/sources/{handle}/terminal/ws`) is the
+browser front-end. The server acts as the controller on the viewer's behalf,
+with the same windows as `terminal control` (30 s lease, renewed every 10 s,
+5 s grant wait, released when the socket closes). Its sender is
+`<username>@web`, so a browser session never shares a lease with the same
+user's CLI.
+
+Access is the ACL's, checked server-side because the server reads and writes
+through its own privileged NATS user. Opening the page or socket needs `read`
+on `<handle>.stdout` (403 otherwise). Taking control needs `write` on
+`<handle>.stdin`, re-checked on every renewal. While the org hasn't opted into
+enforcement, every member has both.
+
+Frames beside the existing binary stdout / text `resize` frames:
+
+| Direction | Frame | Meaning |
+|---|---|---|
+| browser → server | text `{"type":"take"}` / `{"type":"release"}` | acquire / release the lease |
+| browser → server | binary | keystrokes; forwarded to `.stdin` (≤ 4 KiB per envelope) only while this socket holds the lease, dropped otherwise |
+| server → browser | text `{"type":"control","writable":B,"you":S}` | sent on connect: may this viewer take control, and the sender it would hold the lease as |
+| server → browser | text `{"type":"lease","holder":H,"until":T}` | current holder on connect, then every `lease-state` (empty holder = free) |
+| server → browser | text `{"type":"control-error","error":E}` | a take/input that failed: no write access, held by someone else, no host |
+
+Source: `internal/server/terminal_control.go`.

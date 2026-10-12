@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — control shared terminals from the web GUI
+
+The web terminal was view-only. It can now be controlled from the browser,
+with access decided by the ACL system:
+
+- **Take control** appears when you may write the terminal's `stdin`
+  (every org member while the org hasn't opted into ACL enforcement, as with
+  `ppz terminal control`). Your keystrokes then go to the shared process;
+  **Release control** hands it back. Closing the page releases it too.
+- **One controller at a time.** The server holds the terminal's write-lease
+  for you, as `<username>@web`, exactly as `ppz terminal control` does, so
+  other viewers (browser or CLI) see "controlled by …" and their input is
+  dropped. Write access is re-checked every 10 s, so revoking it ends a
+  session promptly.
+- **Viewing now follows the ACL too.** With enforcement on, opening a
+  terminal needs `read` on its `stdout` (403 otherwise). Previously any
+  member could watch any terminal through the web page.
+
 ## Unreleased — manage pipes and sources from the web GUI
 
 The org page's Pipes tab can now create and delete, not just list.

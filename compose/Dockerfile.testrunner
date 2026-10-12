@@ -8,6 +8,8 @@ COPY go.mod go.sum* ./
 RUN go mod download || true
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -o /out/ppz ./cmd/ppz
+# Browser-side WebSocket client for the web terminal-control scenarios.
+RUN CGO_ENABLED=0 go build -trimpath -o /out/termws ./tests/tools/termws
 
 FROM alpine:3.20
 # docker-cli is included unconditionally (~30 MB) because the
@@ -25,4 +27,5 @@ RUN wget -qO /tmp/nats.zip "https://github.com/nats-io/natscli/releases/download
  && chmod +x /usr/local/bin/nats \
  && rm -rf /tmp/nats /tmp/nats.zip
 COPY --from=build /out/ppz /usr/local/bin/ppz
+COPY --from=build /out/termws /usr/local/bin/termws
 WORKDIR /tests

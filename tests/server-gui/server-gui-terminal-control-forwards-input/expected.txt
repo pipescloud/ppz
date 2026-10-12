@@ -1,0 +1,6 @@
+control writable=true you=foo@web
+lease holder=foo@web
+lease holder=
+delivered: 1
+stdin sender: foo@web
+exit=0

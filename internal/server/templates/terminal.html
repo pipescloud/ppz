@@ -26,6 +26,21 @@
     }
     .terminal-status.ok  { color: #4a4; }
     .terminal-status.err { color: #c44; }
+    .terminal-control {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      max-width: 960px;
+      margin: 0 auto 0.5rem;
+      font: 12px/1.4 monospace;
+    }
+    .terminal-control[hidden] { display: none; }
+    .terminal-control button { padding: 0.25rem 0.75rem; font-size: 12px; }
+    .terminal-control-state { color: var(--muted); }
+    .terminal-control-state.mine { color: var(--online); }
+    .terminal-control-state.err { color: #c44; }
+    /* Outline the terminal while your keystrokes are live. */
+    #terminal.controlling { outline: 2px solid var(--online); outline-offset: 2px; }
   </style>
 </head>
 <body>
@@ -38,14 +53,19 @@
         terminal
       </h1>
       <div class="crumbs">
-        live read-only view of <code>{{.Handle}}.stdout</code> — replays
-        retained bytes, then follows new writes until the page is closed.
-        Read-only: keystrokes don't go anywhere yet.
+        live view of <code>{{.Handle}}.stdout</code> — replays retained
+        bytes, then follows new writes until the page is closed. If you can
+        write <code>{{.Handle}}.stdin</code>, <em>Take control</em> sends your
+        keystrokes to the terminal (one controller at a time).
       </div>
     </header>
   </main>
 
   <div id="terminal-status" class="terminal-status">connecting…</div>
+  <div class="terminal-control" data-terminal-control hidden>
+    <button type="button" data-control-toggle>Take control</button>
+    <span data-control-state class="terminal-control-state"></span>
+  </div>
 
   <!-- Terminal sits OUTSIDE <main> so it isn't capped at main's
        max-width: 960px. Its flex wrapper spans the full viewport and
