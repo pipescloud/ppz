@@ -287,8 +287,25 @@ func cmdTerminalShare(args []string) error {
 		defer restorePTYEcho()
 	}
 	if stdinIsTTY {
+		// Subscribe before MakeRaw, not after: a SIGTERM landing between
+		// the two would take the default disposition and leave the tty
+		// raw. Queued in sigCh, it is handled once the goroutine below
+		// starts. Flake: TestCmdTerminalShareRestoresTerminalOnSIGTERM
+		// signals the moment it observes raw mode.
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		oldState, err := term.MakeRaw(int(stdin.Fd()))
-		if err == nil {
+		if err != nil {
+			signal.Stop(sigCh)
+			select {
+			case sig := <-sigCh:
+				// Arrived while subscribed; deliver it as if we never were.
+				if s, ok := sig.(syscall.Signal); ok {
+					_ = syscall.Kill(os.Getpid(), s)
+				}
+			default:
+			}
+		} else {
 			restoreTTY := func() { _ = term.Restore(int(stdin.Fd()), oldState) }
 			// Clean-exit restore (child exits, we return normally).
 			defer restoreTTY()
@@ -309,8 +326,6 @@ func cmdTerminalShare(args []string) error {
 			// ISIG, so the keystroke flows to the wrapped child as a 0x03
 			// byte rather than generating SIGINT.) Regression: staircase-tty
 			// after kill — see TestCmdTerminalShareRestoresTerminalOnSIGTERM.
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 			defer func() { signal.Stop(sigCh); close(sigCh) }()
 			go func() {
 				sig, ok := <-sigCh
