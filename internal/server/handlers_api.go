@@ -155,36 +155,6 @@ func (s *Server) handleAuthExchange(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleRevokeKey marks an API key revoked. Idempotent: revoking an
-// already-revoked key returns 200 (the desired state — revoked — is
-// already in place). Missing keys return 404. No auth — same posture
-// as the existing /orgs/<id>/keys POST that creates them.
-func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(r.PathValue("id"))
-	if err != nil {
-		http.Error(w, "invalid key id", http.StatusBadRequest)
-		return
-	}
-	ctx, cancel := withTimeout(r)
-	defer cancel()
-	if err := db.RevokeAPIKey(ctx, s.Pool, id); err != nil {
-		if errors.Is(err, db.ErrNotFound) {
-			http.Error(w, "key not found", http.StatusNotFound)
-			return
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	// Browser form submit (has Referer) → redirect back so the user
-	// sees the updated org page. API clients (curl, no Referer) get
-	// a plain 200.
-	if ref := r.Referer(); ref != "" {
-		http.Redirect(w, r, ref, http.StatusSeeOther)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-}
-
 func (s *Server) handleCreateSource(w http.ResponseWriter, r *http.Request, key db.APIKey) {
 	var req cliproto.CreateSourceRequest
 	if err := readJSON(r, &req); err != nil {

@@ -12,22 +12,17 @@
 . /tests/lib/common.sh
 auth_as_foo
 
-# Seed: two users, one org owned by alice.
-curl_server "/users" -X POST \
-  --data-urlencode 'username=alice' \
-  --data-urlencode 'email=alice@example.com' \
-  --data-urlencode 'mode=internal' >/dev/null
+# Seed: one org owned by foo (the session user — member add/remove is
+# admin-gated, so the caller must administer the org), plus user bob.
 curl_server "/users" -X POST \
   --data-urlencode 'username=bob' \
   --data-urlencode 'email=bob@example.com' \
   --data-urlencode 'mode=internal' >/dev/null
-alice_id="$(PGPASSWORD=ppz psql -h postgres -U postgres -d ppz -tAc \
-  "SELECT id FROM users WHERE username = 'alice'")"
+foo_id="$(PGPASSWORD=ppz psql -h postgres -U postgres -d ppz -tAc \
+  "SELECT id FROM users WHERE username = 'foo'")"
 bob_id="$(PGPASSWORD=ppz psql -h postgres -U postgres -d ppz -tAc \
   "SELECT id FROM users WHERE username = 'bob'")"
-curl_server "/orgs" -X POST \
-  --data-urlencode 'name=wonder' \
-  --data-urlencode "owner_user_id=$alice_id" >/dev/null
+curl_server "/orgs" -X POST --data-urlencode 'name=wonder' >/dev/null
 wonder_id="$(PGPASSWORD=ppz psql -h postgres -U postgres -d ppz -tAc \
   "SELECT id FROM accounts WHERE name = 'wonder'")"
 
@@ -50,11 +45,11 @@ echo "--- members table is empty again ---"
 PGPASSWORD=ppz psql -h postgres -U postgres -d ppz -tAc \
   "SELECT COUNT(*)::text FROM account_members WHERE account_id = '$wonder_id'"
 
-echo "--- removing alice (owner) is rejected ---"
-curl_server "/orgs/$wonder_id/members/$alice_id/remove" -X POST \
+echo "--- removing foo (owner) is rejected ---"
+curl_server "/orgs/$wonder_id/members/$foo_id/remove" -X POST \
   -o /dev/null -w 'http=%{http_code}\n'
 
-echo "--- alice still owns wonder ---"
+echo "--- foo still owns wonder ---"
 PGPASSWORD=ppz psql -h postgres -U postgres -d ppz -tAc \
   "SELECT u.username FROM accounts o
      JOIN users u ON o.owner_user_id = u.id

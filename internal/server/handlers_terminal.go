@@ -25,9 +25,8 @@ import (
 func (s *Server) handleGUITerminalPage(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := withTimeout(r)
 	defer cancel()
-	org, err := resolveOrg(ctx, s.Pool, r.PathValue("id"))
-	if err != nil {
-		http.Error(w, "org not found", 404)
+	org, ok := s.resolveMemberOrg(ctx, w, r)
+	if !ok {
 		return
 	}
 	handle := r.PathValue("handle")
@@ -61,9 +60,8 @@ func (s *Server) handleGUITerminalWS(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	org, err := resolveOrg(ctx, s.Pool, r.PathValue("id"))
-	if err != nil {
-		http.Error(w, "org not found", 404)
+	org, ok := s.resolveMemberOrg(ctx, w, r)
+	if !ok {
 		return
 	}
 	handle := r.PathValue("handle")
@@ -96,11 +94,10 @@ func (s *Server) handleGUITerminalWS(w http.ResponseWriter, r *http.Request) {
 	// broken.
 	stdctrlStream, _ := js.Stream(ctx, natsubj.BuildStreamName(org.ID, src.Manifold, src.Handle, "stdctrl"))
 
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// Same-origin only — there's no use case for cross-origin terminal
-		// rendering yet, and this avoids drive-by attaches from random pages.
-		OriginPatterns: []string{"*"},
-	})
+	// nil options: the library's default same-origin check. The session
+	// cookie rides on cross-site WS handshakes, so without it any page the
+	// user visits could attach to their org's terminals.
+	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		// Accept already wrote a response.
 		return

@@ -11,13 +11,19 @@ import (
 )
 
 // handleCreateUser: POST /users (form: username, email, mode).
-// Used by the v1 GUI; v2 replaces this path with the GitHub OAuth
-// callback. Internal-mode users continue to be created here for
-// e2e + non-OAuth flows.
+// Test-only (404 unless DevLogin): production users are created by the
+// GitHub OAuth callback; internal-mode users are created here for e2e.
 //
 // Redirects to /users on success so the new row is visible. API
 // callers (no Referer) get a plain 303 to the same place.
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	// Dev/test only: creating arbitrary user rows (any username, email
+	// and mode) isn't something a logged-in user should be able to do
+	// in production, where users arrive via OAuth.
+	if !s.DevLogin {
+		http.NotFound(w, r)
+		return
+	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -57,9 +63,8 @@ func (s *Server) handleAddMember(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := withTimeout(r)
 	defer cancel()
-	org, err := resolveOrg(ctx, s.Pool, r.PathValue("id"))
-	if err != nil {
-		http.Error(w, "org not found", http.StatusNotFound)
+	org, ok := s.resolveAdminOrg(ctx, w, r)
+	if !ok {
 		return
 	}
 	if err := db.AddMember(ctx, s.Pool, org.ID, userID); err != nil {
@@ -80,9 +85,8 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := withTimeout(r)
 	defer cancel()
-	org, err := resolveOrg(ctx, s.Pool, r.PathValue("id"))
-	if err != nil {
-		http.Error(w, "org not found", http.StatusNotFound)
+	org, ok := s.resolveAdminOrg(ctx, w, r)
+	if !ok {
 		return
 	}
 	if err := db.RemoveMember(ctx, s.Pool, org.ID, userID); err != nil {

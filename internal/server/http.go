@@ -24,10 +24,6 @@ func (s *Server) Routes() *http.ServeMux {
 
 	// API (auth required except for /auth/exchange which authenticates via body).
 	mux.HandleFunc("POST /api/v1/auth/exchange", s.handleAuthExchange)
-	// Key revocation: no auth (mirrors the existing GUI key-create flow,
-	// which is also un-authed). When auth lands across the surface,
-	// this can be folded into requireAuth too.
-	mux.HandleFunc("POST /api/v1/keys/{id}/revoke", s.handleRevokeKey)
 	// Account-scoped invite API. Bearer-authed; the handler layer
 	// gates on OAuth user identity (API keys 403 because they're
 	// account-scoped without a user). The /orgs/ URL prefix is
@@ -129,7 +125,7 @@ func (s *Server) Routes() *http.ServeMux {
 	// Web `ppz chat` console — roster + live chat pane over the org's
 	// agents, inboxes and pipes. All four routes (page, snapshot, send,
 	// live WS) are session-authed here and additionally membership-gated
-	// in their handlers (resolveChatOrg), since /chat is a read+write
+	// in their handlers (resolveMemberOrg), since /chat is a read+write
 	// surface into the org's streams.
 	mux.HandleFunc("GET /orgs/{id}/chat", s.requireSession(s.handleGUIChatPage))
 	mux.HandleFunc("GET /orgs/{id}/chat/messages", s.requireSession(s.handleGUIChatMessages))
@@ -139,16 +135,16 @@ func (s *Server) Routes() *http.ServeMux {
 	// Add/remove uncollared pipes from the console (TUI `a` / `-` parity).
 	mux.HandleFunc("POST /orgs/{id}/chat/pipes", s.requireSession(s.handleGUIChatAddPipe))
 	mux.HandleFunc("DELETE /orgs/{id}/chat/pipes", s.requireSession(s.handleGUIChatRemovePipe))
-	// Unlike the terminal WS (left un-authed as a punt), the chat WS is
-	// session-gated: the browser handshake carries the session cookie, so
-	// the follow is access-controlled AND the server can stamp `you`
-	// correctly from the viewer's identity. The client also derives `you`
-	// from data-me, so a future un-authed transport still labels correctly.
+	// The chat WS is session-gated: the browser handshake carries the
+	// session cookie, so the follow is access-controlled AND the server
+	// can stamp `you` correctly from the viewer's identity. The client
+	// also derives `you` from data-me.
 	mux.HandleFunc("GET /orgs/{id}/chat/ws", s.requireSession(s.handleGUIChatWS))
 	mux.HandleFunc("GET /orgs/{id}/sources/{handle}/terminal", s.requireSession(s.handleGUITerminalPage))
-	// WebSocket for terminal stream — leaving un-auth'd for now (RED phase
-	// surfaced this; tighten to session-or-key auth in a follow-up).
-	mux.HandleFunc("GET /orgs/{id}/sources/{handle}/terminal/ws", s.handleGUITerminalWS)
+	// WebSocket for the terminal stream. Session-gated like the chat WS,
+	// and membership-gated in the handler: it streams a shared terminal's
+	// full output, which for agents includes everything they run.
+	mux.HandleFunc("GET /orgs/{id}/sources/{handle}/terminal/ws", s.requireSession(s.handleGUITerminalWS))
 
 	// Static assets (logo, css, xterm, …) embedded into the binary.
 	mux.Handle("GET /assets/", assetsHandler())

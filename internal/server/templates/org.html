@@ -155,7 +155,7 @@
           {{if .Revoked}}
           <small class="revoked">· revoked {{.RevokedAt.Format "2006-01-02T15:04:05Z"}}</small>
           {{else}}
-          <form method="post" action="/api/v1/keys/{{.ID}}/revoke" class="inline">
+          <form method="post" action="/orgs/{{$.Org.ID}}/keys/{{.ID}}/revoke" class="inline">
             <button type="submit" onclick="return confirm('Revoke this key? Existing daemons using it will lose access on their next call.');">Revoke</button>
           </form>
           {{end}}

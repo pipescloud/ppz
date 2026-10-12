@@ -61,24 +61,6 @@ func (s *Server) meFromCtx(ctx context.Context) string {
 	return u.Username
 }
 
-// resolveChatOrg resolves the org from the URL and confirms the session user
-// may see it. Cross-tenant guard: unlike the read-only pipe/terminal pages,
-// /chat is a read+write surface (send publishes into the org's streams), so it
-// gates on membership. A non-member gets 404 (not 403) so org existence
-// doesn't leak to outsiders.
-func (s *Server) resolveChatOrg(ctx context.Context, w http.ResponseWriter, r *http.Request) (db.Account, bool) {
-	org, err := resolveOrg(ctx, s.Pool, r.PathValue("id"))
-	if err != nil {
-		http.Error(w, "org not found", 404)
-		return db.Account{}, false
-	}
-	if !db.IsMemberOrOwner(ctx, s.Pool, org.ID, UserIDFromCtx(r.Context())) {
-		http.Error(w, "org not found", 404)
-		return db.Account{}, false
-	}
-	return org, true
-}
-
 // heartbeatLiveness struct-lite: only the two fields the roster needs off the
 // heartbeat JSON payload. A local parse avoids importing internal/cli (which
 // owns the full HeartbeatPayload) into the HTTP server.
@@ -302,7 +284,7 @@ func (s *Server) stampUnread(ctx context.Context, org db.Account, userID uuid.UU
 func (s *Server) handleGUIChatPage(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := withTimeout(r)
 	defer cancel()
-	org, ok := s.resolveChatOrg(ctx, w, r)
+	org, ok := s.resolveMemberOrg(ctx, w, r)
 	if !ok {
 		return
 	}
@@ -542,7 +524,7 @@ func drainChatThread(ctx context.Context, js jetstream.JetStream, legs []chatRea
 func (s *Server) handleGUIChatMessages(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := withTimeout(r)
 	defer cancel()
-	org, ok := s.resolveChatOrg(ctx, w, r)
+	org, ok := s.resolveMemberOrg(ctx, w, r)
 	if !ok {
 		return
 	}
@@ -581,7 +563,7 @@ type chatSendRequest struct {
 func (s *Server) handleGUIChatSend(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := withTimeout(r)
 	defer cancel()
-	org, ok := s.resolveChatOrg(ctx, w, r)
+	org, ok := s.resolveMemberOrg(ctx, w, r)
 	if !ok {
 		return
 	}
@@ -653,7 +635,7 @@ func (s *Server) handleGUIChatSend(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGUIChatRoster(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := withTimeout(r)
 	defer cancel()
-	org, ok := s.resolveChatOrg(ctx, w, r)
+	org, ok := s.resolveMemberOrg(ctx, w, r)
 	if !ok {
 		return
 	}
@@ -693,7 +675,7 @@ type chatReadRequest struct {
 func (s *Server) handleGUIChatMarkRead(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := withTimeout(r)
 	defer cancel()
-	org, ok := s.resolveChatOrg(ctx, w, r)
+	org, ok := s.resolveMemberOrg(ctx, w, r)
 	if !ok {
 		return
 	}
@@ -748,7 +730,7 @@ type chatAddPipeRequest struct {
 func (s *Server) handleGUIChatAddPipe(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := withTimeout(r)
 	defer cancel()
-	org, ok := s.resolveChatOrg(ctx, w, r)
+	org, ok := s.resolveMemberOrg(ctx, w, r)
 	if !ok {
 		return
 	}
@@ -799,7 +781,7 @@ func (s *Server) handleGUIChatAddPipe(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGUIChatRemovePipe(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := withTimeout(r)
 	defer cancel()
-	org, ok := s.resolveChatOrg(ctx, w, r)
+	org, ok := s.resolveMemberOrg(ctx, w, r)
 	if !ok {
 		return
 	}
@@ -851,7 +833,7 @@ func (s *Server) handleGUIChatWS(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	org, ok := s.resolveChatOrg(ctx, w, r)
+	org, ok := s.resolveMemberOrg(ctx, w, r)
 	if !ok {
 		return
 	}
