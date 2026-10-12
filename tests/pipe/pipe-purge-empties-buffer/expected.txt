@@ -1,0 +1,12 @@
+--- collared ---
+purged pipe=desk.log messages=3
+buffered after purge: 0
+next read: log-4 
+--- auto-provisioned ---
+purged pipe=desk.inbox messages=1
+--- uncollared at the current namespace ---
+purged pipe=team-a.general messages=1
+pipe still listed: 1
+--- unknown pipe ---
+error: E_PIPE_NOT_FOUND: pipe 'nope' not found on source 'desk'
+exit=0

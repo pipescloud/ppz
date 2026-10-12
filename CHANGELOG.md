@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — purge a pipe
+
+- **`ppz pipe purge [HANDLE.]NAME`** empties a pipe's buffered messages
+  but keeps the pipe, its retention and its readers' positions (they see
+  only what's published next). Works on auto-provisioned pipes too —
+  purging a terminal's `stdout` clears its replay.
+- **"purge" on the Pipes tab** for every pipe that holds messages, with a
+  confirmation (and a warning on `heartbeat`, which makes an agent look
+  offline until its next beat).
+- Any org member may purge; while the org enforces ACLs it needs admin on
+  the pipe, like destroy and `pipe set`. Audited as `pipe.purge` with the
+  number of messages removed.
 ## Unreleased — resize shared terminals; tidier web terminal page
 
 - **`ppz terminal resize [HANDLE] COLSxROWS`** resizes a shared terminal

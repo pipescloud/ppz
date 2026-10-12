@@ -218,3 +218,58 @@ func (s *Server) handleGUIDeleteSource(w http.ResponseWriter, r *http.Request) {
 	}
 	browserSubmit(w, r)
 }
+
+// handleGUIPurgePipe: POST /orgs/{id}/pipes/purge
+//
+//	source=<path>, name    → that source's pipe (auto-provisioned included)
+//	namespace, name        → uncollared pipe
+//
+// Empties the pipe's buffer. Same gate as delete: any member, plus ACL
+// admin on the pipe while the org enforces ACLs.
+func (s *Server) handleGUIPurgePipe(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := withTimeout(r)
+	defer cancel()
+	org, ok := s.resolveMemberOrg(ctx, w, r)
+	if !ok {
+		return
+	}
+	key := sessionKey(org, r)
+	name := strings.TrimSpace(r.FormValue("name"))
+	source := strings.TrimSpace(r.FormValue("source"))
+
+	if source == "" {
+		namespace := strings.TrimSpace(r.FormValue("namespace"))
+		path := name
+		if namespace != "" {
+			path = namespace + "." + name
+		}
+		if e := s.requireAdminOn(ctx, key, path); e != nil {
+			writeOpErr(w, e)
+			return
+		}
+		if _, e := s.purgeUncollaredPipe(ctx, key, namespace, name); e != nil {
+			writeOpErr(w, e)
+			return
+		}
+		browserSubmit(w, r)
+		return
+	}
+	src, e := s.sourceAt(ctx, org.ID, source)
+	if e != nil {
+		writeOpErr(w, e)
+		return
+	}
+	if e := s.requireAdminOn(ctx, key, src.Handle+"."+name); e != nil {
+		writeOpErr(w, e)
+		return
+	}
+	if _, e := s.purgeCollaredPipe(ctx, key, src, name); e != nil {
+		writeOpErr(w, e)
+		return
+	}
+	browserSubmit(w, r)
+}

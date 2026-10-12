@@ -31,6 +31,7 @@ echo "invite create: $(code '/orgs/beta/invites' -X POST --data-urlencode 'usern
 echo "invite revoke: $(code '/orgs/beta/invites/00000000-0000-0000-0000-000000000000/revoke' -X POST)"
 echo "pipe create: $(code '/orgs/beta/pipes' -X POST -d kind=pipe -d name=intrusion)"
 echo "pipe delete: $(code '/orgs/beta/pipes/delete' -X POST -d name=general)"
+echo "pipe purge: $(code '/orgs/beta/pipes/purge' -X POST -d name=general)"
 echo "source delete: $(code '/orgs/beta/sources/delete' -X POST -d source=term1)"
 echo "intrusion keys in beta: $(PGPASSWORD=ppz psql -h postgres -U postgres -d ppz -tAc \
   "SELECT COUNT(*) FROM api_keys k JOIN accounts a ON a.id = k.account_id

@@ -350,6 +350,10 @@ func FormatPipePath(manifold, source, name string) string {
 	return strings.Join(parts, ".")
 }
 
+func PrintPipePurge(w io.Writer, r PipePurgeReply) {
+	fmt.Fprintf(w, "purged pipe=%s messages=%d\n", FormatPipePath(r.Manifold, r.Handle, r.Name), r.Purged)
+}
+
 func PrintPipeDestroy(w io.Writer, r PipeDestroyReply) {
 	fmt.Fprintf(w, "destroyed pipe=%s\n", FormatPipePath(r.Manifold, r.Handle, r.Name))
 }

@@ -15,6 +15,8 @@ const (
 	AuditActionPipeCreate  = "pipe.create"
 	AuditActionPipeSet     = "pipe.set"
 	AuditActionPipeDestroy = "pipe.destroy"
+	// pipe.purge empties a pipe's buffer; `before` is {"msgs": N}.
+	AuditActionPipePurge = "pipe.purge"
 
 	// Source lifecycle. A destroy takes every pipe under the source with
 	// it, so its `before` lists them.

@@ -28,6 +28,8 @@ func cmdPipeGroup(args []string) error {
 		return cmdPipeCreate(args[1:])
 	case "set":
 		return cmdPipeSet(args[1:])
+	case "purge":
+		return cmdPipePurge(args[1:])
 	case "destroy":
 		return cmdPipeDestroy(args[1:])
 	case "acl":
@@ -174,6 +176,33 @@ func cmdPipeSet(args []string) error {
 // target must be a single pipe name — passing a bare handle would
 // previously have routed through the source-destroy glob; that path
 // is gone, so a bare handle without --recursive errors out.
+// cmdPipePurge: ppz pipe purge [HANDLE.]NAME — empties a pipe's buffer.
+// Addressing matches `pipe destroy`: bare NAME is the uncollared pipe at
+// the current namespace, HANDLE.NAME a source's pipe (auto-provisioned
+// ones included — purging a terminal's stdout clears its replay).
+func cmdPipePurge(args []string) error {
+	if len(args) != 1 {
+		usageExit("pipe purge")
+	}
+	target := args[0]
+	req := cliproto.PipePurgeRequest{Session: sessionID()}
+	if !strings.Contains(target, ".") {
+		req.BareTarget = target
+	} else {
+		h, n, err := splitHandleName(target)
+		if err != nil {
+			return cliproto.New(cliproto.EInvalidPipe)
+		}
+		req.Handle, req.Name = h, n
+	}
+	var reply cliproto.PipePurgeReply
+	if err := daemon.Call(ipcSocket(), cliproto.IPCPipePurge, req, &reply); err != nil {
+		return err
+	}
+	cliproto.PrintPipePurge(os.Stdout, reply)
+	return nil
+}
+
 func cmdPipeDestroy(args []string) error {
 	fs := flag.NewFlagSet("pipe destroy", flag.ExitOnError)
 	recursive := fs.Bool("recursive", false, "destroy all pipes under HANDLE (and the handle itself)")

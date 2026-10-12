@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/pipescloud/ppz/internal/cliproto"
 	"github.com/pipescloud/ppz/internal/db"
 	"github.com/pipescloud/ppz/internal/natsubj"
@@ -328,4 +330,59 @@ func sourceSnapshot(src db.Source, userPipes []db.Pipe) []byte {
 		Pipes []string `json:"pipes"`
 	}{string(src.Kind), pipes})
 	return b
+}
+
+// purgeCollaredPipe empties one of src's pipes — auto-provisioned or
+// user-created — keeping the pipe itself.
+func (s *Server) purgeCollaredPipe(ctx context.Context, key db.APIKey, src db.Source, name string) (uint64, *cliproto.Error) {
+	if !src.IsAutoPipe(name) {
+		if _, err := db.GetPipeByName(ctx, s.Pool, src.ID, name); errors.Is(err, db.ErrNotFound) {
+			return 0, cliproto.NewPipeNotFound(name, src.Handle)
+		} else if err != nil {
+			return 0, internalErr(err.Error())
+		}
+	}
+	return s.purgeStream(ctx, key, src.Manifold, src.Handle, name)
+}
+
+func (s *Server) purgeUncollaredPipe(ctx context.Context, key db.APIKey, manifold, name string) (uint64, *cliproto.Error) {
+	if e := validateManifold(manifold); e != nil {
+		return 0, e
+	}
+	exists, err := db.UncollaredPipeExists(ctx, s.Pool, key.AccountID, manifold, name)
+	if err != nil {
+		return 0, internalErr(err.Error())
+	}
+	if !exists {
+		return 0, cliproto.NewUncollaredPipeNotFound(name, manifold)
+	}
+	return s.purgeStream(ctx, key, manifold, "", name)
+}
+
+// purgeStream deletes every message in a pipe's stream. The stream, its
+// retention and its sequence numbers survive, so readers' cursors stay
+// valid and simply find nothing left to read. A pipe whose stream was
+// never provisioned has nothing to purge.
+func (s *Server) purgeStream(ctx context.Context, key db.APIKey, manifold, handle, name string) (uint64, *cliproto.Error) {
+	js, err := s.JSFor(ctx, key.AccountID)
+	if err != nil {
+		return 0, internalErr("account: " + err.Error())
+	}
+	stream, err := js.Stream(ctx, natsubj.BuildStreamName(key.AccountID, manifold, handle, name))
+	if errors.Is(err, jetstream.ErrStreamNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, internalErr(err.Error())
+	}
+	var n uint64
+	if info, err := stream.Info(ctx); err == nil {
+		n = info.State.Msgs
+	}
+	if err := stream.Purge(ctx); err != nil {
+		return 0, internalErr(err.Error())
+	}
+	before, _ := json.Marshal(map[string]uint64{"msgs": n})
+	s.auditPipe(ctx, key, db.AuditActionPipePurge, cliproto.FormatPipePath(manifold, handle, name), before, nil)
+	return n, nil
 }

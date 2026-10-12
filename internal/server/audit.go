@@ -141,6 +141,12 @@ func formatAuditDelta(action string, before, after []byte) string {
 		return formatACLEnforceDelta(before, after)
 	case db.AuditActionSourceCreate, db.AuditActionSourceDestroy:
 		return formatSourceDelta(before, after)
+	case db.AuditActionPipePurge:
+		var snap struct {
+			Msgs uint64 `json:"msgs"`
+		}
+		_ = json.Unmarshal(before, &snap)
+		return fmt.Sprintf("purged %d messages", snap.Msgs)
 	default:
 		return formatRetentionDelta(before, after)
 	}

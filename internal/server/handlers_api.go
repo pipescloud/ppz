@@ -483,6 +483,59 @@ func (s *Server) handleDestroySource(w http.ResponseWriter, r *http.Request, key
 //
 // Removes the row + the JetStream stream. Returns 204 on success.
 // Idempotent on missing stream (the row is the source of truth).
+// handlePurgePipe: POST /api/v1/sources/{handle}/pipes/{name}/purge —
+// empties the pipe's buffer (`ppz pipe purge H.NAME`). Admin on the pipe
+// while the org enforces ACLs, like destroy and retention.
+func (s *Server) handlePurgePipe(w http.ResponseWriter, r *http.Request, key db.APIKey) {
+	handle, name := r.PathValue("handle"), r.PathValue("name")
+	if err := natsubj.ValidateHandle(handle); err != nil {
+		writeErr(w, cliproto.NewInvalidHandle(handle))
+		return
+	}
+	ctx, cancel := withTimeout(r)
+	defer cancel()
+	src, err := db.GetSourceByHandle(ctx, s.Pool, key.AccountID, handle)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			writeErr(w, cliproto.NewSourceNotFound(handle))
+			return
+		}
+		writeErr(w, internalErr(err.Error()))
+		return
+	}
+	if err := s.requirePipeAdmin(ctx, key, handle+"."+name); err != nil {
+		writeErr(w, cliproto.New(cliproto.EPipeForbidden))
+		return
+	}
+	n, e := s.purgeCollaredPipe(ctx, key, src, name)
+	if e != nil {
+		writeErr(w, e)
+		return
+	}
+	writeJSON(w, http.StatusOK, cliproto.PipePurgeReply{Handle: src.Handle, Manifold: src.Manifold, Name: name, Purged: n})
+}
+
+// handlePurgeUncollaredPipe: POST /api/v1/pipes/purge?manifold=&name=.
+func (s *Server) handlePurgeUncollaredPipe(w http.ResponseWriter, r *http.Request, key db.APIKey) {
+	manifold, name := r.URL.Query().Get("manifold"), r.URL.Query().Get("name")
+	ctx, cancel := withTimeout(r)
+	defer cancel()
+	path := name
+	if manifold != "" {
+		path = manifold + "." + name
+	}
+	if err := s.requirePipeAdmin(ctx, key, path); err != nil {
+		writeErr(w, cliproto.New(cliproto.EPipeForbidden))
+		return
+	}
+	n, e := s.purgeUncollaredPipe(ctx, key, manifold, name)
+	if e != nil {
+		writeErr(w, e)
+		return
+	}
+	writeJSON(w, http.StatusOK, cliproto.PipePurgeReply{Manifold: manifold, Name: name, Purged: n})
+}
+
 func (s *Server) handleDestroyPipe(w http.ResponseWriter, r *http.Request, key db.APIKey) {
 	handle := r.PathValue("handle")
 	name := r.PathValue("name")

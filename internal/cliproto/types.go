@@ -33,6 +33,7 @@ const (
 	// IPC surface.
 	IPCACL           = "ACL"
 	IPCPipeDestroy   = "PipeDestroy"
+	IPCPipePurge     = "PipePurge"
 	IPCSourceDestroy = "SourceDestroy"
 	// IPCEnsurePTY promotes the session's current source to a full terminal
 	// (kind=pty + the complete pty pipe set incl. reserved system/inbox).
@@ -764,6 +765,26 @@ type PipeDestroyRequest struct {
 	// across manifolds, not just the session's). When empty, the
 	// daemon falls back to the session's current_namespace.
 	Manifold string `json:"manifold,omitempty"`
+}
+
+// PipePurgeRequest addresses a pipe exactly as PipeDestroyRequest does:
+// Handle+Name for a collared pipe, BareTarget for an uncollared one at
+// the session's namespace (or Manifold when the caller knows it).
+type PipePurgeRequest struct {
+	Handle     string `json:"handle"`
+	Name       string `json:"name"`
+	BareTarget string `json:"bare_target,omitempty"`
+	Session    string `json:"session,omitempty"`
+	Manifold   string `json:"manifold,omitempty"`
+}
+
+// PipePurgeReply reports how many messages a purge removed. Also the
+// body of the server's purge endpoints.
+type PipePurgeReply struct {
+	Handle   string `json:"handle,omitempty"`
+	Manifold string `json:"manifold,omitempty"`
+	Name     string `json:"name"`
+	Purged   uint64 `json:"purged"`
 }
 
 type PipeDestroyReply struct {

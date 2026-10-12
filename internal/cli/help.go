@@ -90,6 +90,7 @@ var topLevelGroups = []helpGroup{
 	{"PIPES", []helpRow{
 		{"ppz pipe create [H.]NAME", "create a custom pipe"},
 		{"ppz pipe set [H.]NAME", "change an existing pipe's retention"},
+		{"ppz pipe purge [H.]NAME", "empty a pipe's buffered messages"},
 		{"ppz pipe destroy [H.]NAME", "destroy a pipe (--recursive for a tree)"},
 	}},
 	{"OTHER", []helpRow{
@@ -434,10 +435,11 @@ Top-level shortcut for 'ppz daemon login' (matches the gh/kubectl/az login muscl
 Print the current handle to stdout. Exits 1 with empty output when no current handle is set, so $(ppz get handle) can detect "not set" via the return code.`,
 
 	// ---- Pipes -----------------------------------------------------------
-	"pipe": `usage: ppz pipe {create|set|destroy|acl} ...
+	"pipe": `usage: ppz pipe {create|set|purge|destroy|acl} ...
 
   ppz pipe create [HANDLE.]NAME [--ttl=DUR --max-msgs=N --max-bytes=B]
   ppz pipe set [HANDLE.]NAME [--ttl=DUR --max-msgs=N --max-bytes=B]
+  ppz pipe purge [HANDLE.]NAME
   ppz pipe destroy [HANDLE.]NAME [--recursive]
   ppz pipe acl {ls|grant|revoke} ...
 
@@ -526,6 +528,10 @@ Name at least one flag. Fields you don't name keep their current value. The prin
 Unlike 'pipe create', this reaches auto-provisioned pipes (inbox, and stdin/stdout/stdctrl on terminals) — those are the pipes whose default caps you hit first, and create can't name them.
 
 Lowering a cap discards immediately: shrinking --max-msgs on a pipe holding more than that drops the oldest messages there and then.`,
+
+	"pipe purge": `usage: ppz pipe purge [HANDLE.]NAME
+
+Empty a pipe: delete every buffered message but keep the pipe, its retention and its readers. A bare NAME is the uncollared pipe at the current namespace; HANDLE.NAME a source's pipe, including auto-provisioned ones (purging a terminal's stdout clears its replay; purging heartbeat makes an agent look offline until its next beat). Needs admin on the pipe while the org enforces ACLs.`,
 
 	"pipe destroy": `usage: ppz pipe destroy [HANDLE.]NAME [--recursive]
 
