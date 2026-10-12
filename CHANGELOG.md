@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — web agents view stays at the latest message
+
+- **Opening a chat starts at the bottom** of its history. Long histories
+  used to open near the top.
+- **New messages scroll into view if you're at the bottom**, and leave you
+  where you are if you've scrolled up to read. Your own messages always
+  scroll into view.
+
+The follow check ran after appending each message, so any message of two
+or more lines read as "scrolled up" and stopped the follow — including
+during the history replay that fills a newly opened chat.
+
 ## Unreleased — control shared terminals from the web GUI
 
 The web terminal was view-only. It can now be controlled from the browser,
