@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — web GUI access control
+
+Session routes under `/orgs/<id>` checked that you were logged in, not that
+the org was yours. Every one is now registered through an `orgSession`
+middleware that requires membership (404 to non-members, so an org's
+existence doesn't leak; a test fails if a route skips it), and org
+administration requires owner or admin.
+
+- **Org pages, pipe pages and the terminal page** are member-only.
+- **The terminal WebSocket** required no login at all and accepted any
+  Origin: anyone who could reach the server could stream any org's shared
+  terminal output. It is now session-gated, member-only and same-origin.
+- **API key creation** (`POST /orgs/<id>/keys`) is member-only. Previously
+  any logged-in user could mint a key for any org.
+- **API key revocation** is scoped to the org in the URL, and the
+  unauthenticated `POST /api/v1/keys/<id>/revoke` is removed. The Revoke
+  button posts to `/orgs/<id>/keys/<kid>/revoke`: owners and admins can
+  revoke any of the org's keys, members only keys they created, and the
+  button only appears where it would work.
+- **Adding/removing members** requires owner or admin; the forms are
+  hidden from other members.
+- **`POST /users`** (e2e seeding) only works under DevLogin, and
+  **`POST /orgs`** refuses `owner_user_id` outside DevLogin (400).
+
 ## Unreleased — pipe ACLs, phase 3 (opt-in enforcement)
 
 ACLs now actually restrict access — **but only for an org that has switched

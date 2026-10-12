@@ -97,20 +97,24 @@
               data-user-mode="{{.Mode}}">
             {{.Username}}
             <small>· {{.Email}} · {{.Mode}}</small>
+            {{if $.IsOrgAdmin}}
             <form method="post" action="/orgs/{{$.Org.ID}}/members/{{.ID}}/remove" class="inline">
               <button type="submit"
                       onclick="return confirm('Remove {{.Username}} from this organisation?');">Remove</button>
             </form>
+            {{end}}
           </li>
           {{end}}
         </ul>
         {{else}}
         <p class="empty">No members yet.</p>
         {{end}}
+        {{if .IsOrgAdmin}}
         <form method="post" action="/orgs/{{.Org.ID}}/members">
           <label>Add member by user_id <input name="user_id" required></label>
           <button type="submit">Add member</button>
         </form>
+        {{end}}
       </div>
       {{if .IsOwner}}
       <div data-users-subsection="invites">
@@ -154,8 +158,8 @@
           <small>· created by {{.Creator}}</small>
           {{if .Revoked}}
           <small class="revoked">· revoked {{.RevokedAt.Format "2006-01-02T15:04:05Z"}}</small>
-          {{else}}
-          <form method="post" action="/api/v1/keys/{{.ID}}/revoke" class="inline">
+          {{else if or $.IsOrgAdmin (eq .CreatedByUserID $.MeID)}}
+          <form method="post" action="/orgs/{{$.Org.ID}}/keys/{{.ID}}/revoke" class="inline">
             <button type="submit" onclick="return confirm('Revoke this key? Existing daemons using it will lose access on their next call.');">Revoke</button>
           </form>
           {{end}}

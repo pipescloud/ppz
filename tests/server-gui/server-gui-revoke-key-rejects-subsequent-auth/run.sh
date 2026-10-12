@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# `POST /api/v1/keys/<id>/revoke` soft-revokes an API key. After
+# `POST /orgs/<id>/keys/<kid>/revoke` soft-revokes an API key. After
 # revocation the key MUST be rejected at /auth/exchange — daemons
 # that try to log in with it get E_INVALID_API_KEY exactly as if the
 # key never existed.
@@ -24,7 +24,7 @@ ppz_a daemon login "$PPZ_SERVER_URL" -apikey "$plaintext" 2>&1 \
   | head -1
 
 echo "--- revoke returns 200 ---"
-curl_server "/api/v1/keys/$key_id/revoke" -X POST -o /dev/null -w 'http=%{http_code}\n'
+curl_server "/orgs/$org_id/keys/$key_id/revoke" -X POST -o /dev/null -w 'http=%{http_code}\n'
 
 echo "--- login with the same (now revoked) key is rejected ---"
 ppz_a daemon logout >/dev/null 2>&1 || true

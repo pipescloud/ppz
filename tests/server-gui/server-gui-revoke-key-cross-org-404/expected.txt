@@ -1,0 +1,4 @@
+anonymous api revoke: 404
+cross-org revoke: 404
+beta key revoked: f
+exit=0

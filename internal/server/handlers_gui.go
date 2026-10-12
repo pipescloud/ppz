@@ -126,10 +126,15 @@ func (s *Server) handleGUICreateOrg(w http.ResponseWriter, r *http.Request) {
 	// Default owner to the currently-authenticated user — otherwise
 	// the creator wouldn't see their own org on /dashboard (which is
 	// scoped by ownership/membership). An explicit owner_user_id form
-	// field still wins, for the rare case a tool needs to assign on
-	// behalf of someone else.
+	// field is honoured only under DevLogin (e2e seeding): in production
+	// it would let anyone create orgs owned by someone else, so it's
+	// refused rather than silently ignored.
 	ownerID := UserIDFromCtx(r.Context())
 	if v := strings.TrimSpace(r.FormValue("owner_user_id")); v != "" {
+		if !s.DevLogin {
+			http.Error(w, "owner_user_id is not accepted", http.StatusBadRequest)
+			return
+		}
 		parsed, err := uuid.Parse(v)
 		if err != nil {
 			http.Error(w, "owner_user_id is not a valid uuid", 400)
@@ -156,9 +161,8 @@ func (s *Server) handleGUICreateOrg(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGUIOrgRedirect(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := withTimeout(r)
 	defer cancel()
-	org, err := resolveOrg(ctx, s.Pool, r.PathValue("id"))
-	if err != nil {
-		http.Error(w, "org not found", 404)
+	org, ok := s.resolveMemberOrg(ctx, w, r)
+	if !ok {
 		return
 	}
 	http.Redirect(w, r, "/orgs/"+org.Name+"/pipes", http.StatusSeeOther)
@@ -180,9 +184,8 @@ func (s *Server) handleGUIOrgTab(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := withTimeout(r)
 	defer cancel()
-	org, err := resolveOrg(ctx, s.Pool, r.PathValue("id"))
-	if err != nil {
-		http.Error(w, "org not found", 404)
+	org, ok := s.resolveMemberOrg(ctx, w, r)
+	if !ok {
 		return
 	}
 	keys, err := db.ListAPIKeysForOrg(ctx, s.Pool, org.ID)
@@ -398,6 +401,8 @@ func (s *Server) handleGUIOrgTab(w http.ResponseWriter, r *http.Request) {
 	data["PendingInvites"] = pendingInvites
 	data["IsOwner"] = isOwner
 	data["IsOrgAdmin"] = isOrgAdmin
+	// Lets the keys tab offer Revoke on a member's own keys.
+	data["MeID"] = UserIDFromCtx(r.Context())
 	data["AuditRows"] = auditRows
 	data["ActiveTab"] = tab
 
@@ -447,9 +452,8 @@ func (s *Server) handleGUICreateKey(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := withTimeout(r)
 	defer cancel()
-	org, err := resolveOrg(ctx, s.Pool, r.PathValue("id"))
-	if err != nil {
-		http.Error(w, "org not found", 404)
+	org, ok := s.resolveMemberOrg(ctx, w, r)
+	if !ok {
 		return
 	}
 	// requireSession populated user_id on the request context.

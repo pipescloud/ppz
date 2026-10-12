@@ -20,9 +20,8 @@ func (s *Server) handleGUIPipePage(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := withTimeout(r)
 	defer cancel()
 
-	org, err := resolveOrg(ctx, s.Pool, r.PathValue("id"))
-	if err != nil {
-		http.Error(w, "org not found", 404)
+	org, ok := s.resolveMemberOrg(ctx, w, r)
+	if !ok {
 		return
 	}
 	handle := r.PathValue("handle")
@@ -110,9 +109,8 @@ func (s *Server) handleGUIUncollaredPipePage(w http.ResponseWriter, r *http.Requ
 	ctx, cancel := withTimeout(r)
 	defer cancel()
 
-	org, err := resolveOrg(ctx, s.Pool, r.PathValue("id"))
-	if err != nil {
-		http.Error(w, "org not found", 404)
+	org, ok := s.resolveMemberOrg(ctx, w, r)
+	if !ok {
 		return
 	}
 	pipePath := r.PathValue("pipe")

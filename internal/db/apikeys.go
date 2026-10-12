@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -30,7 +31,7 @@ type APIKey struct {
 	Label           string
 	CreatedAt       time.Time
 	// RevokedAt is nil for active keys, set to the revoke time once
-	// `POST /api/v1/keys/<id>/revoke` flips it. LookupAPIKey filters
+	// `POST /orgs/<id>/keys/<kid>/revoke` flips it. LookupAPIKey filters
 	// out revoked rows; the GUI shows them with strikethrough so the
 	// audit trail stays visible.
 	RevokedAt *time.Time
@@ -214,14 +215,28 @@ func ListAPIKeysForOrg(ctx context.Context, p *Pool, accountID uuid.UUID) ([]API
 	return out, rows.Err()
 }
 
-// RevokeAPIKey marks the key revoked. Idempotent: revoking an
-// already-revoked key is a no-op (returns nil). Returns ErrNotFound if
-// no row matches the id.
-func RevokeAPIKey(ctx context.Context, p *Pool, id uuid.UUID) error {
+// APIKeyCreator returns the user who minted the account's key id.
+// ErrNotFound if no such key belongs to the account.
+func APIKeyCreator(ctx context.Context, p *Pool, accountID, id uuid.UUID) (uuid.UUID, error) {
+	var creator uuid.UUID
+	err := p.QueryRow(ctx,
+		`SELECT created_by_user_id FROM api_keys WHERE id = $1 AND account_id = $2`,
+		id, accountID).Scan(&creator)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, ErrNotFound
+	}
+	return creator, err
+}
+
+// RevokeAPIKey marks the key revoked. Scoped to accountID so a caller
+// authorised for one org can't revoke another org's key by id.
+// Idempotent: revoking an already-revoked key is a no-op (returns nil).
+// Returns ErrNotFound if no key with that id belongs to the account.
+func RevokeAPIKey(ctx context.Context, p *Pool, accountID, id uuid.UUID) error {
 	tag, err := p.Exec(ctx,
 		`UPDATE api_keys
 		    SET revoked_at = NOW()
-		  WHERE id = $1 AND revoked_at IS NULL`, id)
+		  WHERE id = $1 AND account_id = $2 AND revoked_at IS NULL`, id, accountID)
 	if err != nil {
 		return err
 	}
@@ -231,7 +246,7 @@ func RevokeAPIKey(ctx context.Context, p *Pool, id uuid.UUID) error {
 		// idempotent (nil), missing is ErrNotFound.
 		var exists bool
 		if err := p.QueryRow(ctx,
-			`SELECT EXISTS(SELECT 1 FROM api_keys WHERE id = $1)`, id).Scan(&exists); err != nil {
+			`SELECT EXISTS(SELECT 1 FROM api_keys WHERE id = $1 AND account_id = $2)`, id, accountID).Scan(&exists); err != nil {
 			return err
 		}
 		if !exists {

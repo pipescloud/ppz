@@ -6,8 +6,8 @@ bob
 http=200
 --- members table is empty again ---
 0
---- removing alice (owner) is rejected ---
+--- removing foo (owner) is rejected ---
 http=409
---- alice still owns wonder ---
-alice
+--- foo still owns wonder ---
+foo
 exit=0

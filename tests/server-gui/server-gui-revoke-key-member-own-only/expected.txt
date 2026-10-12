@@ -1,0 +1,8 @@
+revoke button on own key: shown
+revoke button on foo's key: hidden
+add-member form: hidden
+revoke foo's key: 403
+revoke own key: 200
+foo's key revoked: f
+own key revoked: t
+exit=0

@@ -17,20 +17,20 @@ resp_b="$(curl_server "/orgs/$org_id/keys" -X POST --data-urlencode 'label=will-
 id_a="$(printf '%s' "$resp_a" | grep -oE 'data-key-id="[^"]+"' | sed -E 's/data-key-id="([^"]+)"/\1/')"
 id_b="$(printf '%s' "$resp_b" | grep -oE 'data-key-id="[^"]+"' | sed -E 's/data-key-id="([^"]+)"/\1/')"
 
-curl_server "/api/v1/keys/$id_b/revoke" -X POST -o /dev/null -w '' || true
+curl_server "/orgs/$org_id/keys/$id_b/revoke" -X POST -o /dev/null -w '' || true
 
 # Revoke buttons live on the API-keys tab.
 page="$(curl_server "/orgs/$org_id/keys")"
 
 echo "--- active key has a revoke form pointing at its id ---"
-if printf '%s' "$page" | matches -F "action=\"/api/v1/keys/$id_a/revoke\""; then
+if printf '%s' "$page" | matches -F "action=\"/orgs/$org_id/keys/$id_a/revoke\""; then
   echo "active-revoke-form=present"
 else
   echo "active-revoke-form=missing"
 fi
 
 echo "--- revoked key has NO revoke form ---"
-if printf '%s' "$page" | matches -F "action=\"/api/v1/keys/$id_b/revoke\""; then
+if printf '%s' "$page" | matches -F "action=\"/orgs/$org_id/keys/$id_b/revoke\""; then
   echo "revoked-revoke-form=present (BUG)"
 else
   echo "revoked-revoke-form=absent"

@@ -1,0 +1,4 @@
+member add: 403
+member remove: 403
+membership unchanged
+exit=0

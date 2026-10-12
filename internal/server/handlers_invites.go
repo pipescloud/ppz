@@ -246,15 +246,15 @@ func (s *Server) handleGUICreateInvite(w http.ResponseWriter, r *http.Request) {
 	uid := UserIDFromCtx(r.Context())
 	ctx, cancel := withTimeout(r)
 	defer cancel()
-	org, err := resolveOrg(ctx, s.Pool, r.PathValue("id"))
-	if err != nil {
-		http.Error(w, "org not found", http.StatusNotFound)
+	a, ok := s.orgAccessFor(ctx, w, r)
+	if !ok {
 		return
 	}
-	if org.OwnerUserID != uid {
+	if a.role != OrgRoleOwner {
 		http.Error(w, "owner only", http.StatusForbidden)
 		return
 	}
+	org := a.org
 	caller, err := db.GetUser(ctx, s.Pool, uid)
 	if err == nil && caller.Username == username {
 		http.Error(w, "cannot invite yourself", http.StatusBadRequest)
@@ -274,7 +274,6 @@ func (s *Server) handleGUICreateInvite(w http.ResponseWriter, r *http.Request) {
 
 // handleGUIRevokeInvite: POST /orgs/{id}/invites/{iid}/revoke
 func (s *Server) handleGUIRevokeInvite(w http.ResponseWriter, r *http.Request) {
-	uid := UserIDFromCtx(r.Context())
 	inviteID, err := uuid.Parse(r.PathValue("iid"))
 	if err != nil {
 		http.Error(w, "invalid invite id", http.StatusBadRequest)
@@ -282,15 +281,15 @@ func (s *Server) handleGUIRevokeInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := withTimeout(r)
 	defer cancel()
-	org, err := resolveOrg(ctx, s.Pool, r.PathValue("id"))
-	if err != nil {
-		http.Error(w, "org not found", http.StatusNotFound)
+	a, ok := s.orgAccessFor(ctx, w, r)
+	if !ok {
 		return
 	}
-	if org.OwnerUserID != uid {
+	if a.role != OrgRoleOwner {
 		http.Error(w, "owner only", http.StatusForbidden)
 		return
 	}
+	org := a.org
 	inv, err := db.GetInvite(ctx, s.Pool, inviteID)
 	if err != nil || inv.AccountID != org.ID {
 		http.Error(w, "invite not found", http.StatusNotFound)
