@@ -8,6 +8,7 @@
 //
 //	take | release          send {"type":"take"} / {"type":"release"}
 //	send:TEXT               send TEXT followed by "\r" as a binary frame
+//	setsize:COLSxROWS       send {"type":"setsize",…} (Fit to window)
 //	expect:TYPE             wait ≤10s for a text frame of TYPE (control,
 //	                        lease, control-error), skipping others, and
 //	                        print it on one line
@@ -81,6 +82,9 @@ func main() {
 			_ = conn.Write(ctx, websocket.MessageText, []byte(`{"type":"`+name+`"}`))
 		case "send":
 			_ = conn.Write(ctx, websocket.MessageBinary, []byte(arg+"\r"))
+		case "setsize":
+			c, r, _ := strings.Cut(arg, "x")
+			_ = conn.Write(ctx, websocket.MessageText, []byte(`{"type":"setsize","cols":`+c+`,"rows":`+r+`}`))
 		case "sleep":
 			d, _ := time.ParseDuration(arg)
 			time.Sleep(d)
@@ -109,7 +113,7 @@ func expect(frames <-chan map[string]any, typ string) bool {
 			}
 			switch typ {
 			case "control":
-				fmt.Printf("control writable=%v you=%v\n", m["writable"], m["you"])
+				fmt.Printf("control writable=%v resizable=%v you=%v\n", m["writable"], m["resizable"], m["you"])
 			case "lease":
 				fmt.Printf("lease holder=%v\n", m["holder"])
 			default:

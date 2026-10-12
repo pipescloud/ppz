@@ -61,6 +61,8 @@ func cmdTerminal(args []string) error {
 		return cmdTerminalLease(args[1:])
 	case "release":
 		return cmdTerminalRelease(args[1:])
+	case "resize":
+		return cmdTerminalResize(args[1:])
 	case "read":
 		return cmdTerminalRead(args[1:])
 	}
@@ -1322,6 +1324,60 @@ func cmdTerminalRelease(args []string) error {
 	_, _ = awaitLeaseGrant(handle, nonce, leaseAcquireTimeout)
 	fmt.Fprintf(os.Stderr, "released %s\n", handle)
 	return nil
+}
+
+// maxTermDim bounds a requested terminal dimension. pty sizes are uint16;
+// anything near that is a typo, not a terminal.
+const maxTermDim = 1000
+
+// cmdTerminalResize: ppz terminal resize [HANDLE] COLSxROWS
+//
+// Asks the shared terminal's host to resize the child pty by publishing a
+// "setsize" on <handle>.stdctrl (the viewer→host half of the resize
+// channel; see forwardResize). The host applies it and republishes a
+// "resize", which every viewer follows. HANDLE defaults to the current
+// source. Fire-and-forget: with no host running, nothing changes.
+func cmdTerminalResize(args []string) error {
+	var handle, size string
+	switch len(args) {
+	case 1:
+		h, err := effectiveCurrentHandle()
+		if err != nil {
+			return err
+		}
+		handle, size = h, args[0]
+	case 2:
+		handle, size = args[0], args[1]
+	default:
+		usageExit("terminal resize")
+	}
+	if handle == "" || strings.Contains(handle, ".") {
+		return cliproto.New(cliproto.EInvalidHandle)
+	}
+	cols, rows, ok := parseTermSize(size)
+	if !ok {
+		usageExit("terminal resize")
+	}
+	payload, _ := json.Marshal(map[string]any{"type": "setsize", "cols": cols, "rows": rows})
+	if err := sendStreamLine(handle, "stdctrl", string(payload)); err != nil {
+		return err
+	}
+	fmt.Printf("requested %s %dx%d\n", handle, cols, rows)
+	return nil
+}
+
+// parseTermSize parses COLSxROWS (e.g. 120x40; "X" accepted too).
+func parseTermSize(s string) (cols, rows int, ok bool) {
+	c, r, found := strings.Cut(strings.ToLower(s), "x")
+	if !found {
+		return 0, 0, false
+	}
+	cols, err1 := strconv.Atoi(c)
+	rows, err2 := strconv.Atoi(r)
+	if err1 != nil || err2 != nil || cols < 1 || rows < 1 || cols > maxTermDim || rows > maxTermDim {
+		return 0, 0, false
+	}
+	return cols, rows, true
 }
 
 // cmdTerminalControl: ppz terminal control <handle>

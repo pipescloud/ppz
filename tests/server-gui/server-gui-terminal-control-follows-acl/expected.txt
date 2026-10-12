@@ -1,9 +1,9 @@
 --- no grants ---
 dial failed: http=403
 --- read on stdout ---
-control writable=false you=bar@web
+control writable=false resizable=false you=bar@web
 control-error you don't have write access to box.stdin
 --- write on stdin ---
-control writable=true you=bar@web
+control writable=true resizable=false you=bar@web
 lease holder=bar@web
 exit=0

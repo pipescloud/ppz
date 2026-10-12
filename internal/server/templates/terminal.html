@@ -7,73 +7,79 @@
   <link rel="stylesheet" href="/assets/style.css">
   <link rel="stylesheet" href="/assets/xterm.css">
   <style>
-    /* Let xterm.js own its dimensions: cols×rows from the pty.stdctrl
-       resize event determines width/height. inline-block so the container
-       shrinks to the canvas size, then a viewport-wide flex wrapper
-       centers it — without this the terminal anchors to main's left
-       edge and overflows right on wide screens. */
-    .terminal-wrap {
+    /* One compact line of breadcrumbs, then the terminal with its toolbar
+       attached. The terminal sizes itself (cols×rows from the pty's
+       stdctrl resize events); .term-shell shrink-wraps it and the toolbar
+       stretches to the same width, centred in the viewport. */
+    .term-header {
       display: flex;
-      justify-content: center;
-      padding: 0 1rem 2rem;
+      align-items: baseline;
+      gap: 0.75rem;
+      padding: 0.75rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.95rem;
     }
-    #terminal { display: inline-block; }
-    .terminal-status {
-      font: 12px/1.4 monospace;
-      padding: 4px 0;
-      max-width: 960px;
-      margin: 0 auto;
-    }
-    .terminal-status.ok  { color: #4a4; }
-    .terminal-status.err { color: #c44; }
-    .terminal-control {
+    .term-header a { color: var(--accent); text-decoration: none; }
+    .term-header a:hover { color: var(--accent-hover); }
+    .term-header .here { color: var(--text); }
+    .term-wrap { display: flex; justify-content: center; padding: 1rem 1rem 2rem; }
+    .term-shell { display: inline-flex; flex-direction: column; min-width: min(640px, 100%); }
+    .term-toolbar {
       display: flex;
       align-items: center;
-      gap: 0.75rem;
-      max-width: 960px;
-      margin: 0 auto 0.5rem;
-      font: 12px/1.4 monospace;
+      flex-wrap: wrap;
+      gap: 0.4rem 0.9rem;
+      padding: 0.4rem 0.6rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-bottom: 0;
+      border-radius: 6px 6px 0 0;
+      font: 12px/1.4 Menlo, Monaco, "Courier New", monospace;
     }
-    .terminal-control[hidden] { display: none; }
-    .terminal-control button { padding: 0.25rem 0.75rem; font-size: 12px; }
-    .terminal-control-state { color: var(--muted); }
-    .terminal-control-state.mine { color: var(--online); }
-    .terminal-control-state.err { color: #c44; }
+    .term-conn { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--muted); }
+    .term-conn::before {
+      content: "";
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--offline);
+    }
+    .term-conn[data-state="live"] { color: var(--text); }
+    .term-conn[data-state="live"]::before { background: var(--online); }
+    .term-conn[data-state="error"]::before { background: #c44; }
+    .term-control-state { color: var(--muted); }
+    .term-control-state.mine { color: var(--online); }
+    .term-control-state.err { color: #f0857d; }
+    .term-spacer { flex: 1 1 auto; }
+    .term-toolbar button { padding: 0.2rem 0.65rem; font-size: 12px; }
+    .term-toolbar button[hidden] { display: none; }
+    .term-toolbar .btn-plain { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+    .term-toolbar .btn-plain:hover { color: var(--text); background: var(--row-hover); }
+    #terminal {
+      border: 1px solid var(--border);
+      border-radius: 0 0 6px 6px;
+      overflow: hidden;
+    }
     /* Outline the terminal while your keystrokes are live. */
-    #terminal.controlling { outline: 2px solid var(--online); outline-offset: 2px; }
+    #terminal.controlling { border-color: var(--online); box-shadow: 0 0 0 1px var(--online); }
   </style>
 </head>
 <body>
-  <main>
-    <header class="brand">
-      <h1>
-        <a href="/dashboard">ppz</a> /
-        <a href="/orgs/{{.Org.Name}}">{{.Org.Name}}</a> /
-        <code>{{.Handle}}</code> /
-        terminal
-      </h1>
-      <div class="crumbs">
-        live view of <code>{{.Handle}}.stdout</code> — replays retained
-        bytes, then follows new writes until the page is closed. If you can
-        write <code>{{.Handle}}.stdin</code>, <em>Take control</em> sends your
-        keystrokes to the terminal (one controller at a time).
+  <header class="term-header">
+    <span><a href="/dashboard">ppz</a> / <a href="/orgs/{{.Org.Name}}">{{.Org.Name}}</a> / <code>{{.Handle}}</code> / <span class="here">terminal</span></span>
+  </header>
+
+  <div class="term-wrap">
+    <div class="term-shell">
+      <div class="term-toolbar" data-terminal-toolbar
+           title="Live view of {{.Handle}}.stdout. With write access to {{.Handle}}.stdin you can take control (one controller at a time); with write access to {{.Handle}}.stdctrl you can resize it.">
+        <span id="terminal-status" class="term-conn" data-state="connecting">connecting…</span>
+        <span data-control-state class="term-control-state"></span>
+        <span class="term-spacer"></span>
+        <button type="button" class="btn-plain" data-fit hidden
+                title="Resize the terminal to fit this window">Fit to window</button>
+        <button type="button" data-control-toggle hidden>Take control</button>
       </div>
-    </header>
-  </main>
-
-  <div id="terminal-status" class="terminal-status">connecting…</div>
-  <div class="terminal-control" data-terminal-control hidden>
-    <button type="button" data-control-toggle>Take control</button>
-    <span data-control-state class="terminal-control-state"></span>
-  </div>
-
-  <!-- Terminal sits OUTSIDE <main> so it isn't capped at main's
-       max-width: 960px. Its flex wrapper spans the full viewport and
-       centers the inline-block canvas, so a 180-col pty on a 2560px
-       monitor gets equal padding on both sides instead of overflowing
-       right. -->
-  <div class="terminal-wrap">
-    <div id="terminal" data-ws-path="/orgs/{{.Org.Name}}/sources/{{.Handle}}/terminal/ws"></div>
+      <div id="terminal" data-ws-path="/orgs/{{.Org.Name}}/sources/{{.Handle}}/terminal/ws"></div>
+    </div>
   </div>
 
   <script src="/assets/xterm.js"></script>

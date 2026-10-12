@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — resize shared terminals; tidier web terminal page
+
+- **`ppz terminal resize [HANDLE] COLSxROWS`** resizes a shared terminal
+  (default: the current source), e.g. `ppz terminal resize bob 120x40`.
+  The sharing host applies it and every viewer follows.
+- **"Fit to window"** on the web terminal sizes the shared terminal to your
+  browser. Needs write on `<handle>.stdctrl` (every member while the org
+  doesn't enforce ACLs); it doesn't need the control lease.
+- **Web terminal layout:** one compact line of breadcrumbs instead of a
+  large header and paragraph, and a toolbar attached to the terminal with
+  the connection state, control state, Fit to window and Take/Release
+  control.
+- On a share running in someone's own terminal window, their next window
+  resize sets the size back; headless shares (hosted agents) keep it.
+
 ## Unreleased — web agents view stays at the latest message
 
 - **Opening a chat starts at the bottom** of its history. Long histories

@@ -1,0 +1,9 @@
+--- explicit handle ---
+requested box 120x40
+host reports: 120x40
+--- current source ---
+requested box 100x30
+host reports: 100x30
+--- invalid size ---
+exit: 2
+exit=0

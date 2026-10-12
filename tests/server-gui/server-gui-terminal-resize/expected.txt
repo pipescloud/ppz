@@ -1,0 +1,8 @@
+--- member, enforcement off ---
+control writable=true resizable=true you=foo@web
+host reports: 150x45
+--- enforcement on, bar has read + stdin write only ---
+control writable=true resizable=false you=bar@web
+control-error you don't have write access to box.stdctrl
+host reports: 150x45
+exit=0

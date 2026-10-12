@@ -37,10 +37,11 @@
   term.open(root);
 
   const status = document.getElementById("terminal-status");
-  function setStatus(text, kind) {
+  // state: connecting | live | error — drives the toolbar's status dot.
+  function setStatus(text, state) {
     if (!status) return;
     status.textContent = text;
-    status.className = "terminal-status " + (kind || "");
+    status.setAttribute("data-state", state);
   }
 
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -48,29 +49,31 @@
   const ws = new WebSocket(url);
   ws.binaryType = "arraybuffer";
 
-  ws.onopen = () => setStatus("connected — streaming live", "ok");
-  ws.onerror = () => setStatus("connection error", "err");
+  ws.onopen = () => setStatus("live", "live");
+  ws.onerror = () => setStatus("connection error", "error");
   ws.onclose = (ev) => {
-    setStatus("disconnected (code " + ev.code + ")", "err");
+    setStatus("disconnected (" + ev.code + ")", "error");
     // The server releases a held lease when the socket goes; stop
-    // offering control the page can no longer exercise.
+    // offering controls the page can no longer exercise.
     term.options.disableStdin = true;
     root.classList.remove("controlling");
-    if (bar) bar.hidden = true;
+    if (toggle) toggle.hidden = true;
+    if (fitBtn) fitBtn.hidden = true;
+    if (stateEl) stateEl.textContent = "";
   };
   // --- control ---
-  const bar = document.querySelector("[data-terminal-control]");
   const toggle = document.querySelector("[data-control-toggle]");
+  const fitBtn = document.querySelector("[data-fit]");
   const stateEl = document.querySelector("[data-control-state]");
-  const control = { writable: false, you: "", holder: "", error: "" };
+  const control = { writable: false, resizable: false, you: "", holder: "", error: "" };
 
   function renderControl() {
-    if (!bar) return;
+    if (!toggle) return;
     const mine = control.holder !== "" && control.holder === control.you;
     term.options.disableStdin = !mine;
     root.classList.toggle("controlling", mine);
-    bar.hidden = false;
     toggle.hidden = !control.writable;
+    if (fitBtn) fitBtn.hidden = !control.resizable;
     toggle.textContent = mine ? "Release control" : "Take control";
     let text;
     if (control.error) text = control.error;
@@ -79,7 +82,7 @@
     else if (control.writable) text = "view only";
     else text = "view only — you don't have write access to this terminal";
     stateEl.textContent = text;
-    stateEl.className = "terminal-control-state" +
+    stateEl.className = "term-control-state" +
       (control.error ? " err" : mine ? " mine" : "");
     if (mine) term.focus();
   }
@@ -90,6 +93,33 @@
       const mine = control.holder !== "" && control.holder === control.you;
       control.error = "";
       ws.send(JSON.stringify({ type: mine ? "release" : "take" }));
+    });
+  }
+
+  // Fit to window: work out how many cells fit the space below the
+  // toolbar from the terminal's own rendered cell size, and ask the host
+  // to resize to that. The host's "resize" echo then resizes every
+  // viewer, this one included — nothing is resized locally first.
+  function fitSize() {
+    const screen = root.querySelector(".xterm-screen");
+    const row = root.querySelector(".xterm-rows > div");
+    if (!screen || !row || !term.cols) return null;
+    const cellW = screen.getBoundingClientRect().width / term.cols;
+    const cellH = row.getBoundingClientRect().height;
+    if (!(cellW > 0) || !(cellH > 0)) return null;
+    const availW = document.documentElement.clientWidth - 48; // page gutters + border
+    const availH = window.innerHeight - root.getBoundingClientRect().top - 36;
+    return {
+      cols: Math.max(20, Math.min(1000, Math.floor(availW / cellW))),
+      rows: Math.max(5, Math.min(1000, Math.floor(availH / cellH))),
+    };
+  }
+  if (fitBtn) {
+    fitBtn.addEventListener("click", () => {
+      const size = fitSize();
+      if (!size || ws.readyState !== WebSocket.OPEN) return;
+      control.error = "";
+      ws.send(JSON.stringify({ type: "setsize", cols: size.cols, rows: size.rows }));
     });
   }
 
@@ -115,6 +145,7 @@
           term.resize(ctrl.cols, ctrl.rows);
         } else if (ctrl.type === "control") {
           control.writable = !!ctrl.writable;
+          control.resizable = !!ctrl.resizable;
           control.you = ctrl.you || "";
           renderControl();
         } else if (ctrl.type === "lease") {
